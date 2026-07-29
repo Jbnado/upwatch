@@ -134,9 +134,48 @@ type MonitorRepo interface {
 	List(ctx context.Context, f MonitorFilter) (Page[domain.Monitor], error)
 }
 
+// UserRepo é o CRUD de contas de acesso.
+type UserRepo interface {
+	Create(ctx context.Context, u *domain.User) error
+	Get(ctx context.Context, id int64) (domain.User, error)
+	// GetByUsername é o caminho do login.
+	GetByUsername(ctx context.Context, username string) (domain.User, error)
+	Update(ctx context.Context, u domain.User) error
+	// Count decide se o assistente de primeiro acesso deve aparecer.
+	Count(ctx context.Context) (int, error)
+}
+
+// SessionRepo guarda os logins ativos da interface.
+type SessionRepo interface {
+	Create(ctx context.Context, s domain.Session) error
+	// Get busca pelo hash; o cookie carrega o segredo cru.
+	Get(ctx context.Context, hash string) (domain.Session, error)
+	Delete(ctx context.Context, hash string) error
+	// DeleteExpired é a limpeza periódica.
+	DeleteExpired(ctx context.Context, before time.Time) (int64, error)
+	// DeleteByUser encerra todas as sessões de uma conta, usado quando a
+	// senha muda: uma sessão anterior sobrevivendo à troca de senha
+	// anularia o motivo de trocá-la.
+	DeleteByUser(ctx context.Context, userID int64) error
+}
+
+// TokenRepo guarda as credenciais de acesso programático.
+type TokenRepo interface {
+	Create(ctx context.Context, t *domain.APIToken) error
+	GetByHash(ctx context.Context, hash string) (domain.APIToken, error)
+	List(ctx context.Context, userID int64) ([]domain.APIToken, error)
+	Delete(ctx context.Context, id int64) error
+	// TouchLastUsed registra o uso, para o operador identificar tokens
+	// esquecidos antes de revogá-los.
+	TouchLastUsed(ctx context.Context, id int64, at time.Time) error
+}
+
 // MetadataStore guarda as definições do sistema.
 type MetadataStore interface {
 	Monitors() MonitorRepo
+	Users() UserRepo
+	Sessions() SessionRepo
+	Tokens() TokenRepo
 	Close() error
 }
 

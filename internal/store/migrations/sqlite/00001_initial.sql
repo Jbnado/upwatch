@@ -12,6 +12,52 @@
 --   * Contadores são INTEGER de 64 bits. Um bucket diário com um check por
 --     segundo chega a 86.400 amostras, muito acima do alcance de smallint.
 
+-- Contas de acesso à interface.
+CREATE TABLE app_user (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT    NOT NULL,
+    -- Hash bcrypt. Senha é segredo de baixa entropia, e o custo deliberado
+    -- da função é o que inviabiliza testar bilhões de candidatas se o
+    -- banco vazar.
+    password_hash TEXT    NOT NULL,
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX idx_user_username ON app_user (username);
+
+-- Sessões da interface. O cookie carrega o segredo cru e aqui fica apenas
+-- o hash, de modo que ler o banco não conceda acesso a ninguém.
+CREATE TABLE session (
+    token_hash TEXT    NOT NULL PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES app_user (id) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+) WITHOUT ROWID;
+
+-- Índice para a limpeza periódica das expiradas.
+CREATE INDEX idx_session_expires ON session (expires_at);
+
+-- Credenciais de acesso programático.
+CREATE TABLE api_token (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      INTEGER NOT NULL REFERENCES app_user (id) ON DELETE CASCADE,
+    name         TEXT    NOT NULL,
+    -- SHA-256, não bcrypt: o token tem entropia alta o bastante para
+    -- dispensar custo contra força bruta, e esse custo seria pago a cada
+    -- requisição — o que viraria um vetor de negação de serviço.
+    token_hash   TEXT    NOT NULL,
+    -- Fragmento visível do segredo, para o operador reconhecer qual
+    -- revogar sem que nada permita reconstruí-lo.
+    prefix       TEXT    NOT NULL,
+    created_at   INTEGER NOT NULL,
+    last_used_at INTEGER,
+    expires_at   INTEGER
+);
+
+CREATE UNIQUE INDEX idx_api_token_hash ON api_token (token_hash);
+CREATE INDEX idx_api_token_user ON api_token (user_id);
+
 CREATE TABLE monitor (
     id                     INTEGER PRIMARY KEY AUTOINCREMENT,
     name                   TEXT    NOT NULL,
@@ -117,3 +163,6 @@ DROP TABLE push_state;
 DROP TABLE rollup;
 DROP TABLE heartbeat;
 DROP TABLE monitor;
+DROP TABLE api_token;
+DROP TABLE session;
+DROP TABLE app_user;

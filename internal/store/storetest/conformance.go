@@ -27,14 +27,25 @@ type Factory func(t *testing.T) store.Store
 // comparações falharem por arredondamento, não por defeito real.
 var epoch = time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
 
+// conformanceCase é um caso da suíte.
+type conformanceCase struct {
+	name string
+	run  func(*testing.T, Factory)
+}
+
 // RunConformance executa a suíte inteira contra a implementação fornecida.
 func RunConformance(t *testing.T, newStore Factory) {
 	t.Helper()
 
-	cases := []struct {
-		name string
-		run  func(*testing.T, Factory)
-	}{
+	cases := append(monitoringCases(), authCases()...)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) { tc.run(t, newStore) })
+	}
+}
+
+// monitoringCases cobre monitores, batidas, agregados e retenção.
+func monitoringCases() []conformanceCase {
+	return []conformanceCase{
 		{"MonitorCreateAssignsID", testMonitorCreateAssignsID},
 		{"MonitorCreateSetsTimestamps", testMonitorCreateSetsTimestamps},
 		{"MonitorRoundTripsAllFields", testMonitorRoundTripsAllFields},
@@ -88,10 +99,6 @@ func RunConformance(t *testing.T, newStore Factory) {
 		{"WatermarkIsPerResolution", testWatermarkIsPerResolution},
 
 		{"ConcurrentHeartbeatWrites", testConcurrentHeartbeatWrites},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) { tc.run(t, newStore) })
 	}
 }
 

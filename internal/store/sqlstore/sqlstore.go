@@ -120,6 +120,15 @@ func (s *Store) DB() *sql.DB { return s.db }
 // Monitors devolve o repositório de definições de monitor.
 func (s *Store) Monitors() store.MonitorRepo { return &monitorRepo{db: s.db} }
 
+// Users devolve o repositório de contas de acesso.
+func (s *Store) Users() store.UserRepo { return &userRepo{db: s.db} }
+
+// Sessions devolve o repositório de logins ativos.
+func (s *Store) Sessions() store.SessionRepo { return &sessionRepo{db: s.db} }
+
+// Tokens devolve o repositório de credenciais programáticas.
+func (s *Store) Tokens() store.TokenRepo { return &tokenRepo{db: s.db} }
+
 // Close encerra a conexão.
 func (s *Store) Close() error { return s.db.Close() }
 
