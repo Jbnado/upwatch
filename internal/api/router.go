@@ -90,6 +90,10 @@ func (a *API) routes() http.Handler {
 	r.Get("/healthz", a.handleHealth)
 
 	r.Route("/api/v1", func(r chi.Router) {
+		// A especificação é pública: descobrir como autenticar é o que se
+		// procura nela, e exigir credencial para lê-la criaria um ciclo.
+		r.Get("/openapi.yaml", a.handleOpenAPI)
+
 		// Assistente de primeiro acesso; ele mesmo recusa a segunda chamada.
 		r.Get("/setup", a.handleSetupStatus)
 		r.Post("/setup", a.handleSetup)

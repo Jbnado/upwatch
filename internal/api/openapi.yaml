@@ -1,0 +1,667 @@
+openapi: 3.1.0
+
+info:
+  title: UpWatch API
+  version: 0.1.0
+  description: |
+    API de monitoramento do UpWatch.
+
+    Toda funcionalidade da interface passa por aqui — não existe caminho
+    privilegiado para a interface gráfica nem API paralela para automação.
+    O que a tela faz, um script faz igual.
+
+    ## Autenticação
+
+    Duas formas, aceitas nas mesmas rotas:
+
+    - **Cookie de sessão**, obtido em `POST /api/v1/auth/login`. É o que a
+      interface usa.
+    - **Token Bearer**, criado em `POST /api/v1/auth/tokens`. É o caminho
+      para scripts e integrações.
+
+    O segredo de um token aparece **apenas** na resposta que o cria. Depois
+    disso só o prefixo é exposto, e nada permite reconstruí-lo.
+
+    ## Retenção
+
+    Batidas cruas vivem poucos dias; o histórico longo é servido por
+    `/rollups`, que responde por meses sem custo proporcional. Uma janela
+    de vários meses deve ser consultada em `/rollups`, não em
+    `/heartbeats`.
+  license:
+    name: AGPL-3.0-only
+    url: https://www.gnu.org/licenses/agpl-3.0.html
+
+servers:
+  - url: /
+    description: A própria instalação
+
+tags:
+  - name: setup
+    description: Assistente de primeiro acesso
+  - name: auth
+    description: Sessões, senha e tokens
+  - name: monitors
+    description: Cadastro de alvos monitorados
+  - name: data
+    description: Histórico, agregados e exportação
+  - name: push
+    description: Recebimento de sinal de monitores push
+
+paths:
+  /healthz:
+    get:
+      tags: [setup]
+      summary: Verificação de vida
+      description: |
+        Não exige autenticação: orquestradores a consultam antes de
+        qualquer credencial existir.
+      security: []
+      responses:
+        "200":
+          description: O processo está no ar
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+
+  /api/v1/openapi.yaml:
+    get:
+      tags: [setup]
+      summary: Esta especificação
+      description: |
+        Servida sem autenticação: descobrir como autenticar é justamente o
+        que se procura aqui, e exigir credencial criaria um ciclo.
+
+        Vem embarcada no binário, então nunca diverge da versão em
+        execução.
+      security: []
+      responses:
+        "200":
+          description: A especificação OpenAPI
+          content:
+            application/yaml:
+              schema: { type: string }
+
+  /api/v1/setup:
+    get:
+      tags: [setup]
+      summary: Informa se a instalação precisa da conta inicial
+      security: []
+      responses:
+        "200":
+          description: Situação do assistente
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  needs_setup: { type: boolean }
+    post:
+      tags: [setup]
+      summary: Cria a conta inicial
+      description: |
+        Só funciona enquanto não existir nenhuma conta. O assistente não é
+        autenticado, e mantê-lo disponível deixaria qualquer visitante
+        criar uma conta e tomar a instalação.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string, maxLength: 64 }
+                password: { type: string, minLength: 12, maxLength: 72 }
+      responses:
+        "201":
+          description: Conta criada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409":
+          description: A instalação já possui uma conta
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/auth/login:
+    post:
+      tags: [auth]
+      summary: Abre uma sessão
+      description: |
+        Senha errada e conta inexistente devolvem a mesma resposta, de
+        propósito: distingui-las permitiria descobrir quais contas existem.
+
+        Falhas repetidas bloqueiam a conta temporariamente.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string }
+      responses:
+        "200":
+          description: Sessão aberta; o cookie acompanha a resposta
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+              description: Cookie `upwatch_session`, HttpOnly e SameSite=Lax
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429":
+          description: Tentativas demais; aguarde antes de tentar novamente
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/auth/logout:
+    post:
+      tags: [auth]
+      summary: Encerra a sessão
+      responses:
+        "204": { description: Sessão encerrada }
+
+  /api/v1/auth/me:
+    get:
+      tags: [auth]
+      summary: Devolve a conta autenticada
+      responses:
+        "200":
+          description: Conta atual
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/auth/password:
+    post:
+      tags: [auth]
+      summary: Troca a senha
+      description: |
+        Encerra todas as sessões abertas, inclusive a desta requisição.
+        Trocar a senha porque ela pode ter vazado não adianta se quem a
+        obteve continuar logado.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password: { type: string }
+                new_password: { type: string, minLength: 12, maxLength: 72 }
+      responses:
+        "204": { description: Senha trocada e sessões encerradas }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/auth/tokens:
+    get:
+      tags: [auth]
+      summary: Lista os tokens da conta
+      responses:
+        "200":
+          description: Tokens existentes, sem os segredos
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/APIToken" }
+    post:
+      tags: [auth]
+      summary: Cria um token
+      description: |
+        Esta é a **única** resposta em que o segredo aparece. Guarde-o
+        agora; depois só o prefixo fica disponível.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                expires_at:
+                  type: string
+                  format: date-time
+                  description: Sem valor, o token não expira
+      responses:
+        "201":
+          description: Token criado
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/APIToken"
+                  - type: object
+                    properties:
+                      token:
+                        type: string
+                        description: O segredo; não é recuperável depois
+
+  /api/v1/auth/tokens/{id}:
+    delete:
+      tags: [auth]
+      summary: Revoga um token
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+      responses:
+        "204": { description: Token revogado }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/monitors:
+    get:
+      tags: [monitors]
+      summary: Lista monitores
+      description: Paginação por keyset; as páginas seguem estáveis sob escrita concorrente.
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+        - name: after_id
+          in: query
+          schema: { type: integer, format: int64 }
+          description: Use o `next_after_id` da página anterior
+        - name: enabled
+          in: query
+          schema: { type: boolean }
+        - name: tag
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Página de monitores
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Monitor" }
+                  has_more: { type: boolean }
+                  next_after_id: { type: integer, format: int64 }
+    post:
+      tags: [monitors]
+      summary: Cadastra um monitor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MonitorInput" }
+      responses:
+        "201":
+          description: Monitor criado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Monitor" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409":
+          description: Já existe monitor com esse nome
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/monitors/{id}:
+    get:
+      tags: [monitors]
+      summary: Devolve um monitor
+      parameters: [{ $ref: "#/components/parameters/PathID" }]
+      responses:
+        "200":
+          description: O monitor
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Monitor" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [monitors]
+      summary: Sobrescreve um monitor
+      parameters: [{ $ref: "#/components/parameters/PathID" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MonitorInput" }
+      responses:
+        "200":
+          description: Monitor atualizado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Monitor" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [monitors]
+      summary: Remove o monitor e todo o seu histórico
+      parameters: [{ $ref: "#/components/parameters/PathID" }]
+      responses:
+        "204": { description: Monitor removido }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/monitors/{id}/heartbeats:
+    get:
+      tags: [data]
+      summary: Batidas cruas do período
+      description: |
+        Batidas cruas têm retenção curta. Para janelas longas use
+        `/rollups`, que responde por meses sem custo proporcional.
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+        - $ref: "#/components/parameters/From"
+        - $ref: "#/components/parameters/To"
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+        - name: probe_id
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Batidas em ordem cronológica
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Heartbeat" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/v1/monitors/{id}/rollups:
+    get:
+      tags: [data]
+      summary: Estatísticas agregadas do período
+      description: |
+        Percentis são exatos: horário e diário são derivados sempre das
+        batidas cruas, nunca de percentis parciais.
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+        - $ref: "#/components/parameters/From"
+        - $ref: "#/components/parameters/To"
+        - name: resolution
+          in: query
+          schema: { type: string, enum: [hourly, daily], default: hourly }
+        - name: probe_id
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Agregados em ordem cronológica
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  resolution: { type: string, enum: [hourly, daily] }
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Rollup" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/v1/monitors/{id}/export:
+    get:
+      tags: [data]
+      summary: Exporta as batidas do período
+      description: A resposta é enviada em fluxo; períodos longos não são materializados em memória.
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+        - $ref: "#/components/parameters/From"
+        - $ref: "#/components/parameters/To"
+        - name: format
+          in: query
+          schema: { type: string, enum: [csv, json], default: csv }
+      responses:
+        "200":
+          description: Arquivo com as batidas
+          content:
+            text/csv:
+              schema: { type: string }
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Heartbeat" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/v1/push/{token}:
+    post:
+      tags: [push]
+      summary: Registra o sinal de um monitor push
+      description: |
+        O segredo viaja no caminho porque quem reporta é um cron ou um
+        worker, que não tem sessão de interface nem deve precisar de uma.
+
+        Token inválido e monitor inexistente devolvem a mesma resposta.
+      security: []
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Sinal registrado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/events:
+    get:
+      tags: [data]
+      summary: Fluxo de eventos ao vivo
+      description: |
+        Eventos enviados pelo servidor (SSE). O tráfego é de mão única, e
+        SSE atravessa proxy reverso e reconecta sozinho sem código extra.
+
+        Tipos emitidos: `monitor.created`, `monitor.updated`,
+        `monitor.deleted`.
+      responses:
+        "200":
+          description: Fluxo aberto
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: upwatch_session
+    bearerToken:
+      type: http
+      scheme: bearer
+
+  parameters:
+    PathID:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer, format: int64, minimum: 1 }
+    From:
+      name: from
+      in: query
+      schema: { type: string, format: date-time }
+      description: Início do período (RFC 3339). Padrão&#58; 24 horas atrás.
+    To:
+      name: to
+      in: query
+      schema: { type: string, format: date-time }
+      description: Fim do período (RFC 3339). Padrão&#58; agora.
+
+  responses:
+    BadRequest:
+      description: Requisição inválida
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: Autenticação necessária ou inválida
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Registro não encontrado
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum:
+                - invalid_request
+                - unauthorized
+                - not_found
+                - conflict
+                - too_many_requests
+                - internal_error
+            message: { type: string }
+            field:
+              type: string
+              description: Campo reprovado, quando o erro for de validação
+
+    User:
+      type: object
+      description: A senha e seu hash nunca aparecem nesta representação.
+      properties:
+        id: { type: integer, format: int64 }
+        username: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    APIToken:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string }
+        prefix:
+          type: string
+          description: Fragmento visível do segredo, para identificar o token
+        created_at: { type: string, format: date-time }
+        last_used_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+
+    MonitorInput:
+      type: object
+      required: [name, type, interval_seconds, timeout_seconds]
+      properties:
+        name: { type: string }
+        type:
+          type: string
+          enum: [http, tcp, icmp, dns, tls, push]
+        target:
+          type: string
+          description: URL, host&#58;porta ou nome, conforme o tipo. Vazio para push.
+        interval_seconds:
+          type: integer
+          minimum: 5
+          description: Intervalo entre verificações
+        timeout_seconds:
+          type: integer
+          minimum: 1
+          description: Precisa ser menor que o intervalo, senão os checks se acumulam
+        confirmation_threshold:
+          type: integer
+          minimum: 1
+          default: 3
+          description: Falhas consecutivas antes de declarar indisponibilidade
+        degraded_latency_ms:
+          type: integer
+          minimum: 0
+          description: Acima disso o resultado vira degradado. Zero desliga.
+        config:
+          type: object
+          description: |
+            Configuração específica do tipo, validada no cadastro pelo
+            checker correspondente.
+          additionalProperties: true
+        parent_id: { type: integer, format: int64 }
+        enabled: { type: boolean, default: true }
+        tags:
+          type: array
+          items: { type: string }
+
+    Monitor:
+      allOf:
+        - $ref: "#/components/schemas/MonitorInput"
+        - type: object
+          properties:
+            id: { type: integer, format: int64 }
+            created_at: { type: string, format: date-time }
+            updated_at: { type: string, format: date-time }
+
+    Heartbeat:
+      type: object
+      properties:
+        timestamp: { type: string, format: date-time }
+        status:
+          type: string
+          enum: [up, down, degraded, unknown]
+          description: |
+            `unknown` significa que o check rodou sem observar nada — a
+            rede do próprio monitor caiu, ou um monitor push ainda não
+            recebeu sinal. Fica fora do cálculo de disponibilidade.
+        latency_ms:
+          type: integer
+          description: Zero quando não houve resposta
+        probe_id: { type: string }
+        message: { type: string }
+
+    Rollup:
+      type: object
+      properties:
+        bucket_start: { type: string, format: date-time }
+        resolution: { type: string, enum: [hourly, daily] }
+        total:
+          type: integer
+          description: Checks executados, inclusive os sem observação
+        up: { type: integer }
+        down: { type: integer }
+        degraded: { type: integer }
+        unknown: { type: integer }
+        uptime_percent:
+          type: number
+          description: |
+            Calculado apenas sobre as amostras observadas. Degradado conta
+            como disponível; `unknown` fica fora do denominador.
+        latency_avg_ms: { type: number }
+        latency_min_ms: { type: number }
+        latency_max_ms: { type: number }
+        latency_p50_ms: { type: number }
+        latency_p95_ms: { type: number }
+        latency_p99_ms: { type: number }
+
+security:
+  - sessionCookie: []
+  - bearerToken: []
