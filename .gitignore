@@ -31,3 +31,6 @@ upwatch.local.yaml
 Thumbs.db
 .idea/
 .vscode/
+
+# Banco de dados local de desenvolvimento
+/upwatch.db*

@@ -1,0 +1,184 @@
+@import "tailwindcss";
+
+/* Fontes empacotadas, não buscadas de CDN: uma instalação self-hosted
+   precisa funcionar em rede sem saída para a internet. */
+@import "@fontsource-variable/archivo";
+@import "@fontsource/geist-mono/400.css";
+@import "@fontsource/geist-mono/500.css";
+@import "@fontsource/geist-mono/600.css";
+
+@theme {
+  /* ---------------------------------------------------------------
+     Cor significa estado. Nada mais.
+
+     Elementos interativos são monocromáticos de propósito: num painel
+     de monitoramento, se botão, link e gráfico forem coloridos, a cor
+     deixa de carregar informação. Aqui você aprende que qualquer cor
+     na tela quer dizer alguma coisa.
+     --------------------------------------------------------------- */
+
+  /* Neutros levemente frios, como vidro de instrumento — não o cinza
+     puro nem o creme quente. */
+  --color-paper: #f4f6f7;
+  --color-surface: #ffffff;
+  --color-sunken: #eceff1;
+  --color-line: #e2e7ea;
+  --color-line-strong: #cbd3d8;
+
+  --color-ink: #10161c;
+  --color-ink-2: #4a555f;
+  --color-ink-3: #63707a;
+
+  /* Estados.
+
+     "No ar" é dessaturado de propósito. Numa parede com cinquenta
+     monitores, quarenta e oito barras verdes berrando são ruído: o olho
+     precisa cair nas duas que não estão. Saturação fica reservada para
+     o que exige atenção. */
+  --color-up: #3f8a66;
+  --color-up-dim: #d8eae1;
+  --color-degraded: #b87514;
+  --color-degraded-dim: #f7e8cc;
+  --color-down: #c33a2b;
+  --color-down-dim: #f7d9d5;
+  --color-unknown: #93a0a8;
+  --color-unknown-dim: #e4e9eb;
+
+  /* Tipografia.
+
+     Archivo na interface — mais encorpada que a Inter, que virou o
+     padrão de todo painel. Geist Mono em toda medição: número que muda
+     de largura ao atualizar ao vivo salta na tela, e em coluna alinhada
+     dá para comparar latências de relance. */
+  --font-sans: "Archivo Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", monospace;
+
+  /* Cantos discretos: instrumento não tem borda arredondada de brinquedo. */
+  --radius-sm: 3px;
+  --radius-md: 5px;
+  --radius-lg: 8px;
+}
+
+/* Modo escuro: painel à noite. Não é o claro invertido — os estados
+   ganham luminosidade para manter contraste sobre fundo escuro. */
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --color-paper: #0d1216;
+      --color-surface: #141b21;
+      --color-sunken: #0a0e12;
+      --color-line: #222c34;
+      --color-line-strong: #33414b;
+
+      --color-ink: #e8edf0;
+      --color-ink-2: #9ba9b4;
+      --color-ink-3: #7c8a95;
+
+      --color-up: #4e9e77;
+      --color-up-dim: #1b2f26;
+      --color-degraded: #d9902a;
+      --color-degraded-dim: #35290f;
+      --color-down: #e05747;
+      --color-down-dim: #381915;
+      --color-unknown: #6b7a85;
+      --color-unknown-dim: #1a2228;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --color-paper: #0d1216;
+    --color-surface: #141b21;
+    --color-sunken: #0a0e12;
+    --color-line: #222c34;
+    --color-line-strong: #33414b;
+
+    --color-ink: #e8edf0;
+    --color-ink-2: #9ba9b4;
+    --color-ink-3: #7c8a95;
+
+    --color-up: #4e9e77;
+    --color-up-dim: #1b2f26;
+    --color-degraded: #d9902a;
+    --color-degraded-dim: #35290f;
+    --color-down: #e05747;
+    --color-down-dim: #381915;
+    --color-unknown: #6b7a85;
+    --color-unknown-dim: #1a2228;
+  }
+
+  html {
+    background: var(--color-paper);
+  }
+
+  body {
+    background: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 0.875rem;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Toda medição usa figuras tabulares: sem isso, uma latência que passa
+     de 99 para 100 empurra a coluna inteira. */
+  .tabular,
+  code,
+  kbd {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" 1;
+  }
+
+  /* Foco sempre visível. Quem opera durante um incidente costuma estar
+     no teclado. */
+  :where(a, button, input, select, textarea, [tabindex]):focus-visible {
+    outline: 2px solid var(--color-ink);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer components {
+  /* Rótulo de seção: a voz do instrumento. Maiúsculas estreitas em
+     monoespaçada, como a serigrafia de um painel. */
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    font-weight: 500;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--color-ink-3);
+  }
+
+  /* A faixa desenha da esquerda para a direita no carregamento, como
+     agulha de registrador percorrendo o papel. Um único momento
+     orquestrado, não efeito espalhado pela tela. */
+  @keyframes ink-in {
+    from {
+      clip-path: inset(0 100% 0 0);
+    }
+    to {
+      clip-path: inset(0 0 0 0);
+    }
+  }
+
+  .pulse-ink-in {
+    animation: ink-in 620ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+}
