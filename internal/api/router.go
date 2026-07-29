@@ -1,0 +1,133 @@
+package api
+
+import (
+	"net/http"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/bernardojoao/upwatch/internal/auth"
+	"github.com/bernardojoao/upwatch/internal/checker"
+	"github.com/bernardojoao/upwatch/internal/clock"
+	"github.com/bernardojoao/upwatch/internal/domain"
+	"github.com/bernardojoao/upwatch/internal/store"
+)
+
+// Options reúne as dependências da API.
+type Options struct {
+	Store    store.Store
+	Auth     *auth.Service
+	Checkers *checker.Registry
+	Clock    clock.Clock
+
+	// Scheduler recebe as mudanças de monitor feitas pela API, para um
+	// cadastro passar a ser verificado sem esperar reinício.
+	Scheduler MonitorSink
+
+	// SecureCookies marca o cookie de sessão como Secure. Fica desligado
+	// por padrão porque muitas instalações caseiras servem em HTTP puro na
+	// rede local, e um cookie Secure ali simplesmente não seria enviado —
+	// o login pareceria quebrado sem explicação.
+	SecureCookies bool
+
+	// SessionTTL espelha a validade usada pelo serviço de autenticação,
+	// para o cookie expirar junto com a sessão no servidor.
+	SessionTTL time.Duration
+}
+
+// MonitorSink recebe as alterações de monitor.
+//
+// Interface estreita em vez do agendador inteiro: a API não precisa saber
+// agendar, só avisar que algo mudou. É o que faz um monitor recém-criado
+// começar a ser verificado sem esperar reinício.
+type MonitorSink interface {
+	Upsert(m domain.Monitor)
+	Remove(id int64)
+}
+
+// API é o conjunto de handlers HTTP.
+type API struct {
+	store     store.Store
+	auth      *auth.Service
+	checkers  *checker.Registry
+	clock     clock.Clock
+	scheduler MonitorSink
+
+	secureCookies bool
+	sessionTTL    time.Duration
+
+	events *eventHub
+}
+
+// New monta o roteador da API.
+func New(opts Options) http.Handler {
+	if opts.Clock == nil {
+		opts.Clock = clock.Real()
+	}
+	if opts.SessionTTL <= 0 {
+		opts.SessionTTL = auth.DefaultSessionTTL
+	}
+
+	a := &API{
+		store:         opts.Store,
+		auth:          opts.Auth,
+		checkers:      opts.Checkers,
+		clock:         opts.Clock,
+		scheduler:     opts.Scheduler,
+		secureCookies: opts.SecureCookies,
+		sessionTTL:    opts.SessionTTL,
+		events:        newEventHub(),
+	}
+	return a.routes()
+}
+
+func (a *API) routes() http.Handler {
+	r := chi.NewRouter()
+	r.Use(recoverPanic, securityHeaders)
+
+	// Liveness fora de qualquer autenticação: orquestradores a consultam
+	// antes de existir credencial alguma.
+	r.Get("/healthz", a.handleHealth)
+
+	r.Route("/api/v1", func(r chi.Router) {
+		// Assistente de primeiro acesso; ele mesmo recusa a segunda chamada.
+		r.Get("/setup", a.handleSetupStatus)
+		r.Post("/setup", a.handleSetup)
+
+		r.Post("/auth/login", a.handleLogin)
+
+		// Endpoint de push: o segredo está no caminho, então a sessão não
+		// se aplica. É como um cron reporta sem carregar credencial de
+		// interface.
+		r.Post("/push/{token}", a.handlePush)
+
+		r.Group(func(r chi.Router) {
+			r.Use(a.authenticate)
+
+			r.Post("/auth/logout", a.handleLogout)
+			r.Get("/auth/me", a.handleMe)
+			r.Post("/auth/password", a.handleChangePassword)
+			r.Get("/auth/tokens", a.handleListTokens)
+			r.Post("/auth/tokens", a.handleCreateToken)
+			r.Delete("/auth/tokens/{id}", a.handleRevokeToken)
+
+			r.Get("/monitors", a.handleListMonitors)
+			r.Post("/monitors", a.handleCreateMonitor)
+			r.Get("/monitors/{id}", a.handleGetMonitor)
+			r.Put("/monitors/{id}", a.handleUpdateMonitor)
+			r.Delete("/monitors/{id}", a.handleDeleteMonitor)
+
+			r.Get("/monitors/{id}/heartbeats", a.handleHeartbeats)
+			r.Get("/monitors/{id}/rollups", a.handleRollups)
+			r.Get("/monitors/{id}/export", a.handleExport)
+
+			r.Get("/events", a.handleEvents)
+		})
+	})
+
+	return r
+}
+
+func (a *API) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
