@@ -78,6 +78,42 @@ export type APIToken = {
 /** CreatedToken traz o segredo, que só aparece nesta resposta. */
 export type CreatedToken = APIToken & { token: string };
 
+export type ChannelType = "webhook" | "discord" | "slack";
+
+/**
+ * A configuração nunca vem do servidor: ela contém a URL do webhook, que
+ * é a credencial de quem pode publicar no canal.
+ */
+export type Channel = {
+  id: number;
+  name: string;
+  type: ChannelType;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ChannelInput = {
+  name: string;
+  type: ChannelType;
+  enabled?: boolean;
+  config: {
+    url: string;
+    headers?: Record<string, string>;
+    template?: string;
+  };
+};
+
+export type Incident = {
+  id: number;
+  monitor_id: number;
+  started_at: string;
+  resolved_at?: string;
+  duration_seconds: number;
+  cause?: string;
+  open: boolean;
+};
+
 export type Page<T> = {
   items: T[];
   has_more: boolean;

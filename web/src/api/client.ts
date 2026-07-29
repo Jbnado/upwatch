@@ -1,8 +1,12 @@
 import {
   ApiError,
   type APIToken,
+  type Channel,
+  type ChannelInput,
+  type ChannelType,
   type CreatedToken,
   type Heartbeat,
+  type Incident,
   type Monitor,
   type MonitorInput,
   type Page,
@@ -122,6 +126,41 @@ export const api = {
 
   exportUrl: (id: number, params: { from?: string; to?: string; format: "csv" | "json" }) =>
     `${BASE}/monitors/${id}/export${query(params)}`,
+
+  // ---------- canais de aviso ----------
+
+  // A lista de tipos vem do servidor para a interface não manter uma cópia
+  // que sai de sincronia a cada canal novo.
+  channelTypes: () => request<{ items: ChannelType[] }>("/channel-types"),
+
+  listChannels: () => request<{ items: Channel[] }>("/channels"),
+
+  createChannel: (input: ChannelInput) =>
+    request<Channel>("/channels", { method: "POST", body: JSON.stringify(input) }),
+
+  updateChannel: (id: number, input: ChannelInput) =>
+    request<Channel>(`/channels/${id}`, { method: "PUT", body: JSON.stringify(input) }),
+
+  deleteChannel: (id: number) => request<void>(`/channels/${id}`, { method: "DELETE" }),
+
+  // A entrega é síncrona: quem apertou o botão está esperando saber se
+  // chegou de verdade.
+  testChannel: (id: number) =>
+    request<{ status: string }>(`/channels/${id}/test`, { method: "POST" }),
+
+  monitorChannels: (monitorID: number) =>
+    request<{ items: Channel[] }>(`/monitors/${monitorID}/channels`),
+
+  linkChannel: (monitorID: number, channelID: number) =>
+    request<void>(`/monitors/${monitorID}/channels/${channelID}`, { method: "PUT" }),
+
+  unlinkChannel: (monitorID: number, channelID: number) =>
+    request<void>(`/monitors/${monitorID}/channels/${channelID}`, { method: "DELETE" }),
+
+  // ---------- incidentes ----------
+
+  incidents: (params: { monitor_id?: number; open?: string; limit?: number } = {}) =>
+    request<Page<Incident>>(`/incidents${query(params)}`),
 };
 
 /**

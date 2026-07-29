@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
-import type { Heartbeat, Monitor, Rollup, Status } from "../api/types";
+import type { Heartbeat, Incident, Monitor, Rollup, Status } from "../api/types";
+import { MonitorChannels } from "./Channels";
 import { Pulse } from "../components/Pulse";
 import type { PulseSample } from "../components/pulse-bars";
 import { RangePicker } from "../components/RangePicker";
@@ -126,9 +127,12 @@ export function MonitorDetail({ id }: { id: number }) {
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div className="flex gap-8">
             <Stat label="disponibilidade" value={uptime(stats.uptimePercent)} />
-            <Stat label="p50" value={latency(stats.p50)} />
-            <Stat label="p95" value={latency(stats.p95)} />
-            <Stat label="p99" value={latency(stats.p99)} />
+            {/* Alvo que nunca respondeu não tem percentil: exibir zero
+                sugeriria resposta instantânea, que é o oposto do que
+                aconteceu. */}
+            <Stat label="p50" value={stats.p50 > 0 ? latency(stats.p50) : "—"} />
+            <Stat label="p95" value={stats.p95 > 0 ? latency(stats.p95) : "—"} />
+            <Stat label="p99" value={stats.p99 > 0 ? latency(stats.p99) : "—"} />
           </div>
           <RangePicker value={range} onChange={setRange} />
         </div>
@@ -162,6 +166,16 @@ export function MonitorDetail({ id }: { id: number }) {
       </section>
 
       <section className="flex flex-col gap-3">
+        <h2 className="eyebrow">quem é avisado quando este alvo cair</h2>
+        <MonitorChannels monitorID={monitor.id} />
+      </section>
+
+      <section className="flex flex-col gap-3">
+        <h2 className="eyebrow">quedas confirmadas</h2>
+        <Incidents monitorID={monitor.id} />
+      </section>
+
+      <section className="flex flex-col gap-3">
         <h2 className="eyebrow">últimas mudanças de estado</h2>
         <Events beats={beats} />
       </section>
@@ -190,6 +204,53 @@ function Stat({ label, value }: { label: string; value: string }) {
       <span className="eyebrow">{label}</span>
       <span className="tabular text-[22px] leading-tight tracking-tight">{value}</span>
     </div>
+  );
+}
+
+/**
+ * Incidents lista as quedas confirmadas.
+ *
+ * Diferente da lista de transições: aqui só entra o que passou pelo limiar
+ * de confirmação e gerou alerta. É o histórico que se leva para uma
+ * conversa sobre disponibilidade.
+ */
+function Incidents({ monitorID }: { monitorID: number }) {
+  const [items, setItems] = useState<Incident[] | null>(null);
+
+  useEffect(() => {
+    void api.incidents({ monitor_id: monitorID, limit: 20 }).then((page) => setItems(page.items));
+  }, [monitorID]);
+
+  if (items === null) return <p className="eyebrow">carregando</p>;
+
+  if (items.length === 0) {
+    return (
+      <Empty
+        title="Nenhuma queda confirmada"
+        description="Oscilação passageira não entra aqui: uma queda só é registrada depois de confirmada pelo número de falhas seguidas do monitor."
+      />
+    );
+  }
+
+  return (
+    <ul className="border-t border-line">
+      {items.map((i) => (
+        <li key={i.id} className="flex items-baseline justify-between gap-4 border-b border-line py-2">
+          <span className="flex min-w-0 items-baseline gap-3">
+            <StatusDot status={i.open ? "down" : "up"} />
+            <span className="tabular shrink-0 text-[13px]">
+              {i.open ? "em curso" : "resolvido"}
+            </span>
+            {i.cause && <span className="truncate text-[12px] text-ink-2">{i.cause}</span>}
+          </span>
+
+          <span className="flex shrink-0 items-baseline gap-3">
+            <span className="tabular text-[12px] text-ink">{duration(i.duration_seconds)}</span>
+            <span className="tabular text-[12px] text-ink-3">{stamp(i.started_at)}</span>
+          </span>
+        </li>
+      ))}
+    </ul>
   );
 }
 

@@ -4,6 +4,7 @@ import { ApiError, type APIToken } from "../api/types";
 import { Alert, Button, Empty, Field, Input } from "../components/ui";
 import { ago, stamp } from "../lib/format";
 import { navigate } from "../lib/router";
+import { Channels } from "./Channels";
 
 /** Ajustes: credenciais de acesso programático e troca de senha. */
 export function Settings({ onSignedOut }: { onSignedOut: () => void }) {
@@ -17,6 +18,7 @@ export function Settings({ onSignedOut }: { onSignedOut: () => void }) {
 
       <h1 className="text-[22px] font-semibold tracking-tight">Ajustes</h1>
 
+      <Channels />
       <Tokens />
       <Password onSignedOut={onSignedOut} />
     </div>
