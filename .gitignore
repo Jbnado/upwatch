@@ -1,0 +1,33 @@
+# Binaries
+/upwatch
+/upwatch.exe
+/dist/
+*.exe
+*.test
+
+# Go
+/vendor/
+*.out
+coverage.txt
+
+# Data
+*.db
+*.db-shm
+*.db-wal
+/data/
+
+# Frontend
+/web/node_modules/
+/web/dist/
+/internal/web/dist/
+
+# Env / local config
+.env
+.env.local
+upwatch.local.yaml
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
