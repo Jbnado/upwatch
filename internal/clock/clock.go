@@ -55,9 +55,10 @@ func (r *realTimer) Reset(d time.Duration) bool { return r.t.Reset(d) }
 
 // ---------- relógio falso ----------
 
+// blocker é uma espera por uma condição sobre os timers pendentes.
 type blocker struct {
-	n    int
-	done chan struct{}
+	ready func(pending []*fakeTimer) bool
+	done  chan struct{}
 }
 
 // Fake é um Clock controlado manualmente pelos testes.
@@ -94,9 +95,25 @@ func (f *Fake) NewTimer(d time.Duration) Timer {
 		deadline: f.now.Add(d),
 		ch:       make(chan time.Time, 1),
 	}
-	f.pending = append(f.pending, t)
-	f.releaseBlockersLocked()
+	if f.armLocked(t) {
+		f.releaseBlockersLocked()
+	}
 	return t
+}
+
+// armLocked enfileira o timer, ou o dispara na hora se já estiver vencido.
+//
+// Duração não positiva significa "já venceu", e é o time.Timer real
+// dispara de imediato nesse caso. Exigir um Advance aqui travaria para
+// sempre qualquer laço que arme um timer de zero para trabalho atrasado.
+// Devolve se o timer ficou pendente. Exige f.mu travado.
+func (f *Fake) armLocked(t *fakeTimer) bool {
+	if t.deadline.After(f.now) {
+		f.pending = append(f.pending, t)
+		return true
+	}
+	t.fire()
+	return false
 }
 
 // After é o atalho equivalente a NewTimer(d).C().
@@ -125,13 +142,7 @@ func (f *Fake) Advance(d time.Duration) {
 	sort.Slice(due, func(i, j int) bool { return due[i].deadline.Before(due[j].deadline) })
 
 	for _, t := range due {
-		// O valor entregue é o vencimento, não o "agora" após o salto: o
-		// scheduler calcula o próximo disparo a partir dele, e usar o
-		// tempo corrente acumularia deriva a cada volta.
-		select {
-		case t.ch <- t.deadline:
-		default:
-		}
+		t.fire()
 	}
 }
 
@@ -140,13 +151,35 @@ func (f *Fake) Advance(d time.Duration) {
 // Evita a corrida clássica de relógio falso: dar Advance antes de a
 // goroutine sob teste ter registrado seu timer.
 func (f *Fake) BlockUntil(n int) {
+	f.block(func(pending []*fakeTimer) bool { return len(pending) >= n })
+}
+
+// BlockUntilDeadline espera até haver um timer pendente que vença em at ou
+// antes.
+//
+// Contar timers não basta para sincronizar com um laço que mantém sempre
+// um armado: BlockUntil(1) já estaria satisfeito pelo timer da volta
+// anterior, e o Advance seguinte dispararia antes do rearme. Esperar pelo
+// vencimento específico elimina essa ambiguidade.
+func (f *Fake) BlockUntilDeadline(at time.Time) {
+	f.block(func(pending []*fakeTimer) bool {
+		for _, t := range pending {
+			if !t.deadline.After(at) {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+func (f *Fake) block(ready func([]*fakeTimer) bool) {
 	f.mu.Lock()
-	if len(f.pending) >= n {
+	if ready(f.pending) {
 		f.mu.Unlock()
 		return
 	}
 	done := make(chan struct{})
-	f.blockers = append(f.blockers, blocker{n: n, done: done})
+	f.blockers = append(f.blockers, blocker{ready: ready, done: done})
 	f.mu.Unlock()
 
 	<-done
@@ -155,10 +188,9 @@ func (f *Fake) BlockUntil(n int) {
 // releaseBlockersLocked libera quem já teve sua condição satisfeita.
 // Exige f.mu travado.
 func (f *Fake) releaseBlockersLocked() {
-	count := len(f.pending)
 	remaining := f.blockers[:0]
 	for _, b := range f.blockers {
-		if count >= b.n {
+		if b.ready(f.pending) {
 			close(b.done)
 			continue
 		}
@@ -175,6 +207,18 @@ type fakeTimer struct {
 
 func (t *fakeTimer) C() <-chan time.Time { return t.ch }
 
+// fire entrega o vencimento sem bloquear, como faz o time.Timer real.
+//
+// O valor é o instante do vencimento, não o "agora" após um salto: quem
+// calcula o próximo disparo a partir dele acumularia deriva se recebesse
+// o tempo corrente.
+func (t *fakeTimer) fire() {
+	select {
+	case t.ch <- t.deadline:
+	default:
+	}
+}
+
 func (t *fakeTimer) Stop() bool {
 	t.clock.mu.Lock()
 	defer t.clock.mu.Unlock()
@@ -187,8 +231,9 @@ func (t *fakeTimer) Reset(d time.Duration) bool {
 
 	wasPending := t.clock.removeLocked(t)
 	t.deadline = t.clock.now.Add(d)
-	t.clock.pending = append(t.clock.pending, t)
-	t.clock.releaseBlockersLocked()
+	if t.clock.armLocked(t) {
+		t.clock.releaseBlockersLocked()
+	}
 	return wasPending
 }
 

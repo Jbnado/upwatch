@@ -74,6 +74,41 @@ func TestFakeTimerDeliversDeadlineNotCurrentTime(t *testing.T) {
 	}
 }
 
+// Duração zero ou negativa significa "já venceu". O time.Timer real
+// dispara de imediato, e um agendador que arme um timer de zero para algo
+// vencido ficaria parado para sempre se o relógio falso exigisse Advance.
+func TestFakeTimerWithNonPositiveDurationFiresImmediately(t *testing.T) {
+	for _, d := range []time.Duration{0, -time.Second} {
+		t.Run(d.String(), func(t *testing.T) {
+			c := clock.NewFake(epoch)
+
+			timer := c.NewTimer(d)
+
+			select {
+			case tick := <-timer.C():
+				if !tick.Equal(epoch.Add(d)) {
+					t.Errorf("timer delivered %v, want %v", tick, epoch.Add(d))
+				}
+			default:
+				t.Fatal("timer with a non-positive duration did not fire immediately")
+			}
+		})
+	}
+}
+
+func TestFakeResetToNonPositiveDurationFiresImmediately(t *testing.T) {
+	c := clock.NewFake(epoch)
+	timer := c.NewTimer(time.Hour)
+
+	timer.Reset(0)
+
+	select {
+	case <-timer.C():
+	default:
+		t.Fatal("timer reset to zero did not fire immediately")
+	}
+}
+
 func TestFakeStopPreventsFiring(t *testing.T) {
 	c := clock.NewFake(epoch)
 	timer := c.NewTimer(time.Minute)
@@ -201,6 +236,82 @@ func TestFakeBlockUntilReturnsImmediatelyWhenAlreadySatisfied(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("BlockUntil blocked despite the waiter count already being met")
+	}
+}
+
+// Contar timers pendentes não basta para sincronizar com um laço que
+// mantém sempre um timer armado: BlockUntil(1) já estaria satisfeito pelo
+// timer anterior, e o Advance dispararia antes do rearme. Esperar pelo
+// vencimento específico elimina a ambiguidade.
+func TestFakeBlockUntilDeadlineWaitsForATimerDueByThatInstant(t *testing.T) {
+	c := clock.NewFake(epoch)
+	target := epoch.Add(time.Minute)
+
+	// Um timer que vence depois do alvo não satisfaz a espera.
+	c.NewTimer(time.Hour)
+
+	released := make(chan struct{})
+	go func() {
+		c.BlockUntilDeadline(target)
+		close(released)
+	}()
+
+	select {
+	case <-released:
+		t.Fatal("BlockUntilDeadline returned while only a later timer was pending")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	c.NewTimer(time.Minute)
+
+	select {
+	case <-released:
+	case <-time.After(2 * time.Second):
+		t.Fatal("BlockUntilDeadline did not return after a matching timer was armed")
+	}
+}
+
+func TestFakeBlockUntilDeadlineReturnsImmediatelyWhenSatisfied(t *testing.T) {
+	c := clock.NewFake(epoch)
+	c.NewTimer(30 * time.Second)
+
+	done := make(chan struct{})
+	go func() {
+		c.BlockUntilDeadline(epoch.Add(time.Minute))
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("BlockUntilDeadline blocked despite an earlier timer already pending")
+	}
+}
+
+// Reset conta como rearme: é assim que um laço troca o vencimento sem
+// alocar timer novo.
+func TestFakeBlockUntilDeadlineObservesReset(t *testing.T) {
+	c := clock.NewFake(epoch)
+	timer := c.NewTimer(time.Hour)
+
+	released := make(chan struct{})
+	go func() {
+		c.BlockUntilDeadline(epoch.Add(time.Minute))
+		close(released)
+	}()
+
+	select {
+	case <-released:
+		t.Fatal("BlockUntilDeadline returned before the timer was reset")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	timer.Reset(time.Minute)
+
+	select {
+	case <-released:
+	case <-time.After(2 * time.Second):
+		t.Fatal("BlockUntilDeadline did not observe the Reset")
 	}
 }
 
