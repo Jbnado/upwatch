@@ -5,8 +5,10 @@
 test:
 	go test ./... -race -count=1
 
+# Iteração local: pula a simulação de retenção de 30 dias, que domina o
+# tempo da suíte. O CI roda a suíte completa.
 test-fast:
-	go test ./... -count=1
+	go test ./... -short -count=1
 
 cover:
 	go test ./... -race -count=1 -coverprofile=coverage.out -covermode=atomic

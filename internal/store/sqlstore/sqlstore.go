@@ -47,6 +47,11 @@ func OpenSQLite(path string) (*Store, error) {
 	// Com WAL, NORMAL é durável contra queda de processo e evita um fsync
 	// por transação.
 	params.Add("_pragma", "synchronous(NORMAL)")
+	// Permite devolver espaço em lotes depois da poda, via Compact. Só
+	// tem efeito se definido antes de a primeira tabela existir — trocar
+	// depois exigiria um VACUUM completo, que reescreve o banco inteiro e
+	// o trava enquanto isso.
+	params.Add("_pragma", "auto_vacuum(incremental)")
 
 	db, err := sql.Open("sqlite", "file:"+path+"?"+params.Encode())
 	if err != nil {

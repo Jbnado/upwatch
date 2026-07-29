@@ -2,10 +2,13 @@ package sqlstore_test
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/bernardojoao/upwatch/internal/domain"
 	"github.com/bernardojoao/upwatch/internal/store"
 	"github.com/bernardojoao/upwatch/internal/store/sqlstore"
 	"github.com/bernardojoao/upwatch/internal/store/storetest"
@@ -98,6 +101,89 @@ func TestWALJournalModeIsEnabled(t *testing.T) {
 	}
 	if !strings.EqualFold(mode, "wal") {
 		t.Errorf("PRAGMA journal_mode = %q, want %q", mode, "wal")
+	}
+}
+
+// Apagar linhas no SQLite não encolhe o arquivo por si só: as páginas
+// ficam livres para reuso e o arquivo mantém o pico histórico. Sem
+// recuperar esse espaço, o banco pararia de crescer sem nunca devolver
+// nada — exatamente a queixa que levou o Uptime Kuma a expor um botão
+// manual de VACUUM.
+func TestCompactReclaimsSpaceAfterPruning(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "compact.db")
+	s, err := sqlstore.OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("OpenSQLite returned unexpected error: %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	m := domain.Monitor{
+		Name: "api", Type: domain.MonitorHTTP, Target: "https://example.com",
+		Interval: time.Minute, Timeout: 10 * time.Second,
+		ConfirmationThreshold: 1, Enabled: true,
+	}
+	if err := s.Monitors().Create(ctx, &m); err != nil {
+		t.Fatalf("Create returned unexpected error: %v", err)
+	}
+
+	base := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
+	const rows = 60_000
+	for chunk := 0; chunk < rows; chunk += 5_000 {
+		batch := make([]domain.Heartbeat, 0, 5_000)
+		for i := 0; i < 5_000; i++ {
+			batch = append(batch, domain.Heartbeat{
+				MonitorID: m.ID,
+				Timestamp: base.Add(time.Duration(chunk+i) * time.Second),
+				Status:    domain.StatusUp,
+				LatencyMS: 100,
+				Message:   "",
+			})
+		}
+		if err := s.WriteHeartbeats(ctx, batch); err != nil {
+			t.Fatalf("WriteHeartbeats returned unexpected error: %v", err)
+		}
+	}
+
+	peak := dbSize(t, path)
+
+	if _, err := s.PruneHeartbeats(ctx, base.Add(rows*time.Second)); err != nil {
+		t.Fatalf("PruneHeartbeats returned unexpected error: %v", err)
+	}
+	if err := s.Compact(ctx); err != nil {
+		t.Fatalf("Compact returned unexpected error: %v", err)
+	}
+
+	after := dbSize(t, path)
+	if after >= peak {
+		t.Errorf("database is %d bytes after compacting, want less than the %d byte peak", after, peak)
+	}
+}
+
+// dbSize soma o arquivo principal e o WAL, que é onde as páginas ficam
+// até o checkpoint.
+func dbSize(t *testing.T, path string) int64 {
+	t.Helper()
+
+	var total int64
+	for _, suffix := range []string{"", "-wal"} {
+		info, err := os.Stat(path + suffix)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			t.Fatalf("Stat(%s) returned unexpected error: %v", path+suffix, err)
+		}
+		total += info.Size()
+	}
+	return total
+}
+
+func TestCompactOnEmptyStoreIsHarmless(t *testing.T) {
+	s := newStore(t)
+
+	if err := s.Compact(context.Background()); err != nil {
+		t.Errorf("Compact on an empty store returned unexpected error: %v", err)
 	}
 }
 

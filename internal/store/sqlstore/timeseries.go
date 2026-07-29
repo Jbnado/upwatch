@@ -100,6 +100,56 @@ func (s *Store) QueryHeartbeats(ctx context.Context, q store.HeartbeatQuery) ([]
 	return out, nil
 }
 
+// StreamHeartbeats entrega todas as batidas da janela, sem teto.
+//
+// Caminho da agregação, separado do da API de propósito: um bucket diário
+// com check de um segundo tem 86.400 batidas, e passar pelo limite de
+// paginação truncaria a amostra em silêncio, produzindo percentis que não
+// descrevem período nenhum.
+//
+// As linhas são consumidas uma a uma em vez de materializadas numa fatia,
+// para o pico de memória não acompanhar o tamanho do bucket.
+func (s *Store) StreamHeartbeats(
+	ctx context.Context,
+	monitorID int64,
+	r store.TimeRange,
+	fn func(domain.Heartbeat) error,
+) error {
+	r = r.Normalize()
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT monitor_id, probe_id, ts, status, latency_ms, message
+		FROM heartbeat
+		WHERE monitor_id = ? AND ts >= ? AND ts < ?
+		ORDER BY ts`, monitorID, toMillis(r.From), toMillis(r.To))
+	if err != nil {
+		return fmt.Errorf("sqlstore: varrendo heartbeats: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			hb         domain.Heartbeat
+			ts         int64
+			statusName string
+		)
+		if err := rows.Scan(&hb.MonitorID, &hb.ProbeID, &ts, &statusName, &hb.LatencyMS, &hb.Message); err != nil {
+			return fmt.Errorf("sqlstore: lendo heartbeat: %w", err)
+		}
+		status, err := domain.ParseStatus(statusName)
+		if err != nil {
+			return fmt.Errorf("sqlstore: heartbeat do monitor %d: %w", hb.MonitorID, err)
+		}
+		hb.Status = status
+		hb.Timestamp = fromMillis(ts)
+
+		if err := fn(hb); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
 // WriteRollups grava agregados de forma idempotente.
 //
 // Reescrever um bucket substitui a linha em vez de criar outra: uma
@@ -240,6 +290,43 @@ func (s *Store) PruneRollups(ctx context.Context, res domain.Resolution, before 
 		return 0, fmt.Errorf("sqlstore: contando rollups podados: %w", err)
 	}
 	return n, nil
+}
+
+// Compact devolve ao sistema de arquivos o espaço liberado pela poda.
+//
+// Apagar linhas não encolhe o banco por si só: as páginas ficam livres
+// para reuso e o arquivo mantém o pico histórico. Sem esta etapa o UpWatch
+// pararia de crescer sem nunca devolver espaço, que é a queixa por trás do
+// botão manual de VACUUM do Uptime Kuma.
+//
+// Usa vacuum incremental em vez do completo: o completo reescreve o banco
+// inteiro e o mantém travado durante todo o processo, enquanto o
+// incremental devolve páginas aos poucos sem interromper o monitoramento.
+// O checkpoint anterior é necessário porque, em WAL, as páginas liberadas
+// ficam no diário até serem consolidadas.
+func (s *Store) Compact(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		return fmt.Errorf("sqlstore: consolidando o diário WAL: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `PRAGMA incremental_vacuum`); err != nil {
+		return fmt.Errorf("sqlstore: recuperando espaço: %w", err)
+	}
+	return nil
+}
+
+// OldestHeartbeat devolve o instante da batida mais antiga preservada.
+//
+// Usa o índice sobre ts, o mesmo que serve à poda, então o custo é o de
+// ler a primeira entrada da árvore e não o de varrer a tabela.
+func (s *Store) OldestHeartbeat(ctx context.Context) (time.Time, bool, error) {
+	var ms sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, `SELECT MIN(ts) FROM heartbeat`).Scan(&ms); err != nil {
+		return time.Time{}, false, fmt.Errorf("sqlstore: lendo batida mais antiga: %w", err)
+	}
+	if !ms.Valid {
+		return time.Time{}, false, nil
+	}
+	return fromMillis(ms.Int64), true, nil
 }
 
 // RollupWatermark devolve o último bucket já agregado na resolução.

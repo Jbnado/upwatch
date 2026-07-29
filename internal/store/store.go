@@ -149,6 +149,17 @@ type TimeseriesStore interface {
 	WriteHeartbeats(ctx context.Context, hbs []domain.Heartbeat) error
 	QueryHeartbeats(ctx context.Context, q HeartbeatQuery) ([]domain.Heartbeat, error)
 
+	// StreamHeartbeats entrega todas as batidas da janela, em ordem
+	// cronológica e sem teto de paginação.
+	//
+	// É o caminho da agregação, deliberadamente separado do da API. Um
+	// bucket diário com check de um segundo tem 86.400 batidas; passar
+	// pelo limite de paginação truncaria a amostra em silêncio e
+	// produziria percentis que não descrevem período nenhum.
+	//
+	// Interromper devolvendo erro em fn aborta a varredura com esse erro.
+	StreamHeartbeats(ctx context.Context, monitorID int64, r TimeRange, fn func(domain.Heartbeat) error) error
+
 	// WriteRollups é idempotente: reprocessar um bucket sobrescreve em vez
 	// de duplicar, para que uma reexecução após falha seja segura.
 	WriteRollups(ctx context.Context, rs []domain.Rollup) error
@@ -159,6 +170,27 @@ type TimeseriesStore interface {
 	// inversa perderia o dado para sempre.
 	PruneHeartbeats(ctx context.Context, before time.Time) (int64, error)
 	PruneRollups(ctx context.Context, res domain.Resolution, before time.Time) (int64, error)
+
+	// Compact devolve ao sistema o espaço liberado pela poda.
+	//
+	// Apagar linhas não encolhe o arquivo no SQLite: as páginas ficam
+	// livres para reuso, mas o arquivo mantém o pico histórico. Sem esta
+	// etapa o banco pararia de crescer sem nunca devolver espaço — é o
+	// motivo de o Uptime Kuma expor um botão manual de VACUUM.
+	//
+	// Backends com manutenção automática, como o PostgreSQL, podem não
+	// fazer nada aqui.
+	Compact(ctx context.Context) error
+
+	// OldestHeartbeat é o instante da batida mais antiga preservada, e se
+	// existe alguma.
+	//
+	// É por onde a agregação começa quando não há marca d'água. Assumir
+	// que nada mais velho que a janela de retenção sobreviveu seria errado
+	// justamente no primeiro ciclo: a poda só roda depois da agregação,
+	// então o dado antigo ainda está lá e precisa virar estatística antes
+	// de sumir.
+	OldestHeartbeat(ctx context.Context) (time.Time, bool, error)
 
 	// RollupWatermark é o último bucket já agregado numa resolução.
 	// Zero quando nada foi processado ainda.

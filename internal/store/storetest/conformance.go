@@ -62,6 +62,10 @@ func RunConformance(t *testing.T, newStore Factory) {
 		{"HeartbeatQueryEmptyRangeReturnsNothing", testHeartbeatQueryEmptyRangeReturnsNothing},
 		{"HeartbeatQueryRespectsLimit", testHeartbeatQueryRespectsLimit},
 		{"HeartbeatQueryReturnsChronologicalOrder", testHeartbeatQueryReturnsChronologicalOrder},
+		{"StreamHeartbeatsIgnoresPaginationCap", testStreamHeartbeatsIgnoresPaginationCap},
+		{"StreamHeartbeatsRespectsRange", testStreamHeartbeatsRespectsRange},
+		{"StreamHeartbeatsIsChronological", testStreamHeartbeatsIsChronological},
+		{"StreamHeartbeatsPropagatesCallbackError", testStreamHeartbeatsPropagatesCallbackError},
 
 		{"RollupWriteAndQuery", testRollupWriteAndQuery},
 		{"RollupWriteIsIdempotent", testRollupWriteIsIdempotent},
@@ -73,6 +77,8 @@ func RunConformance(t *testing.T, newStore Factory) {
 		{"PruneHeartbeatsReportsCount", testPruneHeartbeatsReportsCount},
 		{"PruneRollupsOnlyAffectsGivenResolution", testPruneRollupsOnlyAffectsGivenResolution},
 
+		{"OldestHeartbeatOnEmptyStore", testOldestHeartbeatOnEmptyStore},
+		{"OldestHeartbeatFindsEarliest", testOldestHeartbeatFindsEarliest},
 		{"WatermarkStartsZero", testWatermarkStartsZero},
 		{"WatermarkRoundTrips", testWatermarkRoundTrips},
 		{"WatermarkIsPerResolution", testWatermarkIsPerResolution},
@@ -762,6 +768,126 @@ func testHeartbeatQueryReturnsChronologicalOrder(t *testing.T, newStore Factory)
 	}
 }
 
+// A agregação precisa enxergar o bucket inteiro. Um bucket diário com
+// check de um segundo tem 86.400 batidas; se o stream respeitasse o teto
+// de paginação, os percentis descreveriam apenas as primeiras 500.
+func testStreamHeartbeatsIgnoresPaginationCap(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	id := mustCreateMonitor(t, s, "api")
+
+	total := store.MaxPageSize * 3
+	batch := make([]domain.Heartbeat, 0, total)
+	for i := 0; i < total; i++ {
+		batch = append(batch, beat(id, time.Duration(i)*time.Second, domain.StatusUp, int64(i)))
+	}
+	if err := s.WriteHeartbeats(ctx, batch); err != nil {
+		t.Fatalf("WriteHeartbeats returned unexpected error: %v", err)
+	}
+
+	seen := 0
+	err := s.StreamHeartbeats(ctx, id, fullRange(), func(domain.Heartbeat) error {
+		seen++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamHeartbeats returned unexpected error: %v", err)
+	}
+
+	if seen != total {
+		t.Errorf("streamed %d heartbeats, want %d", seen, total)
+	}
+}
+
+func testStreamHeartbeatsRespectsRange(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	id := mustCreateMonitor(t, s, "api")
+
+	if err := s.WriteHeartbeats(ctx, []domain.Heartbeat{
+		beat(id, -time.Second, domain.StatusUp, 1), // antes
+		beat(id, 0, domain.StatusUp, 2),            // início inclusivo
+		beat(id, 30*time.Second, domain.StatusUp, 3),
+		beat(id, time.Minute, domain.StatusUp, 4), // fim exclusivo
+	}); err != nil {
+		t.Fatalf("WriteHeartbeats returned unexpected error: %v", err)
+	}
+
+	var seen []int64
+	err := s.StreamHeartbeats(ctx, id,
+		store.TimeRange{From: epoch, To: epoch.Add(time.Minute)},
+		func(hb domain.Heartbeat) error {
+			seen = append(seen, hb.LatencyMS)
+			return nil
+		})
+	if err != nil {
+		t.Fatalf("StreamHeartbeats returned unexpected error: %v", err)
+	}
+
+	if len(seen) != 2 || seen[0] != 2 || seen[1] != 3 {
+		t.Errorf("streamed latencies %v, want [2 3]", seen)
+	}
+}
+
+func testStreamHeartbeatsIsChronological(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	id := mustCreateMonitor(t, s, "api")
+
+	if err := s.WriteHeartbeats(ctx, []domain.Heartbeat{
+		beat(id, 2*time.Minute, domain.StatusUp, 3),
+		beat(id, 0, domain.StatusUp, 1),
+		beat(id, time.Minute, domain.StatusUp, 2),
+	}); err != nil {
+		t.Fatalf("WriteHeartbeats returned unexpected error: %v", err)
+	}
+
+	var last time.Time
+	err := s.StreamHeartbeats(ctx, id, fullRange(), func(hb domain.Heartbeat) error {
+		if !last.IsZero() && hb.Timestamp.Before(last) {
+			t.Errorf("heartbeat at %v followed %v: stream is not chronological", hb.Timestamp, last)
+		}
+		last = hb.Timestamp
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamHeartbeats returned unexpected error: %v", err)
+	}
+}
+
+// Interromper precisa abortar a varredura, não continuar lendo milhões de
+// linhas depois de o consumidor já ter desistido.
+func testStreamHeartbeatsPropagatesCallbackError(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	id := mustCreateMonitor(t, s, "api")
+
+	var batch []domain.Heartbeat
+	for i := 0; i < 100; i++ {
+		batch = append(batch, beat(id, time.Duration(i)*time.Second, domain.StatusUp, 1))
+	}
+	if err := s.WriteHeartbeats(ctx, batch); err != nil {
+		t.Fatalf("WriteHeartbeats returned unexpected error: %v", err)
+	}
+
+	sentinel := errors.New("chega")
+	seen := 0
+	err := s.StreamHeartbeats(ctx, id, fullRange(), func(domain.Heartbeat) error {
+		seen++
+		if seen == 3 {
+			return sentinel
+		}
+		return nil
+	})
+
+	if !errors.Is(err, sentinel) {
+		t.Errorf("StreamHeartbeats returned %v, want the callback error", err)
+	}
+	if seen != 3 {
+		t.Errorf("callback ran %d times, want the scan to stop at 3", seen)
+	}
+}
+
 // ---------- rollups ----------
 
 func sampleRollup(monitorID int64, res domain.Resolution, bucket time.Time) domain.Rollup {
@@ -1023,6 +1149,46 @@ func testPruneRollupsOnlyAffectsGivenResolution(t *testing.T, newStore Factory) 
 	}
 	if len(daily) != 1 {
 		t.Errorf("found %d daily rollups after pruning hourly, want 1", len(daily))
+	}
+}
+
+func testOldestHeartbeatOnEmptyStore(t *testing.T, newStore Factory) {
+	s := newStore(t)
+
+	_, ok, err := s.OldestHeartbeat(context.Background())
+	if err != nil {
+		t.Fatalf("OldestHeartbeat returned unexpected error: %v", err)
+	}
+	if ok {
+		t.Error("OldestHeartbeat reported a heartbeat on an empty store, want none")
+	}
+}
+
+// É por onde a agregação começa quando não há marca d'água; errar aqui
+// deixaria batidas serem podadas sem nunca virarem estatística.
+func testOldestHeartbeatFindsEarliest(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	first := mustCreateMonitor(t, s, "primeiro")
+	second := mustCreateMonitor(t, s, "segundo")
+
+	if err := s.WriteHeartbeats(ctx, []domain.Heartbeat{
+		beat(first, time.Hour, domain.StatusUp, 1),
+		beat(second, -3*time.Hour, domain.StatusUp, 1), // a mais antiga, de outro monitor
+		beat(first, 0, domain.StatusUp, 1),
+	}); err != nil {
+		t.Fatalf("WriteHeartbeats returned unexpected error: %v", err)
+	}
+
+	got, ok, err := s.OldestHeartbeat(ctx)
+	if err != nil {
+		t.Fatalf("OldestHeartbeat returned unexpected error: %v", err)
+	}
+	if !ok {
+		t.Fatal("OldestHeartbeat reported no heartbeat, want the earliest one")
+	}
+	if want := epoch.Add(-3 * time.Hour); !got.Equal(want) {
+		t.Errorf("OldestHeartbeat = %v, want %v", got, want)
 	}
 }
 
