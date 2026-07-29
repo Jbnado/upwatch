@@ -60,8 +60,13 @@ func Aggregate(b Bucket, hbs []domain.Heartbeat) domain.Rollup {
 			out.Up++
 		case domain.StatusDegraded:
 			out.Degraded++
-		default:
+		case domain.StatusDown:
 			out.Down++
+		default:
+			// Unknown fica separado: o check rodou mas não observou nada,
+			// e tratá-lo como queda cobraria do alvo um problema que não é
+			// dele.
+			out.Unknown++
 		}
 
 		// Só amostra que obteve resposta entra na latência: incluir uma

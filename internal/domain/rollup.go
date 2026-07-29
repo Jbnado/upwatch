@@ -13,10 +13,19 @@ type Rollup struct {
 	Resolution  Resolution `json:"resolution"`
 	BucketStart time.Time  `json:"bucket_start"`
 
-	Total    int `json:"total"`
+	// Total é quantos checks foram executados no bucket, inclusive os que
+	// não produziram medição.
+	Total int `json:"total"`
+
 	Up       int `json:"up"`
 	Down     int `json:"down"`
 	Degraded int `json:"degraded"`
+
+	// Unknown são checks que não observaram nada: a rede do próprio host
+	// de monitoramento caiu, ou o monitor push ainda não recebeu sinal.
+	// Ficam fora do cálculo de disponibilidade porque cobrá-los do alvo
+	// corromperia o número de SLA.
+	Unknown int `json:"unknown"`
 
 	// Estatísticas de latência, calculadas apenas sobre amostras
 	// responsivas. Percentis são exatos: derivamos horário e diário
@@ -30,14 +39,23 @@ type Rollup struct {
 	LatencyP99MS   float64 `json:"latency_p99_ms"`
 }
 
-// UptimePercent é a fração de amostras em que o serviço respondeu.
+// Observed é quantos checks de fato mediram alguma coisa.
+func (r Rollup) Observed() int { return r.Up + r.Degraded + r.Down }
+
+// UptimePercent é a fração de amostras observadas em que o serviço
+// respondeu.
 //
 // Degradado conta como disponível: o serviço respondeu, apenas devagar.
-// Bucket sem amostra devolve 0 — não houve observação, e reportar 100%
-// inventaria disponibilidade que ninguém mediu.
+// Amostras sem observação ficam fora do denominador — uma queda de rede
+// do próprio monitor não é indisponibilidade do alvo, e contá-la
+// corromperia o número de SLA.
+//
+// Bucket sem observação devolve 0: reportar 100% inventaria
+// disponibilidade que ninguém mediu.
 func (r Rollup) UptimePercent() float64 {
-	if r.Total <= 0 {
+	observed := r.Observed()
+	if observed <= 0 {
 		return 0
 	}
-	return float64(r.Total-r.Down) / float64(r.Total) * 100
+	return float64(observed-r.Down) / float64(observed) * 100
 }

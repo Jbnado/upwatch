@@ -40,10 +40,26 @@ type Checker interface {
 	ValidateConfig(cfg json.RawMessage) error
 }
 
+// NetworkProbe informa se a rede do próprio host de monitoramento está
+// funcional.
+type NetworkProbe interface {
+	NetworkUp(ctx context.Context) bool
+}
+
 // Registry resolve o Checker de cada monitor e aplica as regras comuns a
 // todos os tipos.
 type Registry struct {
-	byType map[domain.MonitorType]Checker
+	byType  map[domain.MonitorType]Checker
+	network NetworkProbe
+}
+
+// WithNetworkProbe liga a sentinela de rede ao registry.
+//
+// Sem ela, perder conectividade faz todos os monitores falharem juntos e
+// dispara uma tempestade de alertas sobre serviços que continuam no ar.
+func (r *Registry) WithNetworkProbe(p NetworkProbe) *Registry {
+	r.network = p
+	return r
 }
 
 // NewRegistry monta o registry.
@@ -101,7 +117,34 @@ func (r *Registry) Check(ctx context.Context, m domain.Monitor) Result {
 	}
 
 	res := safeCheck(ctx, c, m)
-	return applyDegradedLatency(res, m)
+	res = applyDegradedLatency(res, m)
+	return r.applyNetworkSentinel(ctx, res)
+}
+
+// applyNetworkSentinel converte falha em "desconhecido" quando a própria
+// rede do monitor está fora.
+//
+// A sentinela só é consultada diante de uma falha: uma resposta bem
+// sucedida já provou que a rede funciona, e sondá-la no caminho feliz
+// seria tráfego desperdiçado a cada verificação.
+//
+// O resultado vira Unknown em vez de Up porque não houve medição — e
+// Unknown fica fora do cálculo de disponibilidade, de modo que um problema
+// de rede do monitor não é cobrado do alvo.
+func (r *Registry) applyNetworkSentinel(ctx context.Context, res Result) Result {
+	if r.network == nil || res.Status != domain.StatusDown {
+		return res
+	}
+	if r.network.NetworkUp(ctx) {
+		return res
+	}
+
+	return Result{
+		Status: domain.StatusUnknown,
+		Meta:   res.Meta,
+		Message: fmt.Sprintf(
+			"rede do monitor indisponível; resultado descartado (falha original: %s)", res.Message),
+	}
 }
 
 // safeCheck isola um pânico do checker.

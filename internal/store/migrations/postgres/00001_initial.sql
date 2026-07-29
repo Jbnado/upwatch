@@ -53,6 +53,8 @@ CREATE TABLE rollup (
     up              BIGINT           NOT NULL DEFAULT 0,
     down            BIGINT           NOT NULL DEFAULT 0,
     degraded        BIGINT           NOT NULL DEFAULT 0,
+    -- Checks que rodaram sem observar nada; fora do cálculo de SLA.
+    unknown         BIGINT           NOT NULL DEFAULT 0,
 
     latency_samples BIGINT           NOT NULL DEFAULT 0,
     latency_avg_ms  DOUBLE PRECISION NOT NULL DEFAULT 0,
@@ -67,6 +69,14 @@ CREATE TABLE rollup (
 
 CREATE INDEX idx_rollup_prune ON rollup (resolution, bucket_start);
 
+-- Último sinal recebido de cada monitor push. Separado das batidas porque
+-- o checker de push grava uma a cada verificação; ler a última batida
+-- seria ler a que ele mesmo acabou de escrever.
+CREATE TABLE push_state (
+    monitor_id BIGINT NOT NULL PRIMARY KEY REFERENCES monitor (id) ON DELETE CASCADE,
+    last_push  BIGINT NOT NULL
+);
+
 CREATE TABLE rollup_state (
     resolution  TEXT   NOT NULL PRIMARY KEY,
     last_bucket BIGINT NOT NULL
@@ -74,6 +84,7 @@ CREATE TABLE rollup_state (
 
 -- +goose Down
 DROP TABLE rollup_state;
+DROP TABLE push_state;
 DROP TABLE rollup;
 DROP TABLE heartbeat;
 DROP TABLE monitor;

@@ -72,6 +72,10 @@ CREATE TABLE rollup (
     up              INTEGER NOT NULL DEFAULT 0,
     down            INTEGER NOT NULL DEFAULT 0,
     degraded        INTEGER NOT NULL DEFAULT 0,
+    -- Checks que rodaram sem observar nada: rede do próprio monitor fora
+    -- do ar, ou monitor push ainda sem sinal. Ficam fora do cálculo de
+    -- disponibilidade para não cobrar do alvo um problema alheio.
+    unknown         INTEGER NOT NULL DEFAULT 0,
 
     -- Percentis exatos, derivados sempre das batidas cruas. Derivar o
     -- diário a partir do horário produziria percentil de percentil, que
@@ -89,6 +93,17 @@ CREATE TABLE rollup (
 
 CREATE INDEX idx_rollup_prune ON rollup (resolution, bucket_start);
 
+-- Último sinal recebido de cada monitor push.
+--
+-- Tabela separada de propósito: o checker de push precisa comparar o
+-- instante do sinal com o momento atual, e ele próprio grava uma batida a
+-- cada verificação. Se lesse a última batida, leria a que acabou de
+-- escrever, e o monitor pareceria eternamente saudável.
+CREATE TABLE push_state (
+    monitor_id INTEGER NOT NULL PRIMARY KEY REFERENCES monitor (id) ON DELETE CASCADE,
+    last_push  INTEGER NOT NULL
+) WITHOUT ROWID;
+
 -- Marca d'água da agregação: até onde cada resolução já foi processada.
 -- Permite que um reinício não reprocesse nem pule buckets.
 CREATE TABLE rollup_state (
@@ -98,6 +113,7 @@ CREATE TABLE rollup_state (
 
 -- +goose Down
 DROP TABLE rollup_state;
+DROP TABLE push_state;
 DROP TABLE rollup;
 DROP TABLE heartbeat;
 DROP TABLE monitor;

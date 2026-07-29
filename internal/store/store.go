@@ -171,6 +171,17 @@ type TimeseriesStore interface {
 	PruneHeartbeats(ctx context.Context, before time.Time) (int64, error)
 	PruneRollups(ctx context.Context, res domain.Resolution, before time.Time) (int64, error)
 
+	// RecordPush registra o sinal recebido de um monitor push.
+	//
+	// Vive fora das batidas de propósito: o checker de push grava uma
+	// batida a cada verificação, então ler a última batida seria ler a
+	// que ele próprio acabou de escrever, e o monitor pareceria
+	// eternamente saudável.
+	RecordPush(ctx context.Context, monitorID int64, at time.Time) error
+
+	// LastPush devolve o instante do último sinal, e se houve algum.
+	LastPush(ctx context.Context, monitorID int64) (time.Time, bool, error)
+
 	// Compact devolve ao sistema o espaço liberado pela poda.
 	//
 	// Apagar linhas não encolhe o arquivo no SQLite: as páginas ficam

@@ -164,15 +164,16 @@ func (s *Store) WriteRollups(ctx context.Context, rs []domain.Rollup) error {
 		const q = `
 			INSERT INTO rollup (
 				monitor_id, probe_id, resolution, bucket_start,
-				total, up, down, degraded,
+				total, up, down, degraded, unknown,
 				latency_samples, latency_avg_ms, latency_min_ms, latency_max_ms,
 				latency_p50_ms, latency_p95_ms, latency_p99_ms
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (monitor_id, probe_id, resolution, bucket_start) DO UPDATE SET
 				total           = excluded.total,
 				up              = excluded.up,
 				down            = excluded.down,
 				degraded        = excluded.degraded,
+				unknown         = excluded.unknown,
 				latency_samples = excluded.latency_samples,
 				latency_avg_ms  = excluded.latency_avg_ms,
 				latency_min_ms  = excluded.latency_min_ms,
@@ -194,7 +195,7 @@ func (s *Store) WriteRollups(ctx context.Context, rs []domain.Rollup) error {
 			}
 			if _, err := stmt.ExecContext(ctx,
 				r.MonitorID, probeID, r.Resolution.String(), toMillis(r.BucketStart),
-				r.Total, r.Up, r.Down, r.Degraded,
+				r.Total, r.Up, r.Down, r.Degraded, r.Unknown,
 				r.LatencySamples, r.LatencyAvgMS, r.LatencyMinMS, r.LatencyMaxMS,
 				r.LatencyP50MS, r.LatencyP95MS, r.LatencyP99MS,
 			); err != nil {
@@ -212,7 +213,7 @@ func (s *Store) QueryRollups(ctx context.Context, q store.RollupQuery) ([]domain
 	args := []any{q.MonitorID, q.Resolution.String(), toMillis(q.Range.From), toMillis(q.Range.To)}
 	sqlText := `
 		SELECT monitor_id, probe_id, resolution, bucket_start,
-		       total, up, down, degraded,
+		       total, up, down, degraded, unknown,
 		       latency_samples, latency_avg_ms, latency_min_ms, latency_max_ms,
 		       latency_p50_ms, latency_p95_ms, latency_p99_ms
 		FROM rollup
@@ -238,7 +239,7 @@ func (s *Store) QueryRollups(ctx context.Context, q store.RollupQuery) ([]domain
 		)
 		if err := rows.Scan(
 			&r.MonitorID, &r.ProbeID, &resName, &bucket,
-			&r.Total, &r.Up, &r.Down, &r.Degraded,
+			&r.Total, &r.Up, &r.Down, &r.Degraded, &r.Unknown,
 			&r.LatencySamples, &r.LatencyAvgMS, &r.LatencyMinMS, &r.LatencyMaxMS,
 			&r.LatencyP50MS, &r.LatencyP95MS, &r.LatencyP99MS,
 		); err != nil {
@@ -290,6 +291,37 @@ func (s *Store) PruneRollups(ctx context.Context, res domain.Resolution, before 
 		return 0, fmt.Errorf("sqlstore: contando rollups podados: %w", err)
 	}
 	return n, nil
+}
+
+// RecordPush registra o sinal recebido de um monitor push.
+//
+// Sobrescreve em vez de acumular: um cron que bate a cada minuto criaria
+// milhares de linhas por dia sem que nenhuma delas fosse útil depois da
+// seguinte.
+func (s *Store) RecordPush(ctx context.Context, monitorID int64, at time.Time) error {
+	const q = `
+		INSERT INTO push_state (monitor_id, last_push) VALUES (?, ?)
+		ON CONFLICT (monitor_id) DO UPDATE SET last_push = excluded.last_push`
+
+	if _, err := s.db.ExecContext(ctx, q, monitorID, toMillis(at)); err != nil {
+		return fmt.Errorf("sqlstore: registrando push do monitor %d: %w", monitorID, err)
+	}
+	return nil
+}
+
+// LastPush devolve o instante do último sinal recebido.
+func (s *Store) LastPush(ctx context.Context, monitorID int64) (time.Time, bool, error) {
+	var ms int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT last_push FROM push_state WHERE monitor_id = ?`, monitorID).Scan(&ms)
+
+	switch {
+	case err == sql.ErrNoRows:
+		return time.Time{}, false, nil
+	case err != nil:
+		return time.Time{}, false, fmt.Errorf("sqlstore: lendo push do monitor %d: %w", monitorID, err)
+	}
+	return fromMillis(ms), true, nil
 }
 
 // Compact devolve ao sistema de arquivos o espaço liberado pela poda.

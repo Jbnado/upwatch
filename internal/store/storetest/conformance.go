@@ -77,6 +77,10 @@ func RunConformance(t *testing.T, newStore Factory) {
 		{"PruneHeartbeatsReportsCount", testPruneHeartbeatsReportsCount},
 		{"PruneRollupsOnlyAffectsGivenResolution", testPruneRollupsOnlyAffectsGivenResolution},
 
+		{"PushStateStartsEmpty", testPushStateStartsEmpty},
+		{"PushStateRoundTrips", testPushStateRoundTrips},
+		{"PushStateIsPerMonitor", testPushStateIsPerMonitor},
+		{"PushStateCascadesOnMonitorDelete", testPushStateCascadesOnMonitorDelete},
 		{"OldestHeartbeatOnEmptyStore", testOldestHeartbeatOnEmptyStore},
 		{"OldestHeartbeatFindsEarliest", testOldestHeartbeatFindsEarliest},
 		{"WatermarkStartsZero", testWatermarkStartsZero},
@@ -1149,6 +1153,86 @@ func testPruneRollupsOnlyAffectsGivenResolution(t *testing.T, newStore Factory) 
 	}
 	if len(daily) != 1 {
 		t.Errorf("found %d daily rollups after pruning hourly, want 1", len(daily))
+	}
+}
+
+// ---------- sinal de push ----------
+
+func testPushStateStartsEmpty(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	id := mustCreateMonitor(t, s, "cron noturno")
+
+	_, ok, err := s.LastPush(context.Background(), id)
+	if err != nil {
+		t.Fatalf("LastPush returned unexpected error: %v", err)
+	}
+	if ok {
+		t.Error("LastPush reported a signal on a monitor that never pushed, want none")
+	}
+}
+
+// Reenviar avança o instante em vez de acumular linhas: um cron que bate a
+// cada minuto criaria milhares de registros por dia.
+func testPushStateRoundTrips(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	id := mustCreateMonitor(t, s, "cron noturno")
+
+	if err := s.RecordPush(ctx, id, epoch); err != nil {
+		t.Fatalf("RecordPush returned unexpected error: %v", err)
+	}
+	got, ok, err := s.LastPush(ctx, id)
+	if err != nil {
+		t.Fatalf("LastPush returned unexpected error: %v", err)
+	}
+	if !ok || !got.Equal(epoch) {
+		t.Fatalf("LastPush = (%v, %v), want (%v, true)", got, ok, epoch)
+	}
+
+	later := epoch.Add(time.Hour)
+	if err := s.RecordPush(ctx, id, later); err != nil {
+		t.Fatalf("second RecordPush returned unexpected error: %v", err)
+	}
+	got, _, err = s.LastPush(ctx, id)
+	if err != nil {
+		t.Fatalf("LastPush returned unexpected error: %v", err)
+	}
+	if !got.Equal(later) {
+		t.Errorf("LastPush = %v, want %v", got, later)
+	}
+}
+
+func testPushStateIsPerMonitor(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	first := mustCreateMonitor(t, s, "cron A")
+	second := mustCreateMonitor(t, s, "cron B")
+
+	if err := s.RecordPush(ctx, first, epoch); err != nil {
+		t.Fatalf("RecordPush returned unexpected error: %v", err)
+	}
+
+	if _, ok, _ := s.LastPush(ctx, second); ok {
+		t.Error("a push on one monitor showed up on another")
+	}
+}
+
+func testPushStateCascadesOnMonitorDelete(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	id := mustCreateMonitor(t, s, "cron noturno")
+
+	if err := s.RecordPush(ctx, id, epoch); err != nil {
+		t.Fatalf("RecordPush returned unexpected error: %v", err)
+	}
+	if err := s.Monitors().Delete(ctx, id); err != nil {
+		t.Fatalf("Delete returned unexpected error: %v", err)
+	}
+
+	if _, ok, err := s.LastPush(ctx, id); err != nil {
+		t.Fatalf("LastPush returned unexpected error: %v", err)
+	} else if ok {
+		t.Error("push state survived the monitor being deleted, want it cascaded away")
 	}
 }
 

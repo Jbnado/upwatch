@@ -35,6 +35,50 @@ func TestRollupUptimePercent(t *testing.T) {
 	}
 }
 
+// Amostra sem medição não pode contar contra o alvo. A rede do próprio
+// host de monitoramento caindo, ou um monitor push que ainda não recebeu
+// o primeiro sinal, produzem Unknown — e cobrar isso do alvo corromperia
+// exatamente o número de SLA que se exporta para a gestão.
+func TestRollupUptimePercentExcludesUnobservedSamples(t *testing.T) {
+	tests := []struct {
+		name    string
+		up      int
+		down    int
+		unknown int
+		want    float64
+	}{
+		{"desconhecido não conta como queda", 90, 10, 100, 90},
+		{"só desconhecido não afirma nada", 0, 0, 50, 0},
+		{"tudo no ar apesar do desconhecido", 50, 0, 50, 100},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := domain.Rollup{Up: tt.up, Down: tt.down, Unknown: tt.unknown}
+			r.Total = tt.up + tt.down + tt.unknown
+
+			if got := r.UptimePercent(); got != tt.want {
+				t.Errorf("UptimePercent() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// Total conta tudo o que foi executado, inclusive o que não produziu
+// medição: é a diferença entre "quantos checks rodaram" e "quantos
+// observaram alguma coisa".
+func TestRollupObservedCountsOnlyMeasuredSamples(t *testing.T) {
+	r := domain.Rollup{Up: 40, Degraded: 5, Down: 5, Unknown: 50}
+	r.Total = 100
+
+	if got := r.Observed(); got != 50 {
+		t.Errorf("Observed() = %d, want 50", got)
+	}
+	if r.Total != 100 {
+		t.Errorf("Total = %d, want 100: every executed check counts", r.Total)
+	}
+}
+
 // Bucket sem amostra nenhuma não pode dividir por zero nem reportar 100%
 // de disponibilidade — não houve observação.
 func TestRollupUptimePercentOnEmptyBucketIsZero(t *testing.T) {
