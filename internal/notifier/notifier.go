@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/bernardojoao/upwatch/internal/domain"
-	"github.com/bernardojoao/upwatch/internal/incident"
 )
 
 // sendTimeout limita cada entrega.
@@ -28,7 +27,7 @@ const sendTimeout = 10 * time.Second
 // Notification é o que se quer contar.
 type Notification struct {
 	Monitor domain.Monitor
-	Event   incident.Event
+	Event   domain.StateChange
 	// Message é a causa observada, quando houver. É o que decide se
 	// alguém precisa levantar da cadeira.
 	Message string
@@ -69,14 +68,14 @@ func Render(n Notification) string {
 	nome := n.Monitor.Name
 
 	switch n.Event.Kind {
-	case incident.KindDown:
+	case domain.ChangeDown:
 		texto := fmt.Sprintf("%s está fora do ar", nome)
 		if n.Message != "" {
 			texto += ": " + n.Message
 		}
 		return texto
 
-	case incident.KindDegraded:
+	case domain.ChangeDegraded:
 		texto := fmt.Sprintf("%s está degradado", nome)
 		if n.Message != "" {
 			texto += ": " + n.Message

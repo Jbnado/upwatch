@@ -23,6 +23,9 @@ import (
 	"github.com/bernardojoao/upwatch/internal/checker"
 	"github.com/bernardojoao/upwatch/internal/clock"
 	"github.com/bernardojoao/upwatch/internal/config"
+	"github.com/bernardojoao/upwatch/internal/domain"
+	"github.com/bernardojoao/upwatch/internal/incident"
+	"github.com/bernardojoao/upwatch/internal/notifier"
 	"github.com/bernardojoao/upwatch/internal/rollup"
 	"github.com/bernardojoao/upwatch/internal/scheduler"
 	"github.com/bernardojoao/upwatch/internal/sentinel"
@@ -98,9 +101,30 @@ type application struct {
 	store     store.Store
 	writer    *store.BatchWriter
 	scheduler *scheduler.Scheduler
+	incidents *incident.Engine
+	alerts    *notifier.Dispatcher
 	rollups   *rollup.Worker
 	auth      *auth.Service
 	handler   http.Handler
+}
+
+// monitorFanout entrega a mudança de monitor a todos os interessados.
+//
+// O agendador precisa saber quando verificar; o motor de incidentes
+// precisa do limiar de confirmação. Sem o repasse, um monitor criado pela
+// interface passaria a ser verificado mas nunca geraria alerta.
+type monitorFanout []api.MonitorSink
+
+func (f monitorFanout) Upsert(m domain.Monitor) {
+	for _, sink := range f {
+		sink.Upsert(m)
+	}
+}
+
+func (f monitorFanout) Remove(id int64) {
+	for _, sink := range f {
+		sink.Remove(id)
+	}
 }
 
 // build monta o grafo de dependências.
@@ -130,7 +154,14 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 		}))
 	}
 
-	sched := scheduler.New(registry, writer, scheduler.Options{
+	alerts := notifier.NewDispatcher(notifier.DispatcherOptions{Clock: real})
+
+	// O motor fica entre o agendador e o escritor: observa cada batida a
+	// caminho do banco. Assim nem o agendador precisa saber de incidentes,
+	// nem o escritor de alertas.
+	engine := incident.NewEngine(writer, st, alerts)
+
+	sched := scheduler.New(registry, engine, scheduler.Options{
 		Workers: cfg.Workers,
 		Clock:   real,
 	})
@@ -142,7 +173,7 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 		Auth:          authSvc,
 		Checkers:      registry,
 		Clock:         real,
-		Scheduler:     sched,
+		Scheduler:     monitorFanout{sched, engine},
 		SecureCookies: cfg.SecureCookies,
 		SessionTTL:    cfg.SessionTTL,
 	})
@@ -151,6 +182,8 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 		store:     st,
 		writer:    writer,
 		scheduler: sched,
+		incidents: engine,
+		alerts:    alerts,
 		rollups: rollup.NewWorker(st, rollup.Options{
 			Interval:  cfg.RollupInterval,
 			Retention: cfg.RetentionPolicy(),
@@ -179,6 +212,12 @@ func (a *application) run(ctx context.Context, cfg config.Config) error {
 	if err := a.loadMonitors(ctx); err != nil {
 		return err
 	}
+	// Retomar o estado confirmado antes de aceitar batidas: sem isso o
+	// reinício zeraria a contagem, e um alvo prestes a ser declarado fora
+	// do ar recomeçaria do zero.
+	if err := a.incidents.Load(ctx); err != nil {
+		return fmt.Errorf("carregando estado dos monitores: %w", err)
+	}
 
 	var wg sync.WaitGroup
 	spawn := func(name string, fn func(context.Context)) {
@@ -193,6 +232,7 @@ func (a *application) run(ctx context.Context, cfg config.Config) error {
 	spawn("batch-writer", a.writer.Run)
 	spawn("scheduler", a.scheduler.Run)
 	spawn("rollup", a.rollups.Run)
+	spawn("alertas", a.alerts.Run)
 	spawn("sessoes", a.sweepSessions)
 
 	server := &http.Server{
@@ -244,6 +284,9 @@ func (a *application) loadMonitors(ctx context.Context) error {
 		}
 		for _, m := range page.Items {
 			a.scheduler.Upsert(m)
+			// O motor precisa do limiar de confirmação de cada monitor;
+			// sem isso, uma queda depois do arranque não viraria alerta.
+			a.incidents.Upsert(m)
 			total++
 		}
 		if !page.HasMore || len(page.Items) == 0 {
@@ -316,4 +359,8 @@ func setupLogging() {
 // Garante em tempo de compilação que o agendador atende ao que a API
 // espera. É o que faz um monitor cadastrado na interface passar a ser
 // verificado na hora, sem reinício.
-var _ api.MonitorSink = (*scheduler.Scheduler)(nil)
+var (
+	_ api.MonitorSink = (*scheduler.Scheduler)(nil)
+	_ api.MonitorSink = (*incident.Engine)(nil)
+	_ incident.Sink   = (*store.BatchWriter)(nil)
+)

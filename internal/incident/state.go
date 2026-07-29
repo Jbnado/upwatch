@@ -13,51 +13,21 @@ import (
 	"github.com/bernardojoao/upwatch/internal/domain"
 )
 
-// Kind identifica o que aconteceu.
-type Kind uint8
-
-const (
-	// KindDown é a confirmação de que o alvo está fora do ar.
-	KindDown Kind = iota + 1
-	// KindUp é a volta confirmada.
-	KindUp
-	// KindDegraded é a confirmação de que o alvo responde, porém fora do
-	// esperado.
-	KindDegraded
+// Kind e Event são apelidos dos tipos do domínio.
+//
+// A transição é o vocabulário comum entre quem a decide, aqui, e quem a
+// comunica, no pacote de avisos. Defini-la num dos dois obrigaria o outro
+// a importá-lo — e como o motor precisa dos dois, viraria ciclo.
+type (
+	Kind  = domain.ChangeKind
+	Event = domain.StateChange
 )
 
-var kindNames = map[Kind]string{
-	KindDown:     "down",
-	KindUp:       "up",
-	KindDegraded: "degraded",
-}
-
-func (k Kind) String() string {
-	if nome, ok := kindNames[k]; ok {
-		return nome
-	}
-	return "unknown"
-}
-
-// Event é uma mudança confirmada de estado.
-type Event struct {
-	Kind Kind
-	// From é o estado anterior confirmado.
-	From domain.Status
-	// To é o estado que passou a valer.
-	To domain.Status
-	// At é o instante da observação que confirmou a mudança.
-	At time.Time
-	// Duration é quanto durou o estado anterior. Responde à primeira
-	// pergunta depois de "voltou?", sem obrigar ninguém a subtrair dois
-	// horários de cabeça.
-	Duration time.Duration
-}
-
-// Resolves informa se o evento encerra uma indisponibilidade.
-func (e Event) Resolves() bool {
-	return e.From == domain.StatusDown && e.To != domain.StatusDown
-}
+const (
+	KindDown     = domain.ChangeDown
+	KindUp       = domain.ChangeUp
+	KindDegraded = domain.ChangeDegraded
+)
 
 // Config são os parâmetros da confirmação.
 type Config struct {
@@ -75,17 +45,10 @@ func (c Config) threshold() int {
 }
 
 // State é o que precisa ser lembrado entre verificações.
-type State struct {
-	// Status é o estado confirmado, o que vale para alerta e para a
-	// interface.
-	Status domain.Status
-	// Candidate é o estado que está tentando se confirmar.
-	Candidate domain.Status
-	// Consecutive é quantas observações seguidas o candidato acumulou.
-	Consecutive int
-	// Since é desde quando o estado confirmado vale.
-	Since time.Time
-}
+//
+// Apelido do tipo do domínio: a máquina o opera, e o store o persiste,
+// sem que nenhum dos dois precise conhecer o outro.
+type State = domain.MonitorState
 
 // Next processa uma observação e devolve o novo estado com os eventos.
 //

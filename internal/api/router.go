@@ -125,6 +125,22 @@ func (a *API) routes() http.Handler {
 			r.Get("/monitors/{id}/rollups", a.handleRollups)
 			r.Get("/monitors/{id}/export", a.handleExport)
 
+			r.Get("/monitors/{id}/channels", a.handleListMonitorChannels)
+			r.Put("/monitors/{id}/channels/{channelID}", a.handleLinkChannel)
+			r.Delete("/monitors/{id}/channels/{channelID}", a.handleUnlinkChannel)
+
+			r.Get("/channel-types", a.handleListChannelTypes)
+			r.Get("/channels", a.handleListChannels)
+			r.Post("/channels", a.handleCreateChannel)
+			r.Get("/channels/{id}", a.handleGetChannel)
+			r.Put("/channels/{id}", a.handleUpdateChannel)
+			r.Delete("/channels/{id}", a.handleDeleteChannel)
+			// Entrega um aviso de exemplo. Sem isto, a única forma de saber
+			// que o canal funciona seria esperar uma queda de verdade.
+			r.Post("/channels/{id}/test", a.handleTestChannel)
+
+			r.Get("/incidents", a.handleListIncidents)
+
 			r.Get("/events", a.handleEvents)
 		})
 	})

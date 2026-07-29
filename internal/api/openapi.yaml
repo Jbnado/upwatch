@@ -47,6 +47,8 @@ tags:
     description: Histórico, agregados e exportação
   - name: push
     description: Recebimento de sinal de monitores push
+  - name: alerts
+    description: Canais de aviso e histórico de incidentes
 
 paths:
   /healthz:
@@ -468,6 +470,208 @@ paths:
                   status: { type: string, example: ok }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/v1/channel-types:
+    get:
+      tags: [alerts]
+      summary: Tipos de canal disponíveis
+      description: |
+        A interface monta a escolha a partir daqui, em vez de manter uma
+        lista própria que sai de sincronia a cada canal novo.
+      responses:
+        "200":
+          description: Tipos atendidos
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { type: string, enum: [webhook, discord, slack] }
+
+  /api/v1/channels:
+    get:
+      tags: [alerts]
+      summary: Lista os destinos de aviso
+      description: |
+        A configuração nunca é devolvida: ela contém a URL do webhook, que
+        é a credencial de quem pode publicar no canal.
+      responses:
+        "200":
+          description: Canais cadastrados
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Channel" }
+    post:
+      tags: [alerts]
+      summary: Cadastra um destino de aviso
+      description: |
+        A configuração é validada montando o notificador de verdade.
+        Descobrir que a URL está errada só durante um incidente seria
+        descobrir tarde demais.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChannelInput" }
+      responses:
+        "201":
+          description: Canal criado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Channel" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409":
+          description: Já existe canal com esse nome
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/channels/{id}:
+    get:
+      tags: [alerts]
+      summary: Devolve um canal
+      parameters: [{ $ref: "#/components/parameters/PathID" }]
+      responses:
+        "200":
+          description: O canal
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Channel" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [alerts]
+      summary: Atualiza um canal
+      parameters: [{ $ref: "#/components/parameters/PathID" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChannelInput" }
+      responses:
+        "200":
+          description: Canal atualizado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Channel" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [alerts]
+      summary: Remove um canal e seus vínculos
+      parameters: [{ $ref: "#/components/parameters/PathID" }]
+      responses:
+        "204": { description: Canal removido }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/channels/{id}/test:
+    post:
+      tags: [alerts]
+      summary: Entrega um aviso de exemplo
+      description: |
+        A entrega é síncrona: quem apertou o botão está esperando saber se
+        chegou, e enfileirar devolveria sucesso sem essa garantia.
+
+        Sem este endpoint, a única forma de descobrir que o canal funciona
+        seria esperar uma queda de verdade.
+      parameters: [{ $ref: "#/components/parameters/PathID" }]
+      responses:
+        "200":
+          description: A mensagem foi aceita pelo canal
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: entregue }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "502":
+          description: O canal recusou a mensagem
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/monitors/{id}/channels:
+    get:
+      tags: [alerts]
+      summary: Canais que avisam sobre este monitor
+      description: Traz apenas os habilitados — um canal desligado não recebe nada.
+      parameters: [{ $ref: "#/components/parameters/PathID" }]
+      responses:
+        "200":
+          description: Canais vinculados e habilitados
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Channel" }
+
+  /api/v1/monitors/{id}/channels/{channelID}:
+    put:
+      tags: [alerts]
+      summary: Vincula um canal ao monitor
+      description: Idempotente — vincular duas vezes não é erro.
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+        - $ref: "#/components/parameters/PathChannelID"
+      responses:
+        "204": { description: Vínculo criado }
+        "400": { $ref: "#/components/responses/BadRequest" }
+    delete:
+      tags: [alerts]
+      summary: Desvincula um canal do monitor
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+        - $ref: "#/components/parameters/PathChannelID"
+      responses:
+        "204": { description: Vínculo removido }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/v1/incidents:
+    get:
+      tags: [alerts]
+      summary: Histórico de quedas confirmadas
+      description: |
+        Uma queda só entra aqui depois de confirmada pelo número de falhas
+        seguidas configurado no monitor; oscilação passageira não vira
+        incidente.
+      parameters:
+        - name: monitor_id
+          in: query
+          schema: { type: integer, format: int64 }
+        - name: open
+          in: query
+          schema: { type: boolean }
+          description: Restringe às quedas ainda em curso
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+        - name: after_id
+          in: query
+          schema: { type: integer, format: int64 }
+      responses:
+        "200":
+          description: Incidentes, do mais recente para o mais antigo
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Incident" }
+                  has_more: { type: boolean }
+                  next_after_id: { type: integer, format: int64 }
+
   /api/v1/events:
     get:
       tags: [data]
@@ -499,6 +703,11 @@ components:
   parameters:
     PathID:
       name: id
+      in: path
+      required: true
+      schema: { type: integer, format: int64, minimum: 1 }
+    PathChannelID:
+      name: channelID
       in: path
       required: true
       schema: { type: integer, format: int64, minimum: 1 }
@@ -620,6 +829,64 @@ components:
             id: { type: integer, format: int64 }
             created_at: { type: string, format: date-time }
             updated_at: { type: string, format: date-time }
+
+    Channel:
+      type: object
+      description: |
+        A configuração nunca aparece nesta representação: ela contém a URL
+        do webhook, que é a credencial de quem pode publicar no canal.
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string }
+        type: { type: string, enum: [webhook, discord, slack] }
+        enabled: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ChannelInput:
+      type: object
+      required: [name, type, config]
+      properties:
+        name: { type: string, maxLength: 80 }
+        type: { type: string, enum: [webhook, discord, slack] }
+        enabled: { type: boolean, default: true }
+        config:
+          type: object
+          required: [url]
+          properties:
+            url:
+              type: string
+              description: Destino da entrega
+            headers:
+              type: object
+              additionalProperties: { type: string }
+              description: Cabeçalhos extras, para destinos que exigem token próprio
+            template:
+              type: string
+              description: |
+                Modelo próprio da mensagem, compilado no cadastro para o
+                erro aparecer aqui e não durante o incidente.
+
+                Campos disponíveis - Monitor, Status, Message, Duration,
+                At e Text.
+
+    Incident:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        monitor_id: { type: integer, format: int64 }
+        started_at: { type: string, format: date-time }
+        resolved_at: { type: string, format: date-time }
+        duration_seconds:
+          type: integer
+          description: |
+            Já calculado. É a primeira pergunta sobre qualquer incidente, e
+            obrigar o cliente a subtrair dois horários faria cada
+            integração repetir a mesma conta.
+        cause:
+          type: string
+          description: A falha observada quando a queda foi confirmada
+        open: { type: boolean }
 
     Heartbeat:
       type: object

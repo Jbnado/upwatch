@@ -18,12 +18,18 @@ import (
 // DefaultTargets são os alvos consultados para decidir se a rota para fora
 // existe.
 //
-// Resolvedores públicos de operadores distintos: a chance de todos caírem
-// juntos é desprezível perto da chance de o próprio link cair.
+// Endereços de operadores distintos, para a chance de todos caírem juntos
+// ser desprezível perto da chance de o próprio link cair.
+//
+// A porta é 443, não 53. Muita rede corporativa e muito contêiner bloqueia
+// saída na 53 para forçar o resolvedor interno, enquanto 443 é a porta
+// mais universalmente liberada que existe. Com alvos na 53, uma rede
+// dessas faria a sentinela concluir que está tudo fora do ar e silenciar
+// todos os alertas — o pior desfecho possível num sistema de aviso.
 var DefaultTargets = []string{
-	"1.1.1.1:53",
-	"8.8.8.8:53",
-	"9.9.9.9:53",
+	"1.1.1.1:443",
+	"8.8.8.8:443",
+	"9.9.9.9:443",
 }
 
 // DefaultCacheTTL é por quanto tempo o veredito é reaproveitado.
@@ -61,6 +67,8 @@ type Sentinel struct {
 	cachedUp  bool
 	cachedAt  time.Time
 	hasCached bool
+	// proven registra se a sentinela já alcançou algum alvo alguma vez.
+	proven bool
 }
 
 // New cria a sentinela.
@@ -89,10 +97,27 @@ func New(opts Options) *Sentinel {
 // Enabled informa se a sentinela tem alvos para consultar.
 func (s *Sentinel) Enabled() bool { return len(s.targets) > 0 }
 
+// Proven informa se a sentinela já alcançou algum alvo alguma vez.
+//
+// Enquanto for falso ela não é levada em conta: uma sentinela que nunca
+// funcionou provavelmente está bloqueada ou mal configurada, não diante
+// de uma internet inteira fora do ar.
+func (s *Sentinel) Proven() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.proven
+}
+
 // NetworkUp informa se ao menos um alvo respondeu.
 //
-// Sem alvos configurados devolve verdadeiro, mantendo o comportamento
-// anterior ao recurso: nada é suprimido.
+// Devolve verdadeiro — ou seja, não suprime nada — em dois casos: sem
+// alvos configurados, e enquanto a sentinela nunca tiver alcançado nada.
+//
+// O segundo caso é a salvaguarda mais importante do componente. Se ela
+// nunca funcionou, o mais provável não é que a internet inteira esteja
+// fora, e sim que a saída esteja bloqueada — uma rede que só libera 443,
+// por exemplo. Confiar nela nesse estado faria o UpWatch silenciar todos
+// os alertas para sempre, sem que nada indicasse o motivo.
 func (s *Sentinel) NetworkUp(ctx context.Context) bool {
 	if !s.Enabled() {
 		return true
@@ -100,9 +125,9 @@ func (s *Sentinel) NetworkUp(ctx context.Context) bool {
 
 	s.mu.Lock()
 	if s.hasCached && s.clock.Now().Sub(s.cachedAt) < s.cacheTTL {
-		up := s.cachedUp
+		up, proven := s.cachedUp, s.proven
 		s.mu.Unlock()
-		return up
+		return up || !proven
 	}
 	s.mu.Unlock()
 
@@ -110,9 +135,13 @@ func (s *Sentinel) NetworkUp(ctx context.Context) bool {
 
 	s.mu.Lock()
 	s.cachedUp, s.cachedAt, s.hasCached = up, s.clock.Now(), true
+	if up {
+		s.proven = true
+	}
+	proven := s.proven
 	s.mu.Unlock()
 
-	return up
+	return up || !proven
 }
 
 // probe tenta os alvos em ordem, parando no primeiro que responde.

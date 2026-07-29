@@ -150,6 +150,58 @@ CREATE TABLE push_state (
     last_push  INTEGER NOT NULL
 ) WITHOUT ROWID;
 
+-- Estado confirmado de cada monitor.
+--
+-- Persistido, e não mantido só em memória, para um reinício não zerar a
+-- contagem de confirmação: um alvo prestes a ser declarado fora do ar
+-- voltaria à estaca zero e a detecção atrasaria várias janelas.
+CREATE TABLE monitor_state (
+    monitor_id  INTEGER NOT NULL PRIMARY KEY REFERENCES monitor (id) ON DELETE CASCADE,
+    status      TEXT    NOT NULL,
+    candidate   TEXT    NOT NULL,
+    consecutive INTEGER NOT NULL DEFAULT 0,
+    since       INTEGER NOT NULL
+) WITHOUT ROWID;
+
+-- Janelas de indisponibilidade confirmada.
+CREATE TABLE incident (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    monitor_id  INTEGER NOT NULL REFERENCES monitor (id) ON DELETE CASCADE,
+    started_at  INTEGER NOT NULL,
+    -- Nulo significa em curso.
+    resolved_at INTEGER,
+    cause       TEXT    NOT NULL DEFAULT ''
+);
+
+CREATE INDEX idx_incident_monitor ON incident (monitor_id, started_at);
+
+-- No máximo um incidente aberto por monitor. Índice parcial em vez de
+-- disciplina no código: dois incidentes abertos ao mesmo tempo tornariam
+-- a duração da queda indefinida, e o banco recusa antes de acontecer.
+CREATE UNIQUE INDEX idx_incident_open ON incident (monitor_id) WHERE resolved_at IS NULL;
+
+-- Destinos de aviso.
+CREATE TABLE notification_channel (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT    NOT NULL,
+    type       TEXT    NOT NULL,
+    -- Configuração do notificador. Guarda a URL do webhook, que é a
+    -- credencial de quem pode publicar no canal.
+    config     TEXT    NOT NULL DEFAULT '{}',
+    enabled    INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX idx_channel_name ON notification_channel (name);
+
+-- Quais canais avisam sobre quais monitores.
+CREATE TABLE monitor_channel (
+    monitor_id INTEGER NOT NULL REFERENCES monitor (id) ON DELETE CASCADE,
+    channel_id INTEGER NOT NULL REFERENCES notification_channel (id) ON DELETE CASCADE,
+    PRIMARY KEY (monitor_id, channel_id)
+) WITHOUT ROWID;
+
 -- Marca d'água da agregação: até onde cada resolução já foi processada.
 -- Permite que um reinício não reprocesse nem pule buckets.
 CREATE TABLE rollup_state (
@@ -159,6 +211,10 @@ CREATE TABLE rollup_state (
 
 -- +goose Down
 DROP TABLE rollup_state;
+DROP TABLE monitor_channel;
+DROP TABLE notification_channel;
+DROP TABLE incident;
+DROP TABLE monitor_state;
 DROP TABLE push_state;
 DROP TABLE rollup;
 DROP TABLE heartbeat;

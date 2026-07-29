@@ -129,6 +129,15 @@ func (s *Store) Sessions() store.SessionRepo { return &sessionRepo{db: s.db} }
 // Tokens devolve o repositório de credenciais programáticas.
 func (s *Store) Tokens() store.TokenRepo { return &tokenRepo{db: s.db} }
 
+// States devolve o repositório do estado confirmado dos monitores.
+func (s *Store) States() store.StateRepo { return &stateRepo{db: s.db} }
+
+// Incidents devolve o repositório de janelas de indisponibilidade.
+func (s *Store) Incidents() store.IncidentRepo { return &incidentRepo{db: s.db} }
+
+// Channels devolve o repositório de destinos de aviso.
+func (s *Store) Channels() store.ChannelRepo { return &channelRepo{db: s.db} }
+
 // Close encerra a conexão.
 func (s *Store) Close() error { return s.db.Close() }
 

@@ -170,12 +170,69 @@ type TokenRepo interface {
 	TouchLastUsed(ctx context.Context, id int64, at time.Time) error
 }
 
+// StateRepo guarda o estado confirmado de cada monitor.
+//
+// Persistir importa: sem isso um reinício zeraria a contagem de
+// confirmação, e um alvo prestes a ser declarado fora do ar voltaria à
+// estaca zero, atrasando a detecção em várias janelas.
+type StateRepo interface {
+	// Get devolve o estado, ou o zero quando o monitor ainda não foi
+	// verificado.
+	Get(ctx context.Context, monitorID int64) (domain.MonitorState, error)
+	Save(ctx context.Context, monitorID int64, s domain.MonitorState) error
+	// All carrega tudo de uma vez, para o motor não fazer uma consulta por
+	// monitor no arranque.
+	All(ctx context.Context) (map[int64]domain.MonitorState, error)
+}
+
+// IncidentFilter seleciona incidentes numa listagem.
+type IncidentFilter struct {
+	Page PageFilter
+	// MonitorID zero traz de todos os monitores.
+	MonitorID int64
+	// OnlyOpen restringe aos que ainda não terminaram.
+	OnlyOpen bool
+}
+
+// IncidentRepo guarda as janelas de indisponibilidade.
+type IncidentRepo interface {
+	// Open registra o começo de uma queda. Devolve ErrConflict se já
+	// houver uma aberta para o monitor.
+	Open(ctx context.Context, i *domain.Incident) error
+	// Resolve encerra a queda aberta do monitor. Silencioso quando não há
+	// nenhuma: encerrar o que já acabou não é erro.
+	Resolve(ctx context.Context, monitorID int64, at time.Time) error
+	// Current devolve a queda em curso, ou ErrNotFound.
+	Current(ctx context.Context, monitorID int64) (domain.Incident, error)
+	List(ctx context.Context, f IncidentFilter) (Page[domain.Incident], error)
+}
+
+// ChannelRepo guarda os destinos de aviso e seus vínculos.
+type ChannelRepo interface {
+	Create(ctx context.Context, c *domain.Channel) error
+	Get(ctx context.Context, id int64) (domain.Channel, error)
+	Update(ctx context.Context, c domain.Channel) error
+	Delete(ctx context.Context, id int64) error
+	List(ctx context.Context) ([]domain.Channel, error)
+
+	// Link e Unlink definem quais canais avisam sobre qual monitor.
+	Link(ctx context.Context, monitorID, channelID int64) error
+	Unlink(ctx context.Context, monitorID, channelID int64) error
+	// ForMonitor devolve apenas os canais habilitados do monitor: um canal
+	// desligado não deve receber nada, e filtrar aqui evita que cada
+	// chamador precise lembrar disso.
+	ForMonitor(ctx context.Context, monitorID int64) ([]domain.Channel, error)
+}
+
 // MetadataStore guarda as definições do sistema.
 type MetadataStore interface {
 	Monitors() MonitorRepo
 	Users() UserRepo
 	Sessions() SessionRepo
 	Tokens() TokenRepo
+	States() StateRepo
+	Incidents() IncidentRepo
+	Channels() ChannelRepo
 	Close() error
 }
 
