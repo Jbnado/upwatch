@@ -8,6 +8,7 @@ package storetest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -45,6 +46,8 @@ func RunConformance(t *testing.T, newStore Factory) {
 		{"MonitorDeleteMissingReturnsNotFound", testMonitorDeleteMissingReturnsNotFound},
 		{"MonitorDeleteCascadesHeartbeats", testMonitorDeleteCascadesHeartbeats},
 		{"MonitorDeleteCascadesRollups", testMonitorDeleteCascadesRollups},
+		{"MonitorRoundTripsCheckerConfig", testMonitorRoundTripsCheckerConfig},
+		{"MonitorDefaultsToEmptyConfig", testMonitorDefaultsToEmptyConfig},
 		{"MonitorListPaginatesStably", testMonitorListPaginatesStably},
 		{"MonitorListFiltersByEnabled", testMonitorListFiltersByEnabled},
 		{"MonitorListCapsLimit", testMonitorListCapsLimit},
@@ -353,6 +356,58 @@ func testMonitorDeleteCascadesRollups(t *testing.T, newStore Factory) {
 	}
 	if len(got) != 0 {
 		t.Errorf("found %d rollups after deleting the monitor, want 0", len(got))
+	}
+}
+
+// A configuração específica de cada tipo de check viaja como JSON opaco.
+// Guardar uma coluna por opção de cada tipo — o caminho do Uptime Kuma —
+// faria a tabela crescer a cada checker novo; aqui o store não precisa
+// conhecer nenhum deles.
+func testMonitorRoundTripsCheckerConfig(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	m := newMonitor("api")
+	m.Config = []byte(`{"method":"POST","expect_status":[200,201],"body_contains":"ok"}`)
+	if err := s.Monitors().Create(ctx, &m); err != nil {
+		t.Fatalf("Create returned unexpected error: %v", err)
+	}
+
+	got, err := s.Monitors().Get(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("Get returned unexpected error: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(got.Config, &decoded); err != nil {
+		t.Fatalf("stored config is not valid JSON (%q): %v", got.Config, err)
+	}
+	if decoded["method"] != "POST" {
+		t.Errorf("config[method] = %v, want POST", decoded["method"])
+	}
+	if decoded["body_contains"] != "ok" {
+		t.Errorf("config[body_contains] = %v, want ok", decoded["body_contains"])
+	}
+}
+
+// Monitor sem config precisa voltar como JSON vazio válido, não nil: o
+// checker faz Unmarshal direto e nil quebraria a decodificação.
+func testMonitorDefaultsToEmptyConfig(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	id := mustCreateMonitor(t, s, "api")
+
+	got, err := s.Monitors().Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get returned unexpected error: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(got.Config, &decoded); err != nil {
+		t.Fatalf("default config is not valid JSON (%q): %v", got.Config, err)
+	}
+	if len(decoded) != 0 {
+		t.Errorf("default config = %v, want an empty object", decoded)
 	}
 }
 

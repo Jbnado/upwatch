@@ -119,6 +119,14 @@ type Monitor struct {
 	// demora mais que isto. Zero desliga a detecção.
 	DegradedLatency time.Duration `json:"degraded_latency"`
 
+	// Config é a configuração específica do tipo de check, opaca para o
+	// domínio e para o store — só o Checker correspondente a interpreta.
+	//
+	// JSON em vez de uma coluna por opção de cada tipo: sem isso a tabela
+	// monitor ganharia um punhado de colunas nuláveis a cada checker novo,
+	// que é como a do Uptime Kuma chegou a dezenas delas.
+	Config json.RawMessage `json:"config,omitempty"`
+
 	// ParentID prepara monitores hierárquicos: quando o pai cai, os filhos
 	// não geram alerta próprio. O schema reserva o espaço desde já para
 	// não exigir migração depois.

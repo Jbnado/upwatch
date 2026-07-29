@@ -19,8 +19,19 @@ type monitorRepo struct {
 
 const monitorColumns = `
 	id, name, type, target, interval_ms, timeout_ms,
-	confirmation_threshold, degraded_latency_ms, parent_id,
+	confirmation_threshold, degraded_latency_ms, config, parent_id,
 	enabled, tags, created_at, updated_at`
+
+// emptyConfig é o que grava quando o monitor não traz configuração. Nil ou
+// string vazia quebrariam o Unmarshal que o checker faz na leitura.
+const emptyConfig = "{}"
+
+func encodeConfig(cfg json.RawMessage) string {
+	if len(cfg) == 0 {
+		return emptyConfig
+	}
+	return string(cfg)
+}
 
 // Create insere o monitor e preenche ID e timestamps.
 func (r *monitorRepo) Create(ctx context.Context, m *domain.Monitor) error {
@@ -35,14 +46,15 @@ func (r *monitorRepo) Create(ctx context.Context, m *domain.Monitor) error {
 	const q = `
 		INSERT INTO monitor (
 			name, type, target, interval_ms, timeout_ms,
-			confirmation_threshold, degraded_latency_ms, parent_id,
+			confirmation_threshold, degraded_latency_ms, config, parent_id,
 			enabled, tags, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	res, err := r.db.ExecContext(ctx, q,
 		m.Name, m.Type.String(), m.Target,
 		m.Interval.Milliseconds(), m.Timeout.Milliseconds(),
-		m.ConfirmationThreshold, m.DegradedLatency.Milliseconds(), m.ParentID,
+		m.ConfirmationThreshold, m.DegradedLatency.Milliseconds(),
+		encodeConfig(m.Config), m.ParentID,
 		boolToInt(m.Enabled), tags, toMillis(now), toMillis(now),
 	)
 	if err != nil {
@@ -83,14 +95,15 @@ func (r *monitorRepo) Update(ctx context.Context, m domain.Monitor) error {
 	const q = `
 		UPDATE monitor SET
 			name = ?, type = ?, target = ?, interval_ms = ?, timeout_ms = ?,
-			confirmation_threshold = ?, degraded_latency_ms = ?, parent_id = ?,
+			confirmation_threshold = ?, degraded_latency_ms = ?, config = ?, parent_id = ?,
 			enabled = ?, tags = ?, updated_at = ?
 		WHERE id = ?`
 
 	res, err := r.db.ExecContext(ctx, q,
 		m.Name, m.Type.String(), m.Target,
 		m.Interval.Milliseconds(), m.Timeout.Milliseconds(),
-		m.ConfirmationThreshold, m.DegradedLatency.Milliseconds(), m.ParentID,
+		m.ConfirmationThreshold, m.DegradedLatency.Milliseconds(),
+		encodeConfig(m.Config), m.ParentID,
 		boolToInt(m.Enabled), tags, toMillis(now), m.ID,
 	)
 	if err != nil {
@@ -173,6 +186,7 @@ func scanMonitor(sc scanner) (domain.Monitor, error) {
 		intervalMS int64
 		timeoutMS  int64
 		degradedMS int64
+		configJSON string
 		parentID   sql.NullInt64
 		enabled    int64
 		tagsJSON   string
@@ -182,12 +196,13 @@ func scanMonitor(sc scanner) (domain.Monitor, error) {
 
 	err := sc.Scan(
 		&m.ID, &m.Name, &typeName, &m.Target, &intervalMS, &timeoutMS,
-		&m.ConfirmationThreshold, &degradedMS, &parentID,
+		&m.ConfirmationThreshold, &degradedMS, &configJSON, &parentID,
 		&enabled, &tagsJSON, &createdMS, &updatedMS,
 	)
 	if err != nil {
 		return domain.Monitor{}, err
 	}
+	m.Config = json.RawMessage(configJSON)
 
 	typ, err := domain.ParseMonitorType(typeName)
 	if err != nil {

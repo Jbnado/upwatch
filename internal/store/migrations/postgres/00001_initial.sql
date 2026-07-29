@@ -14,6 +14,9 @@ CREATE TABLE monitor (
     timeout_ms             BIGINT  NOT NULL,
     confirmation_threshold INTEGER NOT NULL DEFAULT 3,
     degraded_latency_ms    BIGINT  NOT NULL DEFAULT 0,
+    -- Configuração do checker, opaca para o banco. Uma coluna por opção de
+    -- cada tipo faria a tabela ganhar campos nuláveis a cada checker novo.
+    config                 TEXT    NOT NULL DEFAULT '{}',
     parent_id              BIGINT           REFERENCES monitor (id) ON DELETE SET NULL,
     -- INTEGER em vez de BOOLEAN de propósito: SQLite não tem tipo booleano,
     -- e igualar aqui elimina uma divergência de dialeto no código que lê e

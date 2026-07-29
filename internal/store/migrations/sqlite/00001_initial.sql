@@ -21,6 +21,9 @@ CREATE TABLE monitor (
     timeout_ms             INTEGER NOT NULL,
     confirmation_threshold INTEGER NOT NULL DEFAULT 3,
     degraded_latency_ms    INTEGER NOT NULL DEFAULT 0,
+    -- Configuração do checker, opaca para o banco. Uma coluna por opção de
+    -- cada tipo faria a tabela ganhar campos nuláveis a cada checker novo.
+    config                 TEXT    NOT NULL DEFAULT '{}',
     -- Reservado para monitores hierárquicos: quando o pai cai, os filhos
     -- não geram alerta próprio. A coluna existe desde a primeira migration
     -- para que a feature não exija migrar histórico depois.
