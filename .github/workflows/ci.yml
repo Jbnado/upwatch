@@ -128,7 +128,12 @@ jobs:
       # Versão fixa, não "latest": um lançamento novo do linter pode
       # deixar a build vermelha num projeto que não mudou uma linha, e
       # isso ensina a ignorar a build vermelha.
-      - uses: golangci/golangci-lint-action@v6
+      #
+      # A action precisa ser v7 ou mais nova para aceitar o golangci-lint
+      # v2 — a v6 só conhece a linha v1 e recusa a versão antes de rodar
+      # qualquer linter. São duas numerações independentes, e é fácil
+      # fixar uma e esquecer a outra.
+      - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
 

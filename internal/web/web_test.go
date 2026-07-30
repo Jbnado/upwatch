@@ -104,11 +104,12 @@ func construida(t *testing.T) bool {
 
 // Um clone limpo precisa compilar.
 //
-// go:embed falha em tempo de compilação quando o padrão não casa com
-// nenhum arquivo, e o diretório de saída da interface é ignorado pelo
-// versionamento. Se nada ali estiver versionado, quem clona o repositório
-// não consegue nem rodar os testes — o pacote não compila, e a mensagem
-// ("pattern all:dist: no matching files found") não diz o que fazer.
+// A diretiva de embarque falha em tempo de compilação quando o padrão
+// não casa com nenhum arquivo, e o diretório de saída da interface é
+// ignorado pelo versionamento. Se nada ali estiver versionado, quem clona
+// o repositório não consegue nem rodar os testes — o pacote não compila,
+// e a mensagem ("pattern all:dist: no matching files found") não diz o
+// que fazer.
 //
 // Nenhum teste de comportamento pega isso: eles todos rodam numa árvore
 // onde a interface já foi construída. Este olha para o que está
