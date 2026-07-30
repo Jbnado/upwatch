@@ -3,6 +3,15 @@ name: CI
 on:
   push:
     branches: [main]
+    # Corrigir uma vírgula no site não precisa de matriz em dois sistemas
+    # operacionais, PostgreSQL e imagem Docker. O gatilho de pull_request
+    # continua sem filtro de propósito: se um dia a CI virar verificação
+    # obrigatória, um filtro ali faria o PR esperar para sempre por um
+    # job que nunca roda.
+    paths-ignore:
+      - 'docs/**'
+      - '.github/workflows/pages.yml'
+      - '**.md'
   pull_request:
 
 permissions:

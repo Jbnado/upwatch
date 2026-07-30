@@ -4,6 +4,9 @@ Monitoramento de disponibilidade que cabe num binário e mostra latência
 junto com o estado — porque quase todo incidente começa com o serviço
 ficando lento, não caindo.
 
+**[jbnado.github.io/upwatch](https://jbnado.github.io/upwatch)** — o
+mesmo conteúdo em página, para quem chega de fora.
+
 Um arquivo, um contêiner, um volume. A interface vem embarcada no
 executável: não há nginx ao lado nem pasta de arquivos estáticos que
 possa ficar defasada em relação ao servidor que os acompanha.

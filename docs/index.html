@@ -1,0 +1,688 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>UpWatch — monitoramento de disponibilidade que cabe num binário</title>
+<meta name="description" content="Monitoramento de disponibilidade auto-hospedado: um binário, um contêiner, um volume. Mostra latência junto com o estado, publica página pública e fala com Prometheus.">
+
+<meta property="og:title" content="UpWatch">
+<meta property="og:description" content="Monitoramento de disponibilidade que cabe num binário e mostra latência junto com o estado.">
+<meta property="og:type" content="website">
+
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Crect width=%222.6%22 height=%225%22 x=%221%22 y=%228%22 fill=%22%233f8a66%22/%3E%3Crect width=%222.6%22 height=%228%22 x=%224.6%22 y=%225%22 fill=%22%233f8a66%22/%3E%3Crect width=%222.6%22 height=%2212%22 x=%228.2%22 y=%221%22 fill=%22%23b87514%22/%3E%3Crect width=%222.6%22 height=%226%22 x=%2211.8%22 y=%227%22 fill=%22%233f8a66%22/%3E%3C/svg%3E">
+
+<style>
+/* ═══════════════════════════════════════════════════════════════════
+   Os mesmos tokens do produto.
+
+   O site usa a fonte do sistema em vez de empacotar Archivo e Geist
+   Mono: são 65 kB para uma página que a maioria visita uma vez, e a
+   identidade daqui está mais na disciplina de cor e no ritmo do que no
+   desenho da letra. Cor de estado continua significando estado, como na
+   interface — se há verde nesta página, ele quer dizer "no ar".
+   ═══════════════════════════════════════════════════════════════════ */
+:root {
+  color-scheme: light;
+
+  --paper: #f4f6f7;
+  --surface: #ffffff;
+  --sunken: #eceff1;
+  --line: #e2e7ea;
+  --line-strong: #cbd3d8;
+
+  --ink: #10161c;
+  --ink-2: #4a555f;
+  --ink-3: #63707a;
+
+  --up: #3f8a66;
+  --degraded: #b87514;
+  --down: #c33a2b;
+  --unknown: #93a0a8;
+
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", "Liberation Mono", monospace;
+
+  --measure: 34rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --paper: #0d1216;
+    --surface: #141b21;
+    --sunken: #1a2228;
+    --line: #222c34;
+    --line-strong: #33414b;
+
+    --ink: #e8edf0;
+    --ink-2: #9ba9b4;
+    --ink-3: #7c8a95;
+
+    --up: #4e9e77;
+    --degraded: #d9902a;
+    --down: #e05747;
+    --unknown: #6b7a85;
+  }
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+body, h1, h2, h3, p, ul, ol, li, figure, pre { margin: 0; padding: 0; }
+ul, ol { list-style: none; }
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 0 1.25rem;
+}
+
+a { color: inherit; text-decoration-color: var(--line-strong); text-underline-offset: 2px; }
+a:hover { text-decoration-color: currentColor; }
+
+code, kbd, pre, .tabular { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+code {
+  font-size: 0.875em;
+  background: var(--sunken);
+  padding: 0.1em 0.35em;
+  border-radius: 3px;
+}
+
+pre {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  padding: 0.875rem 1rem;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.55;
+}
+pre code { background: none; padding: 0; font-size: inherit; }
+
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+/* ─── topo ─────────────────────────────────────────────────────── */
+
+header.topo {
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  background: color-mix(in srgb, var(--paper) 95%, transparent);
+  backdrop-filter: blur(4px);
+  z-index: 10;
+}
+header.topo .wrap {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-top: 0.625rem;
+  padding-bottom: 0.625rem;
+}
+
+/* A marca é a própria faixa de pulso em miniatura: o produto inteiro se
+   resume a esse traço, então ele serve de logotipo sem precisar de um
+   símbolo inventado por fora. */
+.marca { display: flex; align-items: flex-end; gap: 3px; }
+.marca span { width: 4px; background: var(--up); border-radius: 1px; }
+.marca span:nth-child(4) { background: var(--degraded); }
+
+nav.topo-links { display: flex; gap: 1.25rem; }
+nav.topo-links a { text-decoration: none; }
+nav.topo-links a:hover { color: var(--ink); }
+
+/* Numa tela estreita sobra só o link do código. Os quatro não cabem, e
+   deixá-los quebrar em duas linhas custaria mais altura fixa do que o
+   atalho vale numa página que se lê rolando de uma vez. */
+@media (max-width: 30rem) {
+  nav.topo-links a:not(.sempre) { display: none; }
+}
+
+/* ─── herói ────────────────────────────────────────────────────── */
+
+.heroi { padding: 4.5rem 0 3rem; }
+.heroi h1 {
+  font-size: clamp(2rem, 6vw, 2.75rem);
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  font-weight: 600;
+  max-width: 20ch;
+}
+.heroi p.chamada {
+  margin-top: 1rem;
+  font-size: 17px;
+  color: var(--ink-2);
+  max-width: var(--measure);
+}
+
+.acoes { margin-top: 2rem; display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; }
+
+.botao {
+  display: inline-flex;
+  align-items: center;
+  height: 2.25rem;
+  padding: 0 1rem;
+  border-radius: 3px;
+  font-size: 14px;
+  font-weight: 500;
+  text-decoration: none;
+  transition: background-color 120ms ease, border-color 120ms ease, transform 80ms ease;
+}
+.botao:active { transform: translateY(0.5px); }
+.botao.primario { background: var(--ink); color: var(--paper); }
+.botao.primario:hover { background: var(--ink-2); }
+.botao.secundario { border: 1px solid var(--line-strong); color: var(--ink); }
+.botao.secundario:hover { background: var(--sunken); }
+
+/* ─── faixa de demonstração ────────────────────────────────────── */
+
+.demo {
+  margin-top: 3rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  background: var(--surface);
+  padding: 1rem 1.125rem;
+}
+.demo-linha {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--line);
+}
+.demo-linha:last-child { border-bottom: 0; }
+.demo-nome { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 0.5rem; }
+.demo-nome strong { font-weight: 500; font-size: 14px; }
+.demo-alvo {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ponto { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.ponto.up { background: var(--up); }
+.ponto.degraded { background: var(--degraded); }
+.ponto.down { background: var(--down); }
+
+/* A faixa codifica duas dimensões no mesmo traço: a cor diz o estado e a
+   altura diz a latência. É o que deixa ver o serviço ficando lento antes
+   de cair — a história real de quase todo incidente. */
+.faixa { display: flex; align-items: flex-end; gap: 2px; height: 26px; width: 180px; flex: none; }
+.faixa i { flex: 1; background: var(--up); border-radius: 1px; }
+.faixa i.d { background: var(--degraded); }
+.faixa i.f { background: var(--down); height: 100% !important; }
+
+.demo-num {
+  flex: none;
+  width: 8.5rem;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  text-align: right;
+  font-family: var(--mono);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.legenda { margin-top: 0.75rem; font-size: 13px; color: var(--ink-3); }
+
+/* No celular a linha quebra em duas: nome em cima, faixa e números
+   embaixo. Encolher a faixa em vez de quebrar deixaria cada traço com
+   menos de dois pixels — a leitura de latência, que é o motivo de a
+   faixa existir, sumiria. */
+@media (max-width: 34rem) {
+  .demo-linha { flex-wrap: wrap; row-gap: 0.5rem; }
+  .demo-nome { flex: 1 1 100%; }
+  .faixa { width: auto; flex: 1 1 auto; }
+  .demo-num { width: auto; grid-template-columns: auto auto; }
+}
+
+/* ─── seções ───────────────────────────────────────────────────── */
+
+html { scroll-behavior: smooth; }
+
+/* O cabeçalho é fixo, então o pulo de âncora precisa parar antes dele —
+   caso contrário o título da seção some por baixo da barra e a página
+   parece ter caído no meio do texto. */
+section { padding: 3rem 0; border-top: 1px solid var(--line); scroll-margin-top: 3.25rem; }
+section h2 {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin-bottom: 1.5rem;
+}
+section h3 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 2rem 0 0.5rem;
+}
+section p { max-width: var(--measure); color: var(--ink-2); }
+section p + p { margin-top: 0.75rem; }
+section p strong { color: var(--ink); font-weight: 600; }
+
+.recursos { display: grid; gap: 1.75rem; }
+@media (min-width: 40rem) { .recursos { grid-template-columns: 1fr 1fr; gap: 2rem 2.5rem; } }
+.recursos h3 { margin: 0 0 0.375rem; }
+.recursos p { font-size: 14px; }
+
+pre { margin-top: 1rem; }
+pre + p { margin-top: 1rem; }
+
+/* A tabela rola dentro de si mesma. Sem isso ela empurra o corpo da
+   página e a tela inteira ganha rolagem horizontal — o texto todo passa
+   a escapar pela direita por causa de uma coluna só. */
+.rolagem { overflow-x: auto; }
+
+table { border-collapse: collapse; width: 100%; min-width: 30rem; margin-top: 1rem; font-size: 14px; }
+th, td { text-align: left; padding: 0.5rem 0.75rem 0.5rem 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-family: var(--mono); font-size: 11px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-3); font-weight: 500; }
+td:first-child { font-family: var(--mono); font-size: 12.5px; white-space: nowrap; }
+td:nth-child(2) { font-family: var(--mono); font-size: 12.5px; color: var(--ink-3); white-space: nowrap; }
+td:last-child { color: var(--ink-2); }
+
+.nota {
+  margin-top: 1.25rem;
+  border-left: 2px solid var(--line-strong);
+  padding-left: 1rem;
+  font-size: 14px;
+  color: var(--ink-2);
+}
+.nota strong { color: var(--ink); }
+
+footer {
+  border-top: 1px solid var(--line);
+  padding: 2rem 0 3rem;
+  font-size: 13px;
+  color: var(--ink-3);
+}
+footer .wrap { display: flex; flex-wrap: wrap; gap: 1rem; justify-content: space-between; }
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  * { transition-duration: 0.01ms !important; }
+}
+</style>
+</head>
+<body>
+
+<header class="topo">
+  <div class="wrap">
+    <a href="#" class="marca" aria-label="UpWatch">
+      <span style="height:10px"></span>
+      <span style="height:16px"></span>
+      <span style="height:9px"></span>
+      <span style="height:26px"></span>
+      <span style="height:14px"></span>
+      <span style="height:7px"></span>
+      <span style="height:12px"></span>
+    </a>
+    <nav class="topo-links eyebrow">
+      <a href="#instalar">instalar</a>
+      <a href="#configurar">configurar</a>
+      <a href="#publica">página pública</a>
+      <a href="https://github.com/Jbnado/upwatch" class="sempre">código</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="wrap heroi">
+    <h1>Monitoramento que mostra a latência junto com o estado.</h1>
+    <p class="chamada">
+      Quase todo incidente começa com o serviço ficando lento, não caindo.
+      O UpWatch codifica as duas coisas no mesmo traço — a cor diz se está
+      no ar, a altura diz quanto demorou — para você ver a degradação
+      antes da queda.
+    </p>
+
+    <div class="acoes">
+      <a class="botao primario" href="#instalar">Como instalar</a>
+      <a class="botao secundario" href="https://github.com/Jbnado/upwatch">Ver no GitHub</a>
+    </div>
+
+    <div class="demo">
+      <div class="demo-linha">
+        <span class="demo-nome">
+          <span class="ponto up"></span>
+          <strong>api-de-producao</strong>
+          <span class="demo-alvo">https://api.exemplo.com</span>
+        </span>
+        <span class="faixa" role="img" aria-label="Trinta verificações, todas no ar, latência estável.">
+          <i style="height:22%"></i><i style="height:26%"></i><i style="height:19%"></i><i style="height:24%"></i>
+          <i style="height:21%"></i><i style="height:28%"></i><i style="height:23%"></i><i style="height:20%"></i>
+          <i style="height:25%"></i><i style="height:22%"></i><i style="height:27%"></i><i style="height:21%"></i>
+          <i style="height:24%"></i><i style="height:19%"></i><i style="height:23%"></i><i style="height:26%"></i>
+          <i style="height:22%"></i><i style="height:20%"></i><i style="height:25%"></i><i style="height:23%"></i>
+        </span>
+        <span class="demo-num"><span>100%</span><span>34 ms</span></span>
+      </div>
+
+      <div class="demo-linha">
+        <span class="demo-nome">
+          <span class="ponto degraded"></span>
+          <strong>busca-interna</strong>
+          <span class="demo-alvo">https://busca.exemplo.com</span>
+        </span>
+        <span class="faixa" role="img" aria-label="A latência sobe antes de a queda acontecer.">
+          <i style="height:20%"></i><i style="height:22%"></i><i style="height:21%"></i><i style="height:24%"></i>
+          <i style="height:23%"></i><i style="height:26%"></i><i style="height:31%"></i><i style="height:38%"></i>
+          <i class="d" style="height:52%"></i><i class="d" style="height:61%"></i><i class="d" style="height:70%"></i>
+          <i class="d" style="height:78%"></i><i class="f"></i><i class="f"></i><i class="f"></i>
+          <i class="d" style="height:64%"></i><i class="d" style="height:47%"></i><i style="height:29%"></i>
+          <i style="height:24%"></i><i style="height:22%"></i>
+        </span>
+        <span class="demo-num"><span>92,4%</span><span>1,2 s</span></span>
+      </div>
+
+      <div class="demo-linha">
+        <span class="demo-nome">
+          <span class="ponto down"></span>
+          <strong>gateway-pagamento</strong>
+          <span class="demo-alvo">tcp://gateway.interno:8443</span>
+        </span>
+        <span class="faixa" role="img" aria-label="Fora do ar durante todo o período recente.">
+          <i style="height:24%"></i><i style="height:22%"></i><i style="height:25%"></i><i style="height:21%"></i>
+          <i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i>
+          <i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i>
+          <i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i>
+        </span>
+        <span class="demo-num"><span>18,2%</span><span>—</span></span>
+      </div>
+
+      <p class="legenda">
+        A altura de cada traço é a latência daquela verificação. Repare na
+        segunda linha: ela sobe por vários ciclos antes de virar queda.
+      </p>
+    </div>
+  </div>
+
+  <section>
+    <div class="wrap">
+      <h2>O que ele faz</h2>
+
+      <div class="recursos">
+        <div>
+          <h3>Verifica de seis jeitos</h3>
+          <p>
+            HTTP, TCP, ICMP, DNS, certificado TLS e sinal do próprio
+            serviço — este último para tarefas agendadas e processos sem
+            porta exposta. Intervalo a partir de cinco segundos, por
+            monitor.
+          </p>
+        </div>
+
+        <div>
+          <h3>Guarda meses sem guardar meses de dado cru</h3>
+          <p>
+            As batidas duram uma semana; depois viram agregado horário e
+            diário. Cinco alvos verificando a cada minuto ocuparam
+            <strong>2,6 MB</strong> depois de trinta dias.
+          </p>
+        </div>
+
+        <div>
+          <h3>Confirma antes de alarmar</h3>
+          <p>
+            Uma queda só vira incidente depois de N falhas seguidas,
+            configurável por monitor. Oscilação de rede não acorda
+            ninguém de madrugada.
+          </p>
+        </div>
+
+        <div>
+          <h3>Sabe quando o problema é você</h3>
+          <p>
+            Se as verificações começam a falhar, uma sonda independente
+            confere se a sua rede ainda responde. Se não responder, os
+            resultados viram “sem medição” em vez de “fora do ar”.
+          </p>
+        </div>
+
+        <div>
+          <h3>Avisa e deixa você testar</h3>
+          <p>
+            Webhook, Discord e Slack, com um botão de teste em cada
+            canal. Descobrir que o alerta não chega durante a queda é
+            descobrir tarde demais.
+          </p>
+        </div>
+
+        <div>
+          <h3>Publica uma página de estado</h3>
+          <p>
+            No formato que Anthropic, Cloudflare e Google consolidaram —
+            e que nunca revela o endereço do alvo nem a causa detectada.
+          </p>
+        </div>
+
+        <div>
+          <h3>Agrupa por etiqueta</h3>
+          <p>
+            Homolog e produção lado a lado sem virar uma lista única de
+            quarenta linhas. As etiquetas são normalizadas: “Produção” e
+            “produção ” são o mesmo grupo, não dois.
+          </p>
+        </div>
+
+        <div>
+          <h3>Dois papéis de acesso</h3>
+          <p>
+            Administrador altera; observador só lê — para plantão,
+            gerência e time vizinho. A barreira está no servidor, não em
+            botão escondido.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="instalar">
+    <div class="wrap">
+      <h2>Instalar</h2>
+      <p>
+        Um binário, um contêiner, um volume. A interface vem embarcada no
+        executável — não há nginx ao lado nem pasta de arquivos estáticos
+        que possa ficar defasada em relação ao servidor.
+      </p>
+
+      <h3>Docker</h3>
+<pre><code>docker run -d --name upwatch \
+  -p 8080:8080 -v upwatch:/data \
+  ghcr.io/jbnado/upwatch:latest</code></pre>
+      <p>
+        Abra <code>http://localhost:8080</code> e crie a conta de
+        administração. É a única conta criada sem autenticação; depois
+        dela, o cadastro fecha.
+      </p>
+
+      <h3>Docker Compose</h3>
+<pre><code>curl -O https://raw.githubusercontent.com/Jbnado/upwatch/main/compose.yaml
+docker compose up -d</code></pre>
+
+      <h3>Com PostgreSQL</h3>
+      <p>
+        O SQLite dá conta de uma instalação inteira num arquivo, mas não
+        de duas instâncias do UpWatch escrevendo ao mesmo tempo — que é o
+        que se quer quando a disponibilidade do próprio monitorador
+        importa.
+      </p>
+<pre><code>curl -O https://raw.githubusercontent.com/Jbnado/upwatch/main/compose.postgres.yaml
+POSTGRES_PASSWORD=$(openssl rand -base64 24) \
+  docker compose -f compose.postgres.yaml up -d</code></pre>
+
+      <h3>Binário</h3>
+      <p>
+        Baixe da <a href="https://github.com/Jbnado/upwatch/releases">página
+        de releases</a>. É estático e não depende de nada instalado.
+      </p>
+<pre><code>UPWATCH_DB_DSN=./upwatch.db ./upwatch</code></pre>
+    </div>
+  </section>
+
+  <section id="configurar">
+    <div class="wrap">
+      <h2>Configurar</h2>
+      <p>
+        Por variável de ambiente ou arquivo YAML. A variável ganha do
+        arquivo, e o arquivo ganha do padrão — assim uma imagem sobe sem
+        configuração nenhuma, e uma instalação séria versiona o YAML.
+      </p>
+
+      <div class="rolagem">
+      <table>
+        <thead>
+          <tr><th>Variável</th><th>Padrão</th><th>O que faz</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>UPWATCH_LISTEN</td><td>:8080</td><td>Endereço de escuta</td></tr>
+          <tr><td>UPWATCH_DB_DRIVER</td><td>sqlite</td><td><code>sqlite</code> ou <code>postgres</code></td></tr>
+          <tr><td>UPWATCH_DB_DSN</td><td>/data/upwatch.db</td><td>Caminho do arquivo ou string de conexão</td></tr>
+          <tr><td>UPWATCH_RETENTION_RAW</td><td>168h</td><td>Quanto tempo as batidas cruas duram</td></tr>
+          <tr><td>UPWATCH_RETENTION_HOURLY</td><td>2160h</td><td>Retenção do agregado horário</td></tr>
+          <tr><td>UPWATCH_RETENTION_DAILY</td><td>17520h</td><td>Retenção do agregado diário</td></tr>
+          <tr><td>UPWATCH_WORKERS</td><td>50</td><td>Teto de verificações simultâneas</td></tr>
+          <tr><td>UPWATCH_SECURE_COOKIES</td><td>false</td><td>Ligue ao servir por HTTPS</td></tr>
+          <tr><td>UPWATCH_PUBLIC_URL</td><td>vazio</td><td>Endereço externo, para o feed usar URLs absolutas</td></tr>
+        </tbody>
+      </table>
+      </div>
+
+      <p class="nota">
+        <strong>Antes de expor na internet:</strong> ligue
+        <code>UPWATCH_SECURE_COOKIES</code> e defina
+        <code>UPWATCH_PUBLIC_URL</code>. O primeiro fica desligado por
+        padrão porque muita instalação caseira serve em HTTP na rede
+        local, e um cookie Secure ali simplesmente não é enviado — o
+        login pareceria quebrado sem explicação.
+      </p>
+    </div>
+  </section>
+
+  <section id="publica">
+    <div class="wrap">
+      <h2>Página pública de estado</h2>
+      <p>
+        Um endereço que qualquer pessoa abre sem entrar, para compartilhar
+        disponibilidade com clientes e com o time. Você escolhe quais
+        alvos aparecem — nada é publicado sem ser marcado.
+      </p>
+
+      <h3>As barras são automáticas; o relato, não</h3>
+      <p>
+        A causa que a sonda detecta é literal e interna, do tipo
+        <code>dial tcp 10.0.3.7:5432: connect: connection refused</code>.
+        Publicá-la entregaria endereço, porta e tecnologia de um serviço
+        que ninguém de fora deveria enxergar — então ela nunca sai.
+      </p>
+      <p>
+        O que aparece em “incidentes anteriores” é o texto que você
+        escreve, na linha do tempo de sempre: investigando → identificado
+        → monitorando → resolvido. Uma instalação recém-subida mostra as
+        barras e “nenhum incidente relatado”, que é o comportamento
+        correto.
+      </p>
+
+      <h3>Cada componente tem um rótulo público</h3>
+      <p>
+        O monitor pode se chamar <code>api-prod-us-east-1</code> na
+        operação e aparecer como “API” para quem lê — sem obrigar você a
+        renomeá-lo nem a entregar sua convenção de nomes.
+      </p>
+
+      <p class="nota">
+        Há também um feed Atom, para acompanhar sem cadastrar e-mail e
+        para ligar num canal de chat sem que o UpWatch precise saber
+        falar com aquele canal.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <h2>API e Prometheus</h2>
+      <p>
+        A API é de primeira classe, não um acessório da interface: a tela
+        consome exatamente os mesmos endpoints que qualquer script. A
+        especificação OpenAPI é servida pela própria instalação, e um
+        teste garante que ela não diverge das rotas de verdade — nos dois
+        sentidos.
+      </p>
+<pre><code>curl -H "Authorization: Bearer upw_..." \
+  http://localhost:8080/api/v1/monitors</code></pre>
+
+      <p>
+        Para quem já tem Prometheus, <code>/metrics</code> responde sem
+        credencial:
+      </p>
+<pre><code>scrape_configs:
+  - job_name: upwatch
+    static_configs:
+      - targets: ['upwatch:8080']</code></pre>
+
+      <p class="nota">
+        Em <code>upwatch_monitor_status</code>, 1 é no ar, 0 fora do ar,
+        2 degradado e <strong>-1 sem medição</strong>. “Sem medição” não
+        é zero de propósito: confundir os dois faria o alerta disparar
+        para todo monitor recém-criado.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <h2>Como este projeto é feito</h2>
+      <p>
+        Escrito em TDD, e a suíte é o principal artefato de desenho —
+        quase toda decisão estrutural apareceu porque um teste ficou
+        difícil de escrever. Duas partes merecem destaque.
+      </p>
+
+      <h3>A conformidade do armazenamento roda contra os dois bancos</h3>
+      <p>
+        A mesma bateria, 124 casos idênticos no SQLite e no PostgreSQL,
+        zero pulados. É o que impede “banco plugável” de virar fachada:
+        um backend que não passe integralmente não entra.
+      </p>
+
+      <h3>A página pública é atacada de propósito</h3>
+      <p>
+        Travessia de caminho em nove formas, injeção de SQL no slug,
+        enumeração de páginas, texto hostil, cabeçalho <code>Host</code>
+        forjado. Um desses testes encontrou um defeito real durante o
+        desenvolvimento — e é por isso que eles existem.
+      </p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>
+      AGPL-3.0 · <a href="https://github.com/Jbnado/upwatch">github.com/Jbnado/upwatch</a>
+    </span>
+    <span>Auto-hospedado. Seus dados ficam no seu volume.</span>
+  </div>
+</footer>
+
+</body>
+</html>
