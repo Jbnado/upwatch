@@ -49,6 +49,13 @@ tags:
     description: Recebimento de sinal de monitores push
   - name: alerts
     description: Canais de aviso e histórico de incidentes
+  - name: public
+    description: |
+      Página pública de estado. É a única superfície de leitura sem
+      credencial, e o que sai por ela é montado num lugar só — nada aqui
+      revela endereço de alvo, causa detectada ou identificador interno.
+  - name: status-pages
+    description: Administração das páginas públicas e dos relatos
 
 paths:
   /healthz:
@@ -672,6 +679,393 @@ paths:
                   has_more: { type: boolean }
                   next_after_id: { type: integer, format: int64 }
 
+  /api/v1/public/{slug}:
+    get:
+      tags: [public]
+      security: []
+      summary: Página pública de estado
+      description: |
+        Sem credencial, de propósito — é o link que se compartilha durante
+        uma queda.
+
+        Página inexistente e página desligada devolvem o mesmo 404:
+        distinguir as duas confirmaria a existência da página a quem só
+        chutou o endereço.
+
+        A resposta traz `Cache-Control` e `ETag`. Revalidar com
+        `If-None-Match` devolve 304 — é a única rota do UpWatch desenhada
+        para receber tráfego de verdade.
+      parameters:
+        - $ref: "#/components/parameters/PathSlug"
+      responses:
+        "200":
+          description: Estado da página
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublicView" }
+        "304": { description: Sem alteração desde a versão do cliente }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/public/{slug}/feed.atom:
+    get:
+      tags: [public]
+      security: []
+      summary: Feed Atom dos relatos
+      description: |
+        Permite acompanhar a página sem cadastrar e-mail, e integrar num
+        canal de chat sem que o UpWatch precise saber falar com ele.
+
+        O feed é derivado da mesma visão da página, então não tem como
+        mostrar nada que ela não mostre.
+      parameters:
+        - $ref: "#/components/parameters/PathSlug"
+      responses:
+        "200":
+          description: Documento Atom
+          content:
+            application/atom+xml:
+              schema: { type: string }
+        "304": { description: Sem alteração desde a versão do cliente }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/status-pages:
+    get:
+      tags: [status-pages]
+      summary: Lista as páginas públicas
+      responses:
+        "200":
+          description: Páginas cadastradas
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/StatusPage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [status-pages]
+      summary: Cria uma página pública
+      description: |
+        O slug vai na URL e é validado com rigor&#58; apenas minúsculas sem
+        acento, números e hífen. Ele é colado em chat e digitado de
+        memória, e barra ou ponto-ponto virariam travessia de caminho.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StatusPageInput" }
+      responses:
+        "201":
+          description: Página criada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusPage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/status-pages/{id}:
+    get:
+      tags: [status-pages]
+      summary: Página com grupos e componentes
+      description: |
+        Os três numa resposta só&#58; a tela de administração precisa de
+        todos para desenhar qualquer coisa, e três requisições seriam três
+        estados de carregamento para montar uma lista.
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+      responses:
+        "200":
+          description: Página, grupos e componentes
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  page: { $ref: "#/components/schemas/StatusPage" }
+                  groups:
+                    type: array
+                    items: { $ref: "#/components/schemas/StatusPageGroup" }
+                  components:
+                    type: array
+                    items: { $ref: "#/components/schemas/StatusPageComponent" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [status-pages]
+      summary: Atualiza a página
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StatusPageInput" }
+      responses:
+        "200":
+          description: Página atualizada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusPage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+    delete:
+      tags: [status-pages]
+      summary: Remove a página
+      description: |
+        Os monitores permanecem&#58; eles são da operação, e a página é só
+        uma das formas de mostrá-los.
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+      responses:
+        "204": { description: Página removida }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/status-pages/{id}/groups:
+    post:
+      tags: [status-pages]
+      summary: Cria um grupo de componentes
+      description: |
+        Sem grupo, uma instalação com quarenta alvos publica uma lista de
+        quarenta linhas onde ninguém acha o que veio procurar.
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GroupInput" }
+      responses:
+        "201":
+          description: Grupo criado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusPageGroup" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/status-pages/{id}/groups/{groupID}:
+    put:
+      tags: [status-pages]
+      summary: Renomeia ou reordena um grupo
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+        - $ref: "#/components/parameters/PathGroupID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GroupInput" }
+      responses:
+        "200":
+          description: Grupo atualizado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusPageGroup" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [status-pages]
+      summary: Desfaz o agrupamento
+      description: |
+        Os componentes permanecem publicados, apenas sem grupo&#58; quem
+        tira um grupo espera reorganizar a página, não remover o que
+        estava dentro.
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+        - $ref: "#/components/parameters/PathGroupID"
+      responses:
+        "204": { description: Grupo removido }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/status-pages/{id}/components/{monitorID}:
+    put:
+      tags: [status-pages]
+      summary: Publica um monitor na página
+      description: |
+        PUT e não POST&#58; publicar duas vezes o mesmo alvo atualiza o
+        vínculo em vez de criar um segundo.
+
+        O rótulo é o nome público. O monitor pode se chamar
+        `api-prod-us-east-1` na operação e aparecer como "API" para quem
+        lê, sem obrigar a renomeá-lo nem a entregar a convenção de nomes
+        da infraestrutura.
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+        - $ref: "#/components/parameters/PathMonitorID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ComponentInput" }
+      responses:
+        "200":
+          description: Componente publicado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusPageComponent" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [status-pages]
+      summary: Despublica um monitor da página
+      description: |
+        Só desta página&#58; o mesmo alvo continua publicado nas demais.
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+        - $ref: "#/components/parameters/PathMonitorID"
+      responses:
+        "204": { description: Componente removido }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/announcements:
+    get:
+      tags: [status-pages]
+      summary: Lista os relatos publicados
+      parameters:
+        - name: open
+          in: query
+          schema: { type: boolean }
+          description: Restringe aos que ainda não foram resolvidos
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+        - name: after_id
+          in: query
+          schema: { type: integer, format: int64 }
+      responses:
+        "200":
+          description: Relatos, do mais recente para o mais antigo
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Announcement" }
+                  has_more: { type: boolean }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [status-pages]
+      summary: Publica um relato
+      description: |
+        O relato é o que uma pessoa escreve, separado do incidente que a
+        sonda detecta. A causa detectada cita host e porta internos e por
+        isso nunca é publicada&#58; o que sai é este texto.
+
+        O alcance é obrigatório e explícito — ao menos um componente, ou
+        `global`. Deduzir "toda a plataforma" de uma lista vazia faria um
+        relato sobre serviço desativado aparecer na página de todo mundo
+        no dia em que alguém apagasse o monitor.
+
+        `body`, quando presente, publica a primeira entrada da linha do
+        tempo junto&#58; abrir um incidente e não dizer nada é o pior
+        momento para exigir duas requisições.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AnnouncementInput" }
+      responses:
+        "201":
+          description: Relato publicado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Announcement" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/announcements/{id}:
+    get:
+      tags: [status-pages]
+      summary: Relato com a linha do tempo
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+      responses:
+        "200":
+          description: Relato e atualizações
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  announcement: { $ref: "#/components/schemas/Announcement" }
+                  updates:
+                    type: array
+                    items: { $ref: "#/components/schemas/AnnouncementUpdate" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [status-pages]
+      summary: Corrige um relato
+      description: |
+        O início não se reescreve&#58; é quando a queda começou, e mexer
+        nele reescreveria o histórico que a página já publicou.
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AnnouncementInput" }
+      responses:
+        "200":
+          description: Relato atualizado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Announcement" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [status-pages]
+      summary: Remove um relato
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+      responses:
+        "204": { description: Relato removido }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/announcements/{id}/updates:
+    post:
+      tags: [status-pages]
+      summary: Publica uma atualização na linha do tempo
+      description: |
+        A fase do relato acompanha a da entrada publicada. Mantê-las
+        separadas obrigaria a lembrar de mudar o estado depois de
+        escrever o texto, e o esquecimento apareceria numa página pública
+        dizendo "investigando" sob uma atualização que diz "resolvido".
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AnnouncementUpdateInput" }
+      responses:
+        "201":
+          description: Atualização publicada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  announcement: { $ref: "#/components/schemas/Announcement" }
+                  update: { $ref: "#/components/schemas/AnnouncementUpdate" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/v1/events:
     get:
       tags: [data]
@@ -711,6 +1105,22 @@ components:
       in: path
       required: true
       schema: { type: integer, format: int64, minimum: 1 }
+    PathGroupID:
+      name: groupID
+      in: path
+      required: true
+      schema: { type: integer, format: int64, minimum: 1 }
+    PathMonitorID:
+      name: monitorID
+      in: path
+      required: true
+      schema: { type: integer, format: int64, minimum: 1 }
+    PathSlug:
+      name: slug
+      in: path
+      required: true
+      schema: { type: string, pattern: "^[a-z0-9]+(-[a-z0-9]+)*$", maxLength: 64 }
+      description: Identificador da página na URL
     From:
       name: from
       in: query
@@ -928,6 +1338,240 @@ components:
         latency_p50_ms: { type: number }
         latency_p95_ms: { type: number }
         latency_p99_ms: { type: number }
+
+    StatusPage:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        slug: { type: string }
+        title: { type: string }
+        description: { type: string }
+        show_latency:
+          type: boolean
+          description: |
+            Desligado por padrão&#58; latência é informação competitiva
+            para parte de quem publica, e "está no ar?" não depende dela.
+        time_zone:
+          type: string
+          description: Fuso em que a página exibe horários. Vazio é UTC.
+        enabled:
+          type: boolean
+          description: |
+            Desligada, a rota pública devolve 404 — não 403, que
+            confirmaria a existência da página.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    StatusPageInput:
+      type: object
+      required: [slug, title]
+      properties:
+        slug:
+          type: string
+          pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+          maxLength: 64
+        title: { type: string, maxLength: 120 }
+        description: { type: string }
+        show_latency: { type: boolean, default: false }
+        time_zone: { type: string, example: America/Sao_Paulo }
+        enabled: { type: boolean, default: true }
+
+    StatusPageGroup:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        page_id: { type: integer, format: int64 }
+        name: { type: string }
+        position:
+          type: integer
+          description: Ordem editorial — o que o cliente mais usa vem primeiro
+
+    GroupInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, maxLength: 120 }
+        position: { type: integer, default: 0 }
+
+    StatusPageComponent:
+      type: object
+      properties:
+        page_id: { type: integer, format: int64 }
+        monitor_id: { type: integer, format: int64 }
+        group_id:
+          type: integer
+          format: int64
+          nullable: true
+          description: Nulo lista o componente antes dos grupos
+        label:
+          type: string
+          description: Nome público; vazio usa o nome do monitor
+        position: { type: integer }
+
+    ComponentInput:
+      type: object
+      properties:
+        group_id: { type: integer, format: int64, nullable: true }
+        label: { type: string, maxLength: 120 }
+        position: { type: integer, default: 0 }
+
+    Announcement:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        title: { type: string }
+        impact: { type: string, enum: [none, minor, major, critical] }
+        phase:
+          type: string
+          enum: [investigating, identified, monitoring, resolved]
+        global:
+          type: boolean
+          description: Aparece em todas as páginas
+        components:
+          type: array
+          items: { type: integer, format: int64 }
+        incident_id: { type: integer, format: int64, nullable: true }
+        started_at: { type: string, format: date-time }
+        resolved_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    AnnouncementInput:
+      type: object
+      required: [title, impact, phase]
+      properties:
+        title: { type: string, maxLength: 160 }
+        impact: { type: string, enum: [none, minor, major, critical] }
+        phase:
+          type: string
+          enum: [investigating, identified, monitoring, resolved]
+        global: { type: boolean, default: false }
+        components:
+          type: array
+          items: { type: integer, format: int64 }
+        incident_id: { type: integer, format: int64, nullable: true }
+        body:
+          type: string
+          maxLength: 4000
+          description: Primeira entrada da linha do tempo, opcional
+
+    AnnouncementUpdate:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        announcement_id: { type: integer, format: int64 }
+        phase:
+          type: string
+          enum: [investigating, identified, monitoring, resolved]
+        body: { type: string }
+        published_at: { type: string, format: date-time }
+
+    AnnouncementUpdateInput:
+      type: object
+      required: [phase, body]
+      properties:
+        phase:
+          type: string
+          enum: [investigating, identified, monitoring, resolved]
+        body: { type: string, maxLength: 4000 }
+
+    PublicView:
+      type: object
+      description: |
+        A página como sai para quem não tem credencial. Note o que não
+        existe aqui&#58; endereço de alvo, causa detectada, identificador
+        de monitor e contagem de alvos da instalação.
+      properties:
+        slug: { type: string }
+        title: { type: string }
+        description: { type: string }
+        time_zone: { type: string }
+        status:
+          type: string
+          enum: [up, down, degraded, unknown]
+          description: Pior estado entre os componentes
+        impact:
+          type: string
+          enum: [none, minor, major, critical]
+          description: Maior impacto entre os relatos abertos
+        window_days: { type: integer, example: 90 }
+        generated_at: { type: string, format: date-time }
+        groups:
+          type: array
+          items: { $ref: "#/components/schemas/PublicGroup" }
+        announcements:
+          type: array
+          items: { $ref: "#/components/schemas/PublicAnnouncement" }
+
+    PublicGroup:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Vazio é o grupo implícito dos componentes sem agrupamento
+        monitors:
+          type: array
+          items: { $ref: "#/components/schemas/PublicMonitor" }
+
+    PublicMonitor:
+      type: object
+      properties:
+        name: { type: string }
+        status: { type: string, enum: [up, down, degraded, unknown] }
+        uptime_percent:
+          type: number
+          nullable: true
+          description: |
+            Ausente quando nada foi observado na janela. Zero afirmaria
+            queda total, que é a leitura mais alarmante possível.
+        latency_p95_ms:
+          type: integer
+          format: int64
+          nullable: true
+          description: Só aparece se a página liberar latência
+        history:
+          type: array
+          items: { $ref: "#/components/schemas/PublicDay" }
+
+    PublicDay:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+          description: |
+            Dia de calendário, não instante&#58; um carimbo faria cada
+            navegador reinterpretá-lo no próprio fuso e a mesma barra
+            mudaria de lugar dependendo de quem olha.
+        status: { type: string, enum: [up, down, degraded, unknown] }
+        uptime_percent: { type: number, nullable: true }
+
+    PublicAnnouncement:
+      type: object
+      properties:
+        title: { type: string }
+        impact: { type: string, enum: [none, minor, major, critical] }
+        phase:
+          type: string
+          enum: [investigating, identified, monitoring, resolved]
+        components:
+          type: array
+          items: { type: string }
+          description: Rótulos públicos, nunca identificadores
+        started_at: { type: string, format: date-time }
+        resolved_at: { type: string, format: date-time, nullable: true }
+        updates:
+          type: array
+          items: { $ref: "#/components/schemas/PublicAnnouncementUpdate" }
+
+    PublicAnnouncementUpdate:
+      type: object
+      properties:
+        phase:
+          type: string
+          enum: [investigating, identified, monitoring, resolved]
+        body: { type: string }
+        published_at: { type: string, format: date-time }
 
 security:
   - sessionCookie: []

@@ -42,10 +42,15 @@ type StatusPage struct {
 	// dela.
 	ShowLatency bool `json:"show_latency"`
 
-	// TimeZone é o fuso em que as datas do histórico são recortadas.
+	// TimeZone é o fuso em que a página exibe horários.
 	//
-	// Sem ele o dia começaria em UTC, e um cliente no Brasil veria a
-	// queda das 22h aparecer no dia seguinte.
+	// Vale para o carimbo dos relatos e da última atualização. As barras
+	// de histórico continuam recortadas por dia UTC, que é como os
+	// agregados diários são gravados: recortá-las por fuso exigiria ler
+	// os agregados horários dos noventa dias, e a retenção horária padrão
+	// é justamente noventa dias — as barras mais antigas ficariam vazias
+	// numa instalação antiga, que é pior do que uma fronteira de dia
+	// deslocada em algumas horas.
 	TimeZone string `json:"time_zone,omitempty"`
 
 	// Enabled desligada devolve 404, não 403: negar com "existe, mas não
@@ -207,13 +212,49 @@ type PublicMonitor struct {
 
 // PublicDay é um dia da barra de histórico.
 type PublicDay struct {
-	// Date é o dia no fuso da página, em AAAA-MM-DD. String e não
-	// time.Time porque é um dia de calendário, não um instante: enviar um
-	// carimbo faria cada navegador reinterpretá-lo no seu próprio fuso.
+	// Date é o dia em AAAA-MM-DD. String e não time.Time porque é um dia
+	// de calendário, não um instante: enviar um carimbo faria cada
+	// navegador reinterpretá-lo no seu próprio fuso e a mesma barra
+	// mudaria de lugar dependendo de quem olha.
 	Date   string `json:"date"`
 	Status Status `json:"status"`
 
 	UptimePercent *float64 `json:"uptime_percent,omitempty"`
+}
+
+// PublicGroup é uma seção da página.
+type PublicGroup struct {
+	// Name vazio é o grupo implícito dos componentes sem agrupamento,
+	// sempre o primeiro. Vem como grupo, e não como lista à parte, para o
+	// cliente ter um laço só.
+	Name     string          `json:"name"`
+	Monitors []PublicMonitor `json:"monitors"`
+}
+
+// PublicView é a página inteira como sai para quem não tem credencial.
+//
+// Envelope próprio, como os demais tipos públicos: nada aqui carrega
+// identificador interno, endereço de alvo ou contagem de monitores da
+// instalação.
+type PublicView struct {
+	Slug        string `json:"slug"`
+	Title       string `json:"title"`
+	Description string `json:"description,omitempty"`
+	TimeZone    string `json:"time_zone,omitempty"`
+
+	// Status resume os componentes; Impact resume os relatos abertos. São
+	// duas perguntas diferentes: o primeiro é o que as sondas medem, o
+	// segundo é o que uma pessoa declarou.
+	Status Status         `json:"status"`
+	Impact IncidentImpact `json:"impact"`
+
+	Groups        []PublicGroup        `json:"groups"`
+	Announcements []PublicAnnouncement `json:"announcements"`
+
+	// WindowDays é quantos dias as barras cobrem, para a legenda não
+	// precisar adivinhar.
+	WindowDays  int       `json:"window_days"`
+	GeneratedAt time.Time `json:"generated_at"`
 }
 
 // OverallStatus resume a página numa palavra.

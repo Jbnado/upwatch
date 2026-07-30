@@ -105,6 +105,12 @@ func (a *API) routes() http.Handler {
 		// interface.
 		r.Post("/push/{token}", a.handlePush)
 
+		// Página pública de estado. É a única superfície de leitura sem
+		// credencial, e por isso a resposta é montada num pacote próprio —
+		// nenhum handler daqui decide o que sai.
+		r.Get("/public/{slug}", a.handlePublicStatus)
+		r.Get("/public/{slug}/feed.atom", a.handlePublicFeed)
+
 		r.Group(func(r chi.Router) {
 			r.Use(a.authenticate)
 
@@ -140,6 +146,31 @@ func (a *API) routes() http.Handler {
 			r.Post("/channels/{id}/test", a.handleTestChannel)
 
 			r.Get("/incidents", a.handleListIncidents)
+
+			// Administração das páginas públicas.
+			r.Get("/status-pages", a.handleListStatusPages)
+			r.Post("/status-pages", a.handleCreateStatusPage)
+			r.Get("/status-pages/{id}", a.handleGetStatusPage)
+			r.Put("/status-pages/{id}", a.handleUpdateStatusPage)
+			r.Delete("/status-pages/{id}", a.handleDeleteStatusPage)
+
+			r.Post("/status-pages/{id}/groups", a.handleCreateGroup)
+			r.Put("/status-pages/{id}/groups/{groupID}", a.handleUpdateGroup)
+			r.Delete("/status-pages/{id}/groups/{groupID}", a.handleDeleteGroup)
+
+			// PUT e não POST: publicar duas vezes o mesmo alvo atualiza o
+			// vínculo em vez de criar um segundo.
+			r.Put("/status-pages/{id}/components/{monitorID}", a.handleSetComponent)
+			r.Delete("/status-pages/{id}/components/{monitorID}", a.handleRemoveComponent)
+
+			// Relatos: o que uma pessoa escreve, separado do incidente que a
+			// sonda detecta.
+			r.Get("/announcements", a.handleListAnnouncements)
+			r.Post("/announcements", a.handleCreateAnnouncement)
+			r.Get("/announcements/{id}", a.handleGetAnnouncement)
+			r.Put("/announcements/{id}", a.handleUpdateAnnouncement)
+			r.Delete("/announcements/{id}", a.handleDeleteAnnouncement)
+			r.Post("/announcements/{id}/updates", a.handlePublishUpdate)
 
 			r.Get("/events", a.handleEvents)
 		})

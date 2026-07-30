@@ -492,3 +492,25 @@ func jsonInt(v int64) string {
 	b, _ := json.Marshal(v)
 	return string(b)
 }
+
+// withHeader executa uma requisição anônima com um cabeçalho extra.
+//
+// Existe para exercitar a revalidação de cache da página pública, que é a
+// única rota do UpWatch desenhada para receber a mesma consulta muitas
+// vezes seguidas.
+func (s *server) withHeader(t *testing.T, method, path, header, value string) *http.Response {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(context.Background(), method, s.URL+path, nil)
+	if err != nil {
+		t.Fatalf("NewRequest returned unexpected error: %v", err)
+	}
+	req.Header.Set(header, value)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request returned unexpected error: %v", err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	return resp
+}
