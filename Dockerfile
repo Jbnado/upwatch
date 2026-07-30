@@ -60,7 +60,7 @@ RUN CGO_ENABLED=0 go build \
 
 
 # ---------- imagem final ----------
-FROM alpine:3.22
+FROM alpine:3.24
 
 # Certificados raiz: sem eles todo monitor HTTPS falharia na validação do
 # certificado do alvo, e o erro pareceria queda do serviço monitorado.
