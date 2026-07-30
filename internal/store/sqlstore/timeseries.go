@@ -324,6 +324,53 @@ func (s *Store) LastPush(ctx context.Context, monitorID int64) (time.Time, bool,
 	return fromMillis(ms), true, nil
 }
 
+// LatestHeartbeats devolve a batida mais recente de cada monitor.
+//
+// Uma consulta só, com subconsulta correlacionada que usa o índice
+// composto (monitor_id, ts). A alternativa — uma consulta por monitor —
+// faria a exposição de métricas custar N leituras a cada raspagem, e a
+// métrica viraria a maior fonte de carga do banco que ela observa.
+func (s *Store) LatestHeartbeats(ctx context.Context) (map[int64]domain.Heartbeat, error) {
+	const q = `
+		SELECT h.monitor_id, h.probe_id, h.ts, h.status, h.latency_ms, h.message
+		FROM heartbeat h
+		WHERE h.ts = (SELECT MAX(ts) FROM heartbeat WHERE monitor_id = h.monitor_id)`
+
+	rows, err := s.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("sqlstore: lendo últimas batidas: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[int64]domain.Heartbeat{}
+	for rows.Next() {
+		var (
+			hb         domain.Heartbeat
+			tsMS       int64
+			statusName string
+		)
+		if err := rows.Scan(&hb.MonitorID, &hb.ProbeID, &tsMS, &statusName,
+			&hb.LatencyMS, &hb.Message); err != nil {
+			return nil, fmt.Errorf("sqlstore: lendo última batida: %w", err)
+		}
+
+		status, err := domain.ParseStatus(statusName)
+		if err != nil {
+			return nil, fmt.Errorf("sqlstore: status inválido na batida: %w", err)
+		}
+		hb.Status = status
+		hb.Timestamp = fromMillis(tsMS)
+
+		// Com vários probes o mesmo monitor traz uma linha por origem
+		// empatada no instante; fica a mais recente e, no empate, a
+		// última lida — a métrica quer um valor por monitor.
+		if atual, ok := out[hb.MonitorID]; !ok || !hb.Timestamp.Before(atual.Timestamp) {
+			out[hb.MonitorID] = hb
+		}
+	}
+	return out, rows.Err()
+}
+
 // Compact devolve ao sistema de arquivos o espaço liberado pela poda.
 //
 // Apagar linhas não encolhe o banco por si só: as páginas ficam livres

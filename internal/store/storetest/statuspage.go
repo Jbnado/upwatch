@@ -896,3 +896,80 @@ func testAnnouncementListIsNewestFirst(t *testing.T, newStore Factory) {
 		t.Fatalf("ordem divergiu: %+v", page.Items)
 	}
 }
+
+// ---------- últimas batidas ----------
+
+func testLatestHeartbeatsOnEmptyStore(t *testing.T, newStore Factory) {
+	s := newStore(t)
+
+	ultimas, err := s.LatestHeartbeats(context.Background())
+	if err != nil {
+		t.Fatalf("lendo: %v", err)
+	}
+	if len(ultimas) != 0 {
+		t.Fatalf("banco vazio devolveu %d batidas", len(ultimas))
+	}
+}
+
+func testLatestHeartbeatsPicksTheNewest(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	id := mustCreateMonitor(t, s, "api")
+	if err := s.WriteHeartbeats(ctx, []domain.Heartbeat{
+		{MonitorID: id, Timestamp: epoch, Status: domain.StatusUp, LatencyMS: 100},
+		{MonitorID: id, Timestamp: epoch.Add(time.Minute), Status: domain.StatusDown, LatencyMS: 0},
+		{MonitorID: id, Timestamp: epoch.Add(-time.Minute), Status: domain.StatusUp, LatencyMS: 50},
+	}); err != nil {
+		t.Fatalf("gravando: %v", err)
+	}
+
+	ultimas, err := s.LatestHeartbeats(ctx)
+	if err != nil {
+		t.Fatalf("lendo: %v", err)
+	}
+
+	hb, ok := ultimas[id]
+	if !ok {
+		t.Fatal("monitor não apareceu nas últimas batidas")
+	}
+	// A mais recente, não a última inserida: a métrica descreve o estado
+	// de agora, e uma batida atrasada chegando fora de ordem não pode
+	// fazer a exposição regredir.
+	if !hb.Timestamp.Equal(epoch.Add(time.Minute)) {
+		t.Fatalf("trouxe a batida errada: %s", hb.Timestamp)
+	}
+	if hb.Status != domain.StatusDown {
+		t.Errorf("estado divergiu: %s", hb.Status)
+	}
+}
+
+func testLatestHeartbeatsCoverEveryMonitor(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	um := mustCreateMonitor(t, s, "um")
+	outro := mustCreateMonitor(t, s, "outro")
+	semBatida := mustCreateMonitor(t, s, "sem-batida")
+
+	if err := s.WriteHeartbeats(ctx, []domain.Heartbeat{
+		{MonitorID: um, Timestamp: epoch, Status: domain.StatusUp, LatencyMS: 10},
+		{MonitorID: outro, Timestamp: epoch, Status: domain.StatusDegraded, LatencyMS: 900},
+	}); err != nil {
+		t.Fatalf("gravando: %v", err)
+	}
+
+	ultimas, err := s.LatestHeartbeats(ctx)
+	if err != nil {
+		t.Fatalf("lendo: %v", err)
+	}
+
+	if len(ultimas) != 2 {
+		t.Fatalf("esperava 2 monitores, vieram %d", len(ultimas))
+	}
+	// Monitor sem batida fica de fora, e não entra com zero: zero seria
+	// lido como resposta instantânea por quem consome a métrica.
+	if _, ok := ultimas[semBatida]; ok {
+		t.Error("monitor sem verificação apareceu nas últimas batidas")
+	}
+}

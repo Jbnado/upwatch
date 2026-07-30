@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/bernardojoao/upwatch/internal/domain"
+	"github.com/bernardojoao/upwatch/internal/metrics"
 	"github.com/bernardojoao/upwatch/internal/notifier"
 	"github.com/bernardojoao/upwatch/internal/store"
 )
@@ -31,6 +32,7 @@ type Engine struct {
 	next     Sink
 	store    store.MetadataStore
 	dispatch Dispatcher
+	counters *metrics.Counters
 
 	mu       sync.RWMutex
 	monitors map[int64]domain.Monitor
@@ -38,11 +40,15 @@ type Engine struct {
 }
 
 // NewEngine cria o motor.
-func NewEngine(next Sink, s store.MetadataStore, d Dispatcher) *Engine {
+//
+// counters é opcional: quem não expõe métricas passa nil, e o contador
+// nulo aceita observações sem fazer nada.
+func NewEngine(next Sink, s store.MetadataStore, d Dispatcher, counters *metrics.Counters) *Engine {
 	return &Engine{
 		next:     next,
 		store:    s,
 		dispatch: d,
+		counters: counters,
 		monitors: map[int64]domain.Monitor{},
 		states:   map[int64]domain.MonitorState{},
 	}
@@ -89,6 +95,11 @@ func (e *Engine) Remove(id int64) {
 // crítico, e uma falha ao decidir sobre alerta não pode custar o dado.
 func (e *Engine) Submit(ctx context.Context, hb domain.Heartbeat) error {
 	err := e.next.Submit(ctx, hb)
+
+	// O motor vê toda batida a caminho do banco, então é aqui que a
+	// contagem acumulada sai de graça — sem varrer a tabela a cada
+	// raspagem de métricas.
+	e.counters.ObserveCheck(hb.Status)
 
 	// A avaliação nunca devolve erro para cima: o agendador não tem o que
 	// fazer com ele, e propagá-lo só faria uma falha de notificação

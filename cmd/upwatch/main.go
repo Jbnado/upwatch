@@ -25,10 +25,12 @@ import (
 	"github.com/bernardojoao/upwatch/internal/config"
 	"github.com/bernardojoao/upwatch/internal/domain"
 	"github.com/bernardojoao/upwatch/internal/incident"
+	"github.com/bernardojoao/upwatch/internal/metrics"
 	"github.com/bernardojoao/upwatch/internal/notifier"
 	"github.com/bernardojoao/upwatch/internal/rollup"
 	"github.com/bernardojoao/upwatch/internal/scheduler"
 	"github.com/bernardojoao/upwatch/internal/sentinel"
+	"github.com/bernardojoao/upwatch/internal/server"
 	"github.com/bernardojoao/upwatch/internal/store"
 	"github.com/bernardojoao/upwatch/internal/store/sqlstore"
 	"github.com/bernardojoao/upwatch/internal/web"
@@ -154,12 +156,15 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 		}))
 	}
 
-	alerts := notifier.NewDispatcher(notifier.DispatcherOptions{Clock: real})
+	// Contadores acumulados no processo, lidos pela exposição de métricas.
+	counters := metrics.New()
+
+	alerts := notifier.NewDispatcher(notifier.DispatcherOptions{Clock: real, Counters: counters})
 
 	// O motor fica entre o agendador e o escritor: observa cada batida a
 	// caminho do banco. Assim nem o agendador precisa saber de incidentes,
 	// nem o escritor de alertas.
-	engine := incident.NewEngine(writer, st, alerts)
+	engine := incident.NewEngine(writer, st, alerts, counters)
 
 	sched := scheduler.New(registry, engine, scheduler.Options{
 		Workers: cfg.Workers,
@@ -176,6 +181,8 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 		Scheduler:     monitorFanout{sched, engine},
 		SecureCookies: cfg.SecureCookies,
 		PublicURL:     cfg.PublicURL,
+		Version:       version,
+		Counters:      counters,
 		SessionTTL:    cfg.SessionTTL,
 	})
 
@@ -191,21 +198,8 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 			Clock:     real,
 		}),
 		auth:    authSvc,
-		handler: mux(apiHandler),
+		handler: server.New(apiHandler, web.Handler()),
 	}, nil
-}
-
-// mux encaminha a API e entrega o resto à interface.
-func mux(apiHandler http.Handler) http.Handler {
-	spa := web.Handler()
-
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/healthz" {
-			apiHandler.ServeHTTP(w, r)
-			return
-		}
-		spa.ServeHTTP(w, r)
-	})
 }
 
 // run sobe todos os componentes e aguarda o sinal de encerramento.

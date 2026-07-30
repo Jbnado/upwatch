@@ -10,6 +10,7 @@ import (
 	"github.com/bernardojoao/upwatch/internal/checker"
 	"github.com/bernardojoao/upwatch/internal/clock"
 	"github.com/bernardojoao/upwatch/internal/domain"
+	"github.com/bernardojoao/upwatch/internal/metrics"
 	"github.com/bernardojoao/upwatch/internal/store"
 )
 
@@ -33,6 +34,14 @@ type Options struct {
 	// SessionTTL espelha a validade usada pelo serviço de autenticação,
 	// para o cookie expirar junto com a sessão no servidor.
 	SessionTTL time.Duration
+
+	// Version aparece em upwatch_build_info, para o painel de métricas
+	// mostrar qual versão está no ar sem precisar consultar o processo.
+	Version string
+
+	// Counters acumula o que o processo viu, para a exposição de métricas
+	// não precisar varrer a tabela de batidas a cada raspagem.
+	Counters *metrics.Counters
 
 	// PublicURL é o endereço externo da instalação, como
 	// "https://status.exemplo.com".
@@ -65,6 +74,8 @@ type API struct {
 	secureCookies bool
 	sessionTTL    time.Duration
 	publicURL     string
+	version       string
+	counters      *metrics.Counters
 
 	events *eventHub
 }
@@ -77,6 +88,9 @@ func New(opts Options) http.Handler {
 	if opts.SessionTTL <= 0 {
 		opts.SessionTTL = auth.DefaultSessionTTL
 	}
+	if opts.Version == "" {
+		opts.Version = "dev"
+	}
 
 	a := &API{
 		store:         opts.Store,
@@ -87,6 +101,8 @@ func New(opts Options) http.Handler {
 		secureCookies: opts.SecureCookies,
 		sessionTTL:    opts.SessionTTL,
 		publicURL:     opts.PublicURL,
+		version:       opts.Version,
+		counters:      opts.Counters,
 		events:        newEventHub(),
 	}
 	return a.routes()
@@ -99,6 +115,11 @@ func (a *API) routes() http.Handler {
 	// Liveness fora de qualquer autenticação: orquestradores a consultam
 	// antes de existir credencial alguma.
 	r.Get("/healthz", a.handleHealth)
+
+	// Exposição para Prometheus. Sem credencial porque o coletor raspa
+	// sem sessão, e exigir uma obrigaria cada instalação a inventar um
+	// token só para isso.
+	r.Get("/metrics", a.handleMetrics)
 
 	r.Route("/api/v1", func(r chi.Router) {
 		// A especificação é pública: descobrir como autenticar é o que se

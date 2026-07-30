@@ -349,6 +349,13 @@ type TimeseriesStore interface {
 	// LastPush devolve o instante do último sinal, e se houve algum.
 	LastPush(ctx context.Context, monitorID int64) (time.Time, bool, error)
 
+	// LatestHeartbeats devolve a batida mais recente de cada monitor.
+	//
+	// Numa consulta só, e não uma por monitor: é o que a exposição de
+	// métricas lê a cada raspagem, e uma consulta por alvo faria a
+	// métrica virar a maior fonte de carga do banco que ela observa.
+	LatestHeartbeats(ctx context.Context) (map[int64]domain.Heartbeat, error)
+
 	// Compact devolve ao sistema o espaço liberado pela poda.
 	//
 	// Apagar linhas não encolhe o arquivo no SQLite: as páginas ficam

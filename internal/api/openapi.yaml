@@ -76,6 +76,41 @@ paths:
                 properties:
                   status: { type: string, example: ok }
 
+  /metrics:
+    get:
+      tags: [setup]
+      security: []
+      summary: Exposição para Prometheus
+      description: |
+        Formato de texto do Prometheus, sem credencial — o coletor raspa
+        sem sessão, e exigir uma obrigaria cada instalação a inventar um
+        token só para isso.
+
+        O que sai são contagens, estados e nomes de monitor. O endereço do
+        alvo nunca vira rótulo&#58; além de descrever a topologia interna,
+        endereço em rótulo é cardinalidade alta, que é como se derruba um
+        Prometheus.
+
+        Famílias publicadas&#58; `upwatch_build_info`,
+        `upwatch_monitors_total`, `upwatch_monitor_status`,
+        `upwatch_monitor_enabled`, `upwatch_monitor_interval_seconds`,
+        `upwatch_monitor_latency_seconds`,
+        `upwatch_monitor_last_check_timestamp_seconds`,
+        `upwatch_incidents_open`, `upwatch_checks_total`,
+        `upwatch_notifications_total` e
+        `upwatch_metrics_truncated_monitors`.
+
+        Em `upwatch_monitor_status`, 1 é no ar, 0 fora do ar, 2 degradado
+        e -1 sem medição. "Sem medição" não é zero de propósito&#58;
+        confundir os dois faria o alerta disparar para todo monitor
+        recém-criado.
+      responses:
+        "200":
+          description: Métricas em texto
+          content:
+            text/plain:
+              schema: { type: string }
+
   /api/v1/openapi.yaml:
     get:
       tags: [setup]

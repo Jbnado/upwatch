@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bernardojoao/upwatch/internal/clock"
+	"github.com/bernardojoao/upwatch/internal/metrics"
 )
 
 // Padrões do despachante.
@@ -38,6 +39,13 @@ type DispatcherOptions struct {
 	QueueSize   int
 	Workers     int
 	Clock       clock.Clock
+
+	// Counters separa entregue de descartado na exposição de métricas.
+	//
+	// Opcional: o contador nulo aceita observações sem fazer nada, então
+	// quem monta um despachante em teste não precisa saber que ele
+	// existe.
+	Counters *metrics.Counters
 }
 
 func (o DispatcherOptions) withDefaults() DispatcherOptions {
@@ -110,6 +118,7 @@ func (d *Dispatcher) Enqueue(n Notification, channels []Notifier) {
 		case d.queue <- delivery{notification: n, channel: canal}:
 		default:
 			d.dropped.Add(1)
+			d.opts.Counters.ObserveNotification(false)
 			slog.Warn("aviso descartado: fila de notificacao cheia",
 				"monitor", n.Monitor.Name, "estado", n.Status())
 		}
@@ -167,11 +176,13 @@ func (d *Dispatcher) deliver(ctx context.Context, item delivery) {
 	for tentativa := 1; tentativa <= d.opts.MaxAttempts; tentativa++ {
 		err := item.channel.Send(ctx, item.notification)
 		if err == nil {
+			d.opts.Counters.ObserveNotification(true)
 			return
 		}
 
 		if tentativa == d.opts.MaxAttempts {
 			d.dropped.Add(1)
+			d.opts.Counters.ObserveNotification(false)
 			slog.Error("aviso nao entregue apos todas as tentativas",
 				"monitor", item.notification.Monitor.Name,
 				"estado", item.notification.Status(),
@@ -191,6 +202,9 @@ func (d *Dispatcher) deliver(ctx context.Context, item delivery) {
 			// não cabe mais no prazo de desligamento.
 			if err := item.channel.Send(context.Background(), item.notification); err != nil {
 				d.dropped.Add(1)
+				d.opts.Counters.ObserveNotification(false)
+			} else {
+				d.opts.Counters.ObserveNotification(true)
 			}
 			return
 		}

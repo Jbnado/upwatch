@@ -85,7 +85,7 @@ func newEngine(t *testing.T) *engineFixture {
 
 	sink := &recordingSink{}
 	dispatch := &recordingDispatcher{}
-	eng := incident.NewEngine(sink, st, dispatch)
+	eng := incident.NewEngine(sink, st, dispatch, nil)
 	eng.Upsert(m)
 
 	return &engineFixture{store: st, sink: sink, dispatch: dispatch, engine: eng, monitor: m}
@@ -231,7 +231,7 @@ func TestEngineRestoresStateOnLoad(t *testing.T) {
 	f.observe(t, repeatStatus(threshold-1, domain.StatusDown)...)
 
 	// Um motor novo sobre o mesmo banco, como aconteceria num reinício.
-	novo := incident.NewEngine(&recordingSink{}, f.store, f.dispatch)
+	novo := incident.NewEngine(&recordingSink{}, f.store, f.dispatch, nil)
 	novo.Upsert(f.monitor)
 	if err := novo.Load(ctx); err != nil {
 		t.Fatalf("Load returned unexpected error: %v", err)
