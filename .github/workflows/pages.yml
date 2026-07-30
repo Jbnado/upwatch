@@ -31,23 +31,23 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # enablement liga o Pages pela API na primeira execução, para o
       # site subir com o push em vez de esperar alguém achar a opção em
       # Settings. Se a organização não permitir, o passo falha aqui com
       # uma mensagem clara — e não com um site que simplesmente não
       # aparece.
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
         with:
           enablement: true
 
       # O site é HTML e CSS escritos à mão, sem etapa de build: não há
       # dependência para instalar, nada para compilar e nada que possa
       # quebrar entre uma publicação e outra.
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: docs
 
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
