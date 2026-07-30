@@ -22,6 +22,19 @@ import (
 //go:embed all:dist
 var dist embed.FS
 
+// BuildDir é onde o vite escreve, dentro do diretório embarcado.
+//
+// Ele é um nível abaixo de dist/ por um motivo específico: o vite apaga o
+// diretório de saída inteiro antes de cada build. Com a saída em dist/, a
+// âncora versionada que faz o go:embed casar era apagada junto, sumia do
+// commit sem ninguém notar, e o clone limpo deixava de compilar — com uma
+// mensagem que não diz o que fazer. Separando os dois, o vite manda em
+// dist/app e o versionamento manda em dist/, sem se atropelarem.
+//
+// Exportado porque vite.config.ts precisa concordar com este valor, e um
+// teste guarda essa concordância.
+const BuildDir = "dist/app"
+
 // assetsMaxAge é o cache dos arquivos versionados por hash. Como o nome
 // muda a cada build, guardá-los por um ano é seguro e poupa a rede em
 // instalações acessadas de fora.
@@ -33,7 +46,7 @@ const assetsMaxAge = "public, max-age=31536000, immutable"
 // de página em branco: descobrir que falta rodar o build olhando um fundo
 // branco custa tempo demais.
 func Handler() http.Handler {
-	root, err := fs.Sub(dist, "dist")
+	root, err := fs.Sub(dist, BuildDir)
 	if err != nil {
 		return notBuilt()
 	}

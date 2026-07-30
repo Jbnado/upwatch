@@ -50,6 +50,9 @@ dev:
 	@echo "Suba o servidor em um terminal:  go run ./cmd/upwatch"
 	@echo "E a interface em outro:          cd web && pnpm dev"
 
+# Remove a saída do vite, não dist/ inteiro: a âncora versionada em
+# dist/.gitkeep é o que faz o pacote compilar, e apagá-la deixaria o
+# próximo "go test" falhar sem relação aparente com o clean.
 clean:
 	rm -f upwatch upwatch.exe coverage.out
-	rm -rf internal/web/dist/assets internal/web/dist/index.html
+	rm -rf internal/web/dist/app

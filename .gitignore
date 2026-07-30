@@ -24,8 +24,10 @@ coverage.txt
 # precisa existir: o go:embed aponta para ele, e sem um arquivo dentro o
 # pacote não compila. Um clone limpo falharia antes de qualquer teste
 # rodar — que é a pior primeira impressão possível.
-/internal/web/dist/*
-!/internal/web/dist/.gitkeep
+#
+# Só a saída do vite é ignorada, não dist/ inteiro. O vite apaga dist/app
+# a cada build; a âncora versionada fica um nível acima, fora do alcance.
+/internal/web/dist/app/
 # Cache incremental do tsc: muda a cada build e não descreve o código.
 /web/tsconfig.tsbuildinfo
 

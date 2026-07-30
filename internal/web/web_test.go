@@ -3,6 +3,7 @@ package web_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -99,4 +100,47 @@ func TestTraversalIsContained(t *testing.T) {
 func construida(t *testing.T) bool {
 	t.Helper()
 	return get(t, "/").Code != http.StatusServiceUnavailable
+}
+
+// Um clone limpo precisa compilar.
+//
+// go:embed falha em tempo de compilação quando o padrão não casa com
+// nenhum arquivo, e o diretório de saída da interface é ignorado pelo
+// versionamento. Se nada ali estiver versionado, quem clona o repositório
+// não consegue nem rodar os testes — o pacote não compila, e a mensagem
+// ("pattern all:dist: no matching files found") não diz o que fazer.
+//
+// Nenhum teste de comportamento pega isso: eles todos rodam numa árvore
+// onde a interface já foi construída. Este olha para o que está
+// versionado, que é o que a outra pessoa recebe.
+func TestCloneLimpoCompila(t *testing.T) {
+	saida, err := exec.Command("git", "ls-files", "dist").Output()
+	if err != nil {
+		t.Skip("fora de um checkout git")
+	}
+
+	if strings.TrimSpace(string(saida)) == "" {
+		t.Fatal("nenhum arquivo versionado em internal/web/dist: " +
+			"um clone limpo falha em go:embed antes de qualquer teste rodar")
+	}
+}
+
+// A âncora versionada não pode morar onde o vite escreve.
+//
+// O build da interface limpa o diretório de saída inteiro antes de
+// escrever. Uma âncora lá dentro é apagada a cada build, some do commit
+// sem ninguém notar e leva o clone limpo junto — foi exatamente assim que
+// isso quebrou uma vez.
+func TestAncoraSobreviveAoBuild(t *testing.T) {
+	saida, err := exec.Command("git", "ls-files", "dist").Output()
+	if err != nil {
+		t.Skip("fora de um checkout git")
+	}
+
+	for _, versionado := range strings.Fields(string(saida)) {
+		if strings.HasPrefix(versionado, web.BuildDir+"/") {
+			t.Errorf("o arquivo versionado %q está dentro de %q, que o build apaga; "+
+				"ele precisa ficar fora para sobreviver a um vite build", versionado, web.BuildDir)
+		}
+	}
 }

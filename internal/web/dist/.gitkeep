@@ -1,0 +1,9 @@
+Este arquivo existe para que o repositório compile.
+
+O go:embed em ../web.go aponta para este diretório e falha em tempo de
+compilação quando o padrão não casa com nada. A interface construída vai
+para app/, que é ignorada pelo versionamento — sem esta âncora, um clone
+limpo não compilaria, e a mensagem de erro não diria o que fazer.
+
+Ela mora aqui, e não dentro de app/, porque o vite apaga app/ inteira
+antes de cada build.
