@@ -6,7 +6,7 @@
 # sobe e se atualiza como uma unidade só.
 
 # ---------- interface ----------
-FROM node:22-alpine AS web
+FROM node:26-alpine AS web
 
 WORKDIR /app/web
 
