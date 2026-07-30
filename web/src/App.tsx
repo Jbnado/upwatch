@@ -6,6 +6,8 @@ import { Gate, Mark } from "./screens/Gate";
 import { MonitorDetail } from "./screens/MonitorDetail";
 import { MonitorForm } from "./screens/MonitorForm";
 import { Settings } from "./screens/Settings";
+import { Status } from "./screens/Status";
+import { StatusPageAdmin, StatusPages } from "./screens/StatusPages";
 import { TextLink } from "./components/ui";
 import { navigate, useRoute } from "./lib/router";
 
@@ -19,6 +21,8 @@ type Session =
 export function App() {
   const [session, setSession] = useState<Session>({ kind: "loading" });
   const route = useRoute();
+
+  const publica = route.name === "status";
 
   const resolve = useCallback(async () => {
     try {
@@ -37,8 +41,20 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (publica) return;
     void resolve();
-  }, [resolve]);
+  }, [resolve, publica]);
+
+  // A página pública é resolvida antes de qualquer verificação de sessão.
+  //
+  // Quem abre aquele link não tem conta: mostrar-lhe uma tela de login
+  // anularia o propósito de existir um endereço para compartilhar. E nem
+  // sequer consultamos /auth/me antes de desenhar — seria latência a mais
+  // numa tela que precisa carregar rápido justamente quando o serviço
+  // está com problema.
+  if (route.name === "status") {
+    return <Status slug={route.slug} />;
+  }
 
   if (session.kind === "loading") {
     return (
@@ -70,6 +86,8 @@ export function App() {
         {route.name === "settings" && (
           <Settings onSignedOut={() => setSession({ kind: "anonymous" })} />
         )}
+        {route.name === "status-pages" && <StatusPages />}
+        {route.name === "status-page" && <StatusPageAdmin id={route.id} />}
       </main>
     </div>
   );

@@ -120,6 +120,130 @@ export type Page<T> = {
   next_after_id?: number;
 };
 
+// ---------- páginas públicas de estado ----------
+
+export type IncidentImpact = "none" | "minor" | "major" | "critical";
+export type IncidentPhase = "investigating" | "identified" | "monitoring" | "resolved";
+
+export type StatusPage = {
+  id: number;
+  slug: string;
+  title: string;
+  description?: string;
+  show_latency: boolean;
+  time_zone?: string;
+  enabled: boolean;
+  /** Responde em /status, sem slug. No máximo uma. */
+  default: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type StatusPageInput = {
+  slug: string;
+  title: string;
+  description?: string;
+  show_latency?: boolean;
+  time_zone?: string;
+  enabled?: boolean;
+};
+
+export type StatusPageGroup = {
+  id: number;
+  page_id: number;
+  name: string;
+  position: number;
+};
+
+export type StatusPageComponent = {
+  page_id: number;
+  monitor_id: number;
+  group_id?: number | null;
+  label?: string;
+  position: number;
+};
+
+export type Announcement = {
+  id: number;
+  title: string;
+  impact: IncidentImpact;
+  phase: IncidentPhase;
+  global: boolean;
+  components?: number[];
+  incident_id?: number | null;
+  started_at: string;
+  resolved_at?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AnnouncementUpdate = {
+  id: number;
+  announcement_id: number;
+  phase: IncidentPhase;
+  body: string;
+  published_at: string;
+};
+
+/**
+ * O que a página pública devolve.
+ *
+ * Note o que não existe aqui: endereço de alvo, causa detectada,
+ * identificador de monitor. O servidor monta esta resposta num pacote
+ * próprio justamente para que o tipo não tenha onde guardá-los.
+ */
+export type PublicView = {
+  slug: string;
+  title: string;
+  description?: string;
+  time_zone?: string;
+  status: Status;
+  impact: IncidentImpact;
+  window_days: number;
+  generated_at: string;
+  groups: PublicGroup[];
+  announcements: PublicAnnouncement[];
+};
+
+export type PublicGroup = {
+  /** Vazio é o grupo implícito dos componentes sem agrupamento. */
+  name: string;
+  monitors: PublicMonitor[];
+};
+
+export type PublicMonitor = {
+  name: string;
+  status: Status;
+  /** Ausente quando nada foi observado: zero afirmaria queda total. */
+  uptime_percent?: number;
+  latency_p95_ms?: number;
+  history: PublicDay[];
+};
+
+export type PublicDay = {
+  /** Dia de calendário em AAAA-MM-DD, não instante. */
+  date: string;
+  status: Status;
+  uptime_percent?: number;
+};
+
+export type PublicAnnouncement = {
+  title: string;
+  impact: IncidentImpact;
+  phase: IncidentPhase;
+  /** Rótulos públicos, nunca identificadores. */
+  components?: string[];
+  started_at: string;
+  resolved_at?: string | null;
+  updates: PublicAnnouncementUpdate[];
+};
+
+export type PublicAnnouncementUpdate = {
+  phase: IncidentPhase;
+  body: string;
+  published_at: string;
+};
+
 /** ApiError carrega o código e o campo reprovado, quando houver. */
 export class ApiError extends Error {
   constructor(

@@ -33,6 +33,15 @@ type Options struct {
 	// SessionTTL espelha a validade usada pelo serviço de autenticação,
 	// para o cookie expirar junto com a sessão no servidor.
 	SessionTTL time.Duration
+
+	// PublicURL é o endereço externo da instalação, como
+	// "https://status.exemplo.com".
+	//
+	// Vazio faz o feed usar endereços relativos, que é o padrão seguro: a
+	// alternativa seria reconstruí-los a partir do cabeçalho Host, e esse
+	// cabeçalho é controlado por quem chama. Configure atrás de proxy,
+	// quando quiser endereços absolutos no feed.
+	PublicURL string
 }
 
 // MonitorSink recebe as alterações de monitor.
@@ -55,6 +64,7 @@ type API struct {
 
 	secureCookies bool
 	sessionTTL    time.Duration
+	publicURL     string
 
 	events *eventHub
 }
@@ -76,6 +86,7 @@ func New(opts Options) http.Handler {
 		scheduler:     opts.Scheduler,
 		secureCookies: opts.SecureCookies,
 		sessionTTL:    opts.SessionTTL,
+		publicURL:     opts.PublicURL,
 		events:        newEventHub(),
 	}
 	return a.routes()
@@ -108,6 +119,12 @@ func (a *API) routes() http.Handler {
 		// Página pública de estado. É a única superfície de leitura sem
 		// credencial, e por isso a resposta é montada num pacote próprio —
 		// nenhum handler daqui decide o que sai.
+		//
+		// Sem slug responde a página padrão: numa instalação com uma
+		// página só, o slug repete o que o caminho já diz, e "/status" é
+		// o endereço que se cola em contrato e em rodapé de e-mail.
+		r.Get("/public", a.handlePublicDefault)
+		r.Get("/public/feed.atom", a.handlePublicDefaultFeed)
 		r.Get("/public/{slug}", a.handlePublicStatus)
 		r.Get("/public/{slug}/feed.atom", a.handlePublicFeed)
 
@@ -153,6 +170,7 @@ func (a *API) routes() http.Handler {
 			r.Get("/status-pages/{id}", a.handleGetStatusPage)
 			r.Put("/status-pages/{id}", a.handleUpdateStatusPage)
 			r.Delete("/status-pages/{id}", a.handleDeleteStatusPage)
+			r.Put("/status-pages/{id}/default", a.handleSetDefaultStatusPage)
 
 			r.Post("/status-pages/{id}/groups", a.handleCreateGroup)
 			r.Put("/status-pages/{id}/groups/{groupID}", a.handleUpdateGroup)

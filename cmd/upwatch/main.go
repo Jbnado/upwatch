@@ -175,6 +175,7 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 		Clock:         real,
 		Scheduler:     monitorFanout{sched, engine},
 		SecureCookies: cfg.SecureCookies,
+		PublicURL:     cfg.PublicURL,
 		SessionTTL:    cfg.SessionTTL,
 	})
 

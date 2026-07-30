@@ -679,6 +679,44 @@ paths:
                   has_more: { type: boolean }
                   next_after_id: { type: integer, format: int64 }
 
+  /api/v1/public:
+    get:
+      tags: [public]
+      security: []
+      summary: Página pública padrão
+      description: |
+        Responde a página marcada como padrão, sem slug no caminho.
+
+        Existe porque numa instalação com uma página só o slug repete o
+        que o caminho já diz&#58; "/status/estado" é redundante, e
+        "/status" é o endereço que se cola em contrato e em rodapé de
+        e-mail.
+
+        Devolve 404 quando nenhuma página foi marcada como padrão — a
+        instalação não elege uma sozinha.
+      responses:
+        "200":
+          description: Estado da página
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublicView" }
+        "304": { description: Sem alteração desde a versão do cliente }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/public/feed.atom:
+    get:
+      tags: [public]
+      security: []
+      summary: Feed Atom da página padrão
+      responses:
+        "200":
+          description: Documento Atom
+          content:
+            application/atom+xml:
+              schema: { type: string }
+        "304": { description: Sem alteração desde a versão do cliente }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/v1/public/{slug}:
     get:
       tags: [public]
@@ -823,6 +861,29 @@ paths:
         - $ref: "#/components/parameters/PathID"
       responses:
         "204": { description: Página removida }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/status-pages/{id}/default:
+    put:
+      tags: [status-pages]
+      summary: Torna a página a padrão
+      description: |
+        A padrão responde em `/status`, sem slug. Promover rebaixa a
+        anterior na mesma transação — exigir dois passos abriria uma
+        janela em que `/status` não responde.
+
+        Endpoint próprio, e não um campo na edição&#58; esconder a troca
+        dentro de um PUT de título faria `/status` mudar de dono sem
+        ninguém pedir.
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+      responses:
+        "200":
+          description: Página promovida
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusPage" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
@@ -1359,6 +1420,9 @@ components:
           description: |
             Desligada, a rota pública devolve 404 — não 403, que
             confirmaria a existência da página.
+        default:
+          type: boolean
+          description: Responde em `/status`, sem slug. No máximo uma.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 

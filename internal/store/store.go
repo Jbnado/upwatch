@@ -237,6 +237,14 @@ type StatusPageRepo interface {
 	Get(ctx context.Context, id int64) (domain.StatusPage, error)
 	// GetBySlug é o caminho da requisição anônima.
 	GetBySlug(ctx context.Context, slug string) (domain.StatusPage, error)
+	// GetDefault devolve a página que responde em "/status", ou
+	// ErrNotFound quando nenhuma foi marcada.
+	GetDefault(ctx context.Context) (domain.StatusPage, error)
+	// SetDefault promove uma página a padrão e rebaixa a anterior, numa
+	// transação. Trocar por erro de unicidade obrigaria quem opera a
+	// desmarcar antes de marcar, o que é uma janela em que "/status" não
+	// responde.
+	SetDefault(ctx context.Context, id int64) error
 	Update(ctx context.Context, p domain.StatusPage) error
 	Delete(ctx context.Context, id int64) error
 	List(ctx context.Context) ([]domain.StatusPage, error)

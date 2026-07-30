@@ -1,5 +1,7 @@
 import {
   ApiError,
+  type Announcement,
+  type AnnouncementUpdate,
   type APIToken,
   type Channel,
   type ChannelInput,
@@ -7,10 +9,17 @@ import {
   type CreatedToken,
   type Heartbeat,
   type Incident,
+  type IncidentImpact,
+  type IncidentPhase,
   type Monitor,
   type MonitorInput,
   type Page,
+  type PublicView,
   type Rollup,
+  type StatusPage,
+  type StatusPageComponent,
+  type StatusPageGroup,
+  type StatusPageInput,
   type User,
 } from "./types";
 
@@ -161,6 +170,87 @@ export const api = {
 
   incidents: (params: { monitor_id?: number; open?: string; limit?: number } = {}) =>
     request<Page<Incident>>(`/incidents${query(params)}`),
+
+  // ---------- páginas públicas ----------
+
+  /**
+   * publicStatus busca a página sem credencial.
+   *
+   * É a única chamada da interface que funciona deslogado, e é o ponto
+   * inteiro da funcionalidade.
+   */
+  publicStatus: (slug?: string) =>
+    request<PublicView>(slug ? `/public/${encodeURIComponent(slug)}` : "/public"),
+
+  feedUrl: (slug?: string) =>
+    slug ? `${BASE}/public/${encodeURIComponent(slug)}/feed.atom` : `${BASE}/public/feed.atom`,
+
+  listStatusPages: () => request<{ items: StatusPage[] }>("/status-pages"),
+
+  getStatusPage: (id: number) =>
+    request<{
+      page: StatusPage;
+      groups: StatusPageGroup[];
+      components: StatusPageComponent[];
+    }>(`/status-pages/${id}`),
+
+  createStatusPage: (input: StatusPageInput) =>
+    request<StatusPage>("/status-pages", { method: "POST", body: JSON.stringify(input) }),
+
+  updateStatusPage: (id: number, input: StatusPageInput) =>
+    request<StatusPage>(`/status-pages/${id}`, { method: "PUT", body: JSON.stringify(input) }),
+
+  deleteStatusPage: (id: number) => request<void>(`/status-pages/${id}`, { method: "DELETE" }),
+
+  setDefaultStatusPage: (id: number) =>
+    request<StatusPage>(`/status-pages/${id}/default`, { method: "PUT" }),
+
+  createGroup: (pageID: number, input: { name: string; position?: number }) =>
+    request<StatusPageGroup>(`/status-pages/${pageID}/groups`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+
+  deleteGroup: (pageID: number, groupID: number) =>
+    request<void>(`/status-pages/${pageID}/groups/${groupID}`, { method: "DELETE" }),
+
+  setComponent: (
+    pageID: number,
+    monitorID: number,
+    input: { group_id?: number | null; label?: string; position?: number },
+  ) =>
+    request<StatusPageComponent>(`/status-pages/${pageID}/components/${monitorID}`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }),
+
+  removeComponent: (pageID: number, monitorID: number) =>
+    request<void>(`/status-pages/${pageID}/components/${monitorID}`, { method: "DELETE" }),
+
+  // ---------- relatos ----------
+
+  announcements: (params: { open?: string; limit?: number } = {}) =>
+    request<Page<Announcement>>(`/announcements${query(params)}`),
+
+  getAnnouncement: (id: number) =>
+    request<{ announcement: Announcement; updates: AnnouncementUpdate[] }>(`/announcements/${id}`),
+
+  createAnnouncement: (input: {
+    title: string;
+    impact: IncidentImpact;
+    phase: IncidentPhase;
+    global?: boolean;
+    components?: number[];
+    body?: string;
+  }) => request<Announcement>("/announcements", { method: "POST", body: JSON.stringify(input) }),
+
+  deleteAnnouncement: (id: number) => request<void>(`/announcements/${id}`, { method: "DELETE" }),
+
+  publishUpdate: (id: number, input: { phase: IncidentPhase; body: string }) =>
+    request<{ announcement: Announcement; update: AnnouncementUpdate }>(
+      `/announcements/${id}/updates`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
 };
 
 /**

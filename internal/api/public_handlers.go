@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -34,11 +35,16 @@ import (
 const publicMaxAge = 30 * time.Second
 
 func (a *API) handlePublicStatus(w http.ResponseWriter, r *http.Request) {
-	view, ok := a.publicView(w, r)
+	view, ok := a.publicView(w, r, chi.URLParam(r, "slug"))
 	if !ok {
 		return
 	}
 
+	a.writePublicJSON(w, r, view)
+}
+
+// writePublicJSON serializa a visão com cache e revalidação.
+func (a *API) writePublicJSON(w http.ResponseWriter, r *http.Request, view domain.PublicView) {
 	corpo, err := json.Marshal(view)
 	if err != nil {
 		writeStoreError(w, err)
@@ -55,12 +61,46 @@ func (a *API) handlePublicStatus(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(corpo)
 }
 
+// handlePublicDefault responde em "/status", sem slug.
+//
+// Existe porque numa instalação com uma página só o slug repete o que o
+// caminho já diz: "/status/estado" é redundante, e é o endereço que se
+// cola em contrato e em rodapé de e-mail.
+func (a *API) handlePublicDefault(w http.ResponseWriter, r *http.Request) {
+	view, ok := a.publicView(w, r, "")
+	if !ok {
+		return
+	}
+	a.writePublicJSON(w, r, view)
+}
+
+func (a *API) handlePublicDefaultFeed(w http.ResponseWriter, r *http.Request) {
+	view, ok := a.publicView(w, r, "")
+	if !ok {
+		return
+	}
+	a.writeFeed(w, r, view)
+}
+
 // publicView resolve a página ou responde o erro.
 //
-// Página inexistente e página desligada dão o mesmo 404: distinguir as
-// duas confirmaria a existência da página a quem só chutou o endereço.
-func (a *API) publicView(w http.ResponseWriter, r *http.Request) (domain.PublicView, bool) {
-	slug := chi.URLParam(r, "slug")
+// Slug vazio busca a padrão. Página inexistente, página desligada e
+// instalação sem padrão dão todas o mesmo 404: distinguir os casos
+// confirmaria a existência da página a quem só chutou o endereço.
+func (a *API) publicView(w http.ResponseWriter, r *http.Request, slug string) (domain.PublicView, bool) {
+	if slug == "" {
+		view, err := statuspage.NewBuilder(a.store, a.clock).BuildDefault(r.Context())
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeError(w, http.StatusNotFound, codeNotFound, "página não encontrada")
+				return domain.PublicView{}, false
+			}
+			writeStoreError(w, err)
+			return domain.PublicView{}, false
+		}
+		return view, true
+	}
+
 	if err := domain.ValidateSlug(slug); err != nil {
 		// Slug inválido não chega ao banco: devolver 404 direto evita
 		// transformar a rota pública num caminho de sondagem barato.
@@ -106,12 +146,17 @@ func serveCached(w http.ResponseWriter, r *http.Request, corpo []byte) bool {
 // oferecem. Também é o que permite integrar num canal de chat sem que o
 // UpWatch precise saber falar com aquele canal.
 func (a *API) handlePublicFeed(w http.ResponseWriter, r *http.Request) {
-	view, ok := a.publicView(w, r)
+	view, ok := a.publicView(w, r, chi.URLParam(r, "slug"))
 	if !ok {
 		return
 	}
 
-	feed := buildFeed(view, publicBaseURL(r), view.Slug)
+	a.writeFeed(w, r, view)
+}
+
+// writeFeed serializa o Atom com cache e revalidação.
+func (a *API) writeFeed(w http.ResponseWriter, r *http.Request, view domain.PublicView) {
+	feed := buildFeed(view, a.publicURL, view.Slug)
 
 	corpo, err := xml.MarshalIndent(feed, "", "  ")
 	if err != nil {
@@ -158,18 +203,27 @@ type atomEntry struct {
 // Recebe a visão já montada, e não o store: assim o feed não tem como
 // mostrar nada que a página não mostre, e o teste de vazamento cobre os
 // dois de uma vez.
+//
+// base vazio produz endereços relativos, que o Atom aceita e o leitor
+// resolve contra a URL do próprio documento. É o padrão de propósito —
+// ver publicHref.
 func buildFeed(view domain.PublicView, base, slug string) atomFeed {
 	feed := atomFeed{
-		Title:   view.Title,
-		ID:      base + "/status/" + slug,
+		Title: view.Title,
+		// URN, não URL. O identificador de um feed precisa ser estável
+		// para sempre: derivá-lo do endereço faria todo leitor tratar as
+		// notícias como novas no dia em que a instalação mudasse de
+		// domínio — e, pior, faria o identificador depender de um
+		// cabeçalho que quem chama controla.
+		ID:      "urn:upwatch:status:" + slug,
 		Updated: view.GeneratedAt.UTC().Format(time.RFC3339),
 		Link: []atomLink{
-			{Rel: "alternate", Href: base + "/status/" + slug},
-			{Rel: "self", Href: base + "/api/v1/public/" + slug + "/feed.atom"},
+			{Rel: "alternate", Href: publicHref(base, "/status/"+slug)},
+			{Rel: "self", Href: publicHref(base, "/api/v1/public/"+slug+"/feed.atom")},
 		},
 	}
 
-	for i, a := range view.Announcements {
+	for _, a := range view.Announcements {
 		atualizado := a.StartedAt
 		resumo := a.Title
 		if n := len(a.Updates); n > 0 {
@@ -181,15 +235,33 @@ func buildFeed(view domain.PublicView, base, slug string) atomFeed {
 
 		feed.Entries = append(feed.Entries, atomEntry{
 			Title: a.Title,
-			// Identificador estável por relato, para o leitor não repetir a
-			// mesma notícia a cada consulta.
-			ID:      fmt.Sprintf("%s/status/%s#%d-%d", base, slug, a.StartedAt.UTC().Unix(), i),
+			// Estável por relato, pelo instante em que começou: o leitor
+			// não repete a mesma notícia a cada consulta.
+			ID:      fmt.Sprintf("urn:upwatch:status:%s:%d", slug, a.StartedAt.UTC().Unix()),
 			Updated: atualizado.UTC().Format(time.RFC3339),
 			Summary: resumo,
 			Content: feedContent(a),
 		})
 	}
 	return feed
+}
+
+// publicHref monta um endereço do feed.
+//
+// Sem base configurada devolve o caminho relativo. É a escolha segura: a
+// alternativa seria reconstruir o endereço a partir do cabeçalho Host, e
+// esse cabeçalho é controlado por quem chama. Como a resposta pública
+// carrega Cache-Control público, um cache compartilhado guardaria a
+// versão envenenada e a serviria a quem viesse depois, com links
+// apontando para o domínio do atacante num documento que parece nosso.
+//
+// Quem estiver atrás de proxy e quiser endereços absolutos configura
+// UPWATCH_PUBLIC_URL.
+func publicHref(base, caminho string) string {
+	if base == "" {
+		return caminho
+	}
+	return strings.TrimSuffix(base, "/") + caminho
 }
 
 // feedContent monta a linha do tempo em texto.
@@ -223,18 +295,4 @@ func phaseLabel(p domain.IncidentPhase) string {
 	default:
 		return "Atualização"
 	}
-}
-
-// publicBaseURL reconstrói o endereço externo da instalação.
-//
-// Sem confiar em cabeçalho de proxy para o host: X-Forwarded-Host é
-// controlado por quem chama quando não há proxy na frente, e usá-lo
-// deixaria qualquer pessoa injetar o próprio domínio nos identificadores
-// do feed.
-func publicBaseURL(r *http.Request) string {
-	esquema := "http"
-	if r.TLS != nil {
-		esquema = "https"
-	}
-	return esquema + "://" + r.Host
 }

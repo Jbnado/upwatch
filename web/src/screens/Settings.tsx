@@ -20,10 +20,37 @@ export function Settings({ onSignedOut }: { onSignedOut: () => void }) {
         <h1 className="text-title font-semibold tracking-tight">Ajustes</h1>
       </div>
 
+      <PaginasPublicas />
       <Channels />
       <Tokens />
       <Password onSignedOut={onSignedOut} />
     </div>
+  );
+}
+
+/**
+ * PaginasPublicas é a porta de entrada da funcionalidade.
+ *
+ * Fica em ajustes porque publicar estado é decisão de configuração, não
+ * de operação: quem está resolvendo um incidente não vem aqui, e quem
+ * vem aqui não está com pressa.
+ */
+function PaginasPublicas() {
+  return (
+    <section className="flex flex-col gap-4">
+      <div className="flex flex-col gap-1.5">
+        <h2 className="text-lead font-medium">Páginas de estado</h2>
+        <p className="text-body text-ink-2">
+          Endereços que qualquer pessoa abre sem entrar, para compartilhar disponibilidade com
+          clientes e com o time. Mostram só o que você publicar — nunca o endereço do alvo nem a
+          causa detectada.
+        </p>
+      </div>
+
+      <Button onClick={() => navigate({ name: "status-pages" })} className="self-start">
+        Gerenciar páginas
+      </Button>
+    </section>
   );
 }
 

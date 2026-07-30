@@ -12,13 +12,37 @@ export type Route =
   | { name: "monitor"; id: number }
   | { name: "monitor-new" }
   | { name: "monitor-edit"; id: number }
-  | { name: "settings" };
+  | { name: "settings" }
+  | { name: "status-pages" }
+  | { name: "status-page"; id: number }
+  /**
+   * A página pública.
+   *
+   * É a única rota resolvida antes de qualquer verificação de sessão:
+   * quem abre este link não tem conta, e mostrar-lhe uma tela de login
+   * anularia o propósito de existir um endereço para compartilhar.
+   */
+  | { name: "status"; slug?: string };
 
 export function parseRoute(pathname: string): Route {
   const partes = pathname.replace(/^\/+|\/+$/g, "").split("/");
 
   if (partes[0] === "" || partes[0] === undefined) return { name: "board" };
   if (partes[0] === "settings") return { name: "settings" };
+
+  // "/status" sem slug abre a página padrão: numa instalação com uma
+  // página só, o slug repetiria o que o caminho já diz.
+  if (partes[0] === "status") {
+    return partes[1] ? { name: "status", slug: partes[1] } : { name: "status" };
+  }
+
+  if (partes[0] === "status-pages") {
+    if (partes[1] === undefined || partes[1] === "") return { name: "status-pages" };
+
+    const id = Number(partes[1]);
+    if (Number.isFinite(id) && id > 0) return { name: "status-page", id };
+    return { name: "status-pages" };
+  }
 
   if (partes[0] === "monitors") {
     if (partes[1] === "new") return { name: "monitor-new" };
@@ -43,6 +67,12 @@ export function href(route: Route): string {
       return `/monitors/${route.id}`;
     case "monitor-edit":
       return `/monitors/${route.id}/edit`;
+    case "status-pages":
+      return "/status-pages";
+    case "status-page":
+      return `/status-pages/${route.id}`;
+    case "status":
+      return route.slug ? `/status/${route.slug}` : "/status";
   }
 }
 

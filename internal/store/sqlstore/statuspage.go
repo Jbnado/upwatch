@@ -15,17 +15,17 @@ import (
 
 type statusPageRepo struct{ db *sql.DB }
 
-const statusPageColumns = `id, slug, title, description, show_latency, time_zone, enabled, created_at, updated_at`
+const statusPageColumns = `id, slug, title, description, show_latency, time_zone, enabled, is_default, created_at, updated_at`
 
 func (r *statusPageRepo) Create(ctx context.Context, p *domain.StatusPage) error {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	p.CreatedAt, p.UpdatedAt = now, now
 
 	res, err := r.db.ExecContext(ctx, `
-		INSERT INTO status_page (slug, title, description, show_latency, time_zone, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO status_page (slug, title, description, show_latency, time_zone, enabled, is_default, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.Slug, p.Title, p.Description, boolToInt(p.ShowLatency), p.TimeZone,
-		boolToInt(p.Enabled), toMillis(now), toMillis(now))
+		boolToInt(p.Enabled), defaultFlag(p.Default), toMillis(now), toMillis(now))
 	if err != nil {
 		// Slug repetido vira conflito: duas páginas no mesmo endereço
 		// fariam a resposta depender da ordem da varredura.
@@ -60,6 +60,45 @@ func (r *statusPageRepo) GetBySlug(ctx context.Context, slug string) (domain.Sta
 		return domain.StatusPage{}, fmt.Errorf("página de estado %q: %w", slug, store.ErrNotFound)
 	}
 	return p, err
+}
+
+// GetDefault devolve a página que responde em "/status".
+func (r *statusPageRepo) GetDefault(ctx context.Context) (domain.StatusPage, error) {
+	row := r.db.QueryRowContext(ctx,
+		`SELECT `+statusPageColumns+` FROM status_page WHERE is_default = 1`)
+
+	p, err := scanStatusPage(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.StatusPage{}, fmt.Errorf("página padrão: %w", store.ErrNotFound)
+	}
+	return p, err
+}
+
+// SetDefault promove uma página e rebaixa a anterior.
+//
+// Numa transação, e nesta ordem: o índice parcial só admite uma padrão, e
+// promover antes de rebaixar violaria a restrição no meio do caminho.
+func (r *statusPageRepo) SetDefault(ctx context.Context, id int64) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlstore: abrindo transação: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE status_page SET is_default = NULL WHERE is_default = 1`); err != nil {
+		return fmt.Errorf("sqlstore: rebaixando página padrão: %w", err)
+	}
+
+	res, err := tx.ExecContext(ctx,
+		`UPDATE status_page SET is_default = 1 WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("sqlstore: promovendo página %d: %w", id, err)
+	}
+	if err := requireAffected(res, fmt.Sprintf("página de estado %d", id)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (r *statusPageRepo) Update(ctx context.Context, p domain.StatusPage) error {
@@ -112,17 +151,19 @@ func scanStatusPage(sc scanner) (domain.StatusPage, error) {
 		p           domain.StatusPage
 		showLatency int64
 		enabled     int64
+		isDefault   sql.NullInt64
 		createdMS   int64
 		updatedMS   int64
 	)
 	err := sc.Scan(&p.ID, &p.Slug, &p.Title, &p.Description, &showLatency,
-		&p.TimeZone, &enabled, &createdMS, &updatedMS)
+		&p.TimeZone, &enabled, &isDefault, &createdMS, &updatedMS)
 	if err != nil {
 		return domain.StatusPage{}, err
 	}
 
 	p.ShowLatency = showLatency != 0
 	p.Enabled = enabled != 0
+	p.Default = isDefault.Valid && isDefault.Int64 == 1
 	p.CreatedAt = fromMillis(createdMS)
 	p.UpdatedAt = fromMillis(updatedMS)
 	return p, nil
@@ -548,6 +589,18 @@ func scanAnnouncement(sc scanner) (domain.Announcement, error) {
 	a.CreatedAt = fromMillis(createdMS)
 	a.UpdatedAt = fromMillis(updatedMS)
 	return a, nil
+}
+
+// defaultFlag guarda 1 para a padrão e NULL para as demais.
+//
+// NULL em vez de 0 porque o índice parcial existe nos dois dialetos, mas
+// só o valor nulo é ignorado por índice único em qualquer banco — é a
+// forma de "no máximo uma" que não depende de suporte a índice parcial.
+func defaultFlag(padrao bool) any {
+	if padrao {
+		return 1
+	}
+	return nil
 }
 
 func nullableID(id *int64) any {

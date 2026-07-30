@@ -28,6 +28,11 @@ func statusPageCases() []conformanceCase {
 		{"StatusPageUpdatePersistsChanges", testStatusPageUpdatePersistsChanges},
 		{"StatusPageDeleteRemovesIt", testStatusPageDeleteRemovesIt},
 		{"StatusPageListIsOrdered", testStatusPageListIsOrdered},
+		{"StatusPageDefaultStartsAbsent", testStatusPageDefaultStartsAbsent},
+		{"StatusPageSetDefaultPromotes", testStatusPageSetDefaultPromotes},
+		{"StatusPageSetDefaultDemotesPrevious", testStatusPageSetDefaultDemotesPrevious},
+		{"StatusPageSetDefaultMissingReturnsNotFound", testStatusPageSetDefaultMissingReturnsNotFound},
+		{"StatusPageUpdateKeepsDefault", testStatusPageUpdateKeepsDefault},
 
 		{"StatusPageGroupRoundTrips", testStatusPageGroupRoundTrips},
 		{"StatusPageGroupsAreOrderedByPosition", testStatusPageGroupsAreOrderedByPosition},
@@ -240,6 +245,105 @@ func testStatusPageListIsOrdered(t *testing.T, newStore Factory) {
 		if paginas[i].ID < paginas[i-1].ID {
 			t.Fatal("listagem fora de ordem")
 		}
+	}
+}
+
+func testStatusPageDefaultStartsAbsent(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	createStatusPage(t, s, "estado")
+
+	// Instalação sem escolha explícita não tem página padrão: "/status"
+	// devolve 404 em vez de eleger uma sozinho.
+	_, err := s.StatusPages().GetDefault(context.Background())
+
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("esperava ErrNotFound, veio %v", err)
+	}
+}
+
+func testStatusPageSetDefaultPromotes(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	p := createStatusPage(t, s, "estado")
+	if err := s.StatusPages().SetDefault(ctx, p.ID); err != nil {
+		t.Fatalf("promovendo: %v", err)
+	}
+
+	padrao, err := s.StatusPages().GetDefault(ctx)
+	if err != nil {
+		t.Fatalf("lendo padrão: %v", err)
+	}
+	if padrao.ID != p.ID {
+		t.Fatalf("padrão errada: %d != %d", padrao.ID, p.ID)
+	}
+	if !padrao.Default {
+		t.Error("padrão voltou sem a marca")
+	}
+}
+
+func testStatusPageSetDefaultDemotesPrevious(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	primeira := createStatusPage(t, s, "uma")
+	segunda := createStatusPage(t, s, "outra")
+
+	if err := s.StatusPages().SetDefault(ctx, primeira.ID); err != nil {
+		t.Fatalf("promovendo a primeira: %v", err)
+	}
+	// Trocar direto, sem desmarcar antes: exigir dois passos abriria uma
+	// janela em que "/status" não responde.
+	if err := s.StatusPages().SetDefault(ctx, segunda.ID); err != nil {
+		t.Fatalf("promovendo a segunda: %v", err)
+	}
+
+	padrao, err := s.StatusPages().GetDefault(ctx)
+	if err != nil {
+		t.Fatalf("lendo padrão: %v", err)
+	}
+	if padrao.ID != segunda.ID {
+		t.Fatalf("padrão não trocou: %d", padrao.ID)
+	}
+
+	anterior, err := s.StatusPages().Get(ctx, primeira.ID)
+	if err != nil {
+		t.Fatalf("lendo a anterior: %v", err)
+	}
+	if anterior.Default {
+		t.Error("a página anterior continuou marcada como padrão")
+	}
+}
+
+func testStatusPageSetDefaultMissingReturnsNotFound(t *testing.T, newStore Factory) {
+	s := newStore(t)
+
+	err := s.StatusPages().SetDefault(context.Background(), 9999)
+
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("esperava ErrNotFound, veio %v", err)
+	}
+}
+
+func testStatusPageUpdateKeepsDefault(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	p := createStatusPage(t, s, "estado")
+	if err := s.StatusPages().SetDefault(ctx, p.ID); err != nil {
+		t.Fatalf("promovendo: %v", err)
+	}
+
+	// Editar o título não pode despromover a página: são decisões
+	// diferentes, e quem renomeia não espera que "/status" pare de
+	// responder.
+	p.Title = "Outro título"
+	if err := s.StatusPages().Update(ctx, p); err != nil {
+		t.Fatalf("atualizando: %v", err)
+	}
+
+	if _, err := s.StatusPages().GetDefault(ctx); err != nil {
+		t.Fatalf("página deixou de ser padrão após edição: %v", err)
 	}
 }
 

@@ -56,8 +56,25 @@ func (b *Builder) Build(ctx context.Context, slug string) (domain.PublicView, er
 	if err != nil {
 		return domain.PublicView{}, err
 	}
+	return b.build(ctx, page)
+}
+
+// BuildDefault monta a página que responde em "/status".
+//
+// Devolve store.ErrNotFound quando nenhuma foi marcada como padrão — a
+// instalação não elege uma sozinha, porque adivinhar qual publicar seria
+// pior do que não publicar.
+func (b *Builder) BuildDefault(ctx context.Context) (domain.PublicView, error) {
+	page, err := b.store.StatusPages().GetDefault(ctx)
+	if err != nil {
+		return domain.PublicView{}, err
+	}
+	return b.build(ctx, page)
+}
+
+func (b *Builder) build(ctx context.Context, page domain.StatusPage) (domain.PublicView, error) {
 	if !page.Enabled {
-		return domain.PublicView{}, fmt.Errorf("página de estado %q: %w", slug, store.ErrNotFound)
+		return domain.PublicView{}, fmt.Errorf("página de estado %q: %w", page.Slug, store.ErrNotFound)
 	}
 
 	componentes, err := b.store.StatusPages().Components(ctx, page.ID)

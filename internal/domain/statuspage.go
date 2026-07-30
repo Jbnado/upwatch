@@ -58,6 +58,13 @@ type StatusPage struct {
 	// endereço.
 	Enabled bool `json:"enabled"`
 
+	// Default responde em "/status", sem slug.
+	//
+	// Uma instalação com uma página só não deveria obrigar ninguém a
+	// digitar "/status/estado" — o slug repete o que o caminho já diz. No
+	// máximo uma página é padrão, e o banco recusa a segunda.
+	Default bool `json:"default"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

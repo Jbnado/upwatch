@@ -152,6 +152,30 @@ func (a *API) handleDeleteStatusPage(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleSetDefaultStatusPage promove a página a padrão.
+//
+// Endpoint próprio, e não um campo no PUT: promover rebaixa outra página,
+// e esconder esse efeito dentro de uma edição de título faria "/status"
+// mudar de dono sem ninguém pedir.
+func (a *API) handleSetDefaultStatusPage(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+
+	if err := a.store.StatusPages().SetDefault(r.Context(), id); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+
+	p, err := a.store.StatusPages().Get(r.Context(), id)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
 // ---------- grupos ----------
 
 type groupRequest struct {

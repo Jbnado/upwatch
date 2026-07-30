@@ -32,6 +32,15 @@ type Config struct {
 	// Listen é o endereço do servidor HTTP.
 	Listen string `yaml:"listen"`
 
+	// PublicURL é o endereço externo da instalação, como
+	// "https://status.exemplo.com".
+	//
+	// Vazio faz o feed da página pública usar endereços relativos, que é o
+	// padrão seguro: a alternativa seria reconstruí-los a partir do
+	// cabeçalho Host, controlado por quem chama. Como a resposta pública
+	// é cacheável, um cache compartilhado guardaria a versão envenenada.
+	PublicURL string `yaml:"public_url"`
+
 	// Database aponta o armazenamento.
 	Database Database `yaml:"database"`
 
@@ -135,6 +144,7 @@ func applyFile(cfg *Config, path string) error {
 // applyEnv sobrepõe o que o ambiente declarar.
 func applyEnv(cfg *Config) error {
 	str(&cfg.Listen, "LISTEN")
+	str(&cfg.PublicURL, "PUBLIC_URL")
 	str(&cfg.Database.Driver, "DB_DRIVER")
 	str(&cfg.Database.DSN, "DB_DSN")
 
