@@ -44,7 +44,8 @@ todos os alertas para sempre.
 
 **Avisa** por webhook, Discord e Slack, com um botão de teste em cada
 canal. Descobrir que o alerta não chega durante a queda é descobrir
-tarde.
+tarde. O webhook genérico aceita cabeçalhos próprios e deixa você
+escolher a forma do corpo — veja [Webhook](#webhook).
 
 **Agrupa por etiqueta.** Homolog e produção lado a lado sem virar uma
 lista única de quarenta linhas: etiquete os alvos e o painel oferece
@@ -129,6 +130,82 @@ sentidos.
 # Token de acesso: Ajustes → Tokens de acesso
 curl -H "Authorization: Bearer upw_..." http://localhost:8080/api/v1/monitors
 ```
+
+## Webhook
+
+O canal `webhook` entrega um POST com `Content-Type: application/json`.
+Sem configuração extra, o corpo é este envelope:
+
+```json
+{
+  "text": "api-de-producao está fora do ar: connection refused",
+  "monitor": "api-de-producao",
+  "monitor_id": 7,
+  "target": "https://api.exemplo.com",
+  "status": "down",
+  "previous_status": "up",
+  "message": "connection refused",
+  "at": "2026-07-30T18:42:11Z",
+  "duration_seconds": 0
+}
+```
+
+`status` e `previous_status` são `up`, `down`, `degraded` ou `unknown`.
+`duration_seconds` é quanto durou o estado **anterior**: na queda vem 0, na
+volta vem o tempo que o alvo ficou fora. `message` é a causa observada e
+pode vir vazia.
+
+### Escolhendo a forma do corpo
+
+Um destino que já existe espera os campos com os nomes dele, e nem sempre
+dá para mudar quem recebe. Em `body_template` você declara a forma, e os
+marcadores são substituídos:
+
+```json
+{
+  "url": "https://automacao.exemplo/alertas",
+  "headers": { "X-Chave": "…" },
+  "body_template": {
+    "event": "$status",
+    "service": { "name": "$monitor", "id": "$monitor_id" },
+    "outage_seconds": "$duration_seconds",
+    "summary": "[$status] $monitor"
+  }
+}
+```
+
+| Marcador | Entrega |
+|---|---|
+| `$monitor` | Nome do alvo |
+| `$monitor_id` | Identificador, como número |
+| `$target` | Endereço verificado |
+| `$status` | `up`, `down`, `degraded` ou `unknown` |
+| `$previous_status` | O estado anterior |
+| `$message` | Causa observada, quando houver |
+| `$at` | Instante da mudança |
+| `$duration_seconds` | Duração do estado anterior, como número |
+| `$text` | A frase pronta do aviso |
+
+Também vale `${nome}`, para quando o marcador encosta em texto que
+continuaria o identificador, e `$$` escreve um cifrão literal.
+
+**Sozinho, o marcador entrega o valor com o tipo dele** — `"$duration_seconds"`
+chega como `300`, não `"300"`. Dentro de um texto, compõe a frase. A
+diferença importa para quem valida esquema do outro lado.
+
+A substituição acontece sobre a estrutura JSON já decodificada, e o
+resultado é serializado de volta — nunca por concatenação de texto. É o
+que garante que uma aspa no nome do monitor ou uma quebra de linha na
+causa não produzam um corpo que o destino recusa, perdendo o aviso da
+queda por causa da própria queda.
+
+Marcador desconhecido é recusado no cadastro do canal, não na entrega:
+descobrir o erro de digitação durante o incidente é descobrir tarde
+demais. Discord e Slack recusam `body_template` pelo mesmo motivo — o
+corpo deles é ditado pelo destino.
+
+Os campos avançados também estão na interface, em Ajustes → Canais de
+aviso, atrás de "cabeçalhos e formato do corpo".
 
 ## Página pública de estado
 

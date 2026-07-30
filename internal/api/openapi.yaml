@@ -1498,6 +1498,31 @@ components:
 
                 Campos disponíveis - Monitor, Status, Message, Duration,
                 At e Text.
+            body_template:
+              description: |
+                Forma do corpo inteiro, e não só da frase. Só no canal
+                webhook - discord e slack têm corpo ditado pelo destino e
+                recusam este campo no cadastro.
+
+                Qualquer objeto ou lista JSON. Em qualquer texto dentro
+                dele, os marcadores são substituídos - $monitor,
+                $monitor_id, $target, $status, $previous_status, $message,
+                $at, $duration_seconds e $text. Também vale ${nome}, e $$
+                escreve um cifrão literal.
+
+                Sozinho, o marcador entrega o valor com o tipo dele, de
+                modo que $duration_seconds chega como número. Dentro de um
+                texto, compõe a frase.
+
+                Sem este campo, o corpo é o envelope padrão com todos os
+                campos - quem já integrou contra ele não muda.
+              oneOf:
+                - type: object
+                - type: array
+              example:
+                event: $status
+                service: $monitor
+                outage_seconds: $duration_seconds
 
     Incident:
       type: object

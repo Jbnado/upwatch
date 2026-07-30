@@ -5,6 +5,7 @@ import type {
   MouseEvent,
   ReactNode,
   SelectHTMLAttributes,
+  TextareaHTMLAttributes,
 } from "react";
 import type { Status } from "../api/types";
 import { href, navigate, type Route } from "../lib/router";
@@ -204,6 +205,23 @@ export function Select({ className = "", ...props }: SelectHTMLAttributes<HTMLSe
 /** Campos numéricos usam a monoespaçada tabular, como toda medição. */
 export function NumberInput(props: InputHTMLAttributes<HTMLInputElement>) {
   return <Input type="number" inputMode="numeric" className="tabular" {...props} />;
+}
+
+/**
+ * Textarea para conteúdo de várias linhas.
+ *
+ * Altura livre em vez de --control-h: o que se escreve aqui é estrutura,
+ * não um valor, e uma caixa de uma linha faria rolar dentro de um campo de
+ * 32 px para conferir um JSON de dez linhas.
+ */
+export function Textarea({ className = "", ...props }: TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  return (
+    <textarea
+      className={`${CONTROL_FIELD.replace("h-[var(--control-h)]", "min-h-[7rem] py-2")} ${className}`}
+      spellCheck={false}
+      {...props}
+    />
+  );
 }
 
 /**
