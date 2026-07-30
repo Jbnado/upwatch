@@ -20,6 +20,11 @@ coverage.txt
 /web/node_modules/
 /web/dist/
 /internal/web/dist/
+# Cache incremental do tsc: muda a cada build e não descreve o código.
+/web/tsconfig.tsbuildinfo
+
+# Saída de verificação de interface por navegador.
+/.playwright-mcp/
 
 # Env / local config
 .env

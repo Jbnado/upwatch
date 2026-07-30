@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client";
 import { ApiError, type APIToken } from "../api/types";
-import { Alert, Button, Empty, Field, Input } from "../components/ui";
+import { Alert, Button, Field, Input, Loading, Nothing, TextLink } from "../components/ui";
 import { ago, stamp } from "../lib/format";
 import { navigate } from "../lib/router";
 import { Channels } from "./Channels";
@@ -10,13 +10,15 @@ import { Channels } from "./Channels";
 export function Settings({ onSignedOut }: { onSignedOut: () => void }) {
   return (
     <div className="mx-auto flex max-w-2xl flex-col gap-10 px-5 py-6">
-      <nav>
-        <button onClick={() => navigate({ name: "board" })} className="eyebrow hover:text-ink">
-          ← todos os monitores
-        </button>
-      </nav>
-
-      <h1 className="text-[22px] font-semibold tracking-tight">Ajustes</h1>
+      {/* Navegação e título formam um bloco. Soltos no ritmo de 40px que
+          separa as seções, ficavam a quatro dedos de distância um do
+          outro — como se fossem assuntos diferentes. */}
+      <div className="flex flex-col gap-6">
+        <nav>
+          <TextLink onClick={() => navigate({ name: "board" })}>← todos os monitores</TextLink>
+        </nav>
+        <h1 className="text-title font-semibold tracking-tight">Ajustes</h1>
+      </div>
 
       <Channels />
       <Tokens />
@@ -63,9 +65,9 @@ function Tokens() {
 
   return (
     <section className="flex flex-col gap-4">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-[15px] font-medium">Tokens de acesso</h2>
-        <p className="text-[13px] text-ink-2">
+      <div className="flex flex-col gap-1.5">
+        <h2 className="text-lead font-medium">Tokens de acesso</h2>
+        <p className="text-body text-ink-2">
           Para scripts e integrações. Um token faz tudo o que esta interface faz.
         </p>
       </div>
@@ -76,61 +78,68 @@ function Tokens() {
           alguém feche a tela e perca a credencial recém-criada. */}
       {novo && (
         <div className="flex flex-col gap-2 border-l-2 border-degraded bg-degraded-dim px-3 py-2.5">
-          <p className="text-[13px] font-medium">Copie agora. Este valor não aparece de novo.</p>
-          <code className="block overflow-x-auto rounded-[3px] border border-line-strong bg-surface px-2.5 py-1.5 text-[12px]">
+          <p className="text-body font-medium">Copie agora. Este valor não aparece de novo.</p>
+          <code className="block overflow-x-auto rounded-sm border border-line-strong bg-surface px-2.5 py-1.5 text-small">
             {novo}
           </code>
-          <button
-            onClick={() => setNovo(null)}
-            className="eyebrow self-start hover:text-ink"
-          >
+          <TextLink onClick={() => setNovo(null)} className="self-start">
             já guardei
-          </button>
+          </TextLink>
         </div>
       )}
 
-      <form onSubmit={criar} className="flex items-end gap-2">
-        <div className="flex-1">
-          <Field label="novo token" hint="Um nome que diga onde ele é usado.">
-            <Input
-              value={nome}
-              onChange={(e) => setNome(e.target.value)}
-              placeholder="pipeline de deploy"
-              required
-            />
-          </Field>
+      {/* Campo e botão dividem uma linha própria, e a dica fica sob os
+          dois. Empilhar o Field inteiro ao lado do botão alinhava o botão
+          com a base da dica — ele descia uma linha e ficava torto em
+          relação ao campo que o acompanha. */}
+      <form onSubmit={criar} className="flex flex-col gap-1.5">
+        <label htmlFor="novo-token" className="eyebrow">
+          novo token
+        </label>
+        <div className="flex gap-2">
+          <Input
+            id="novo-token"
+            value={nome}
+            onChange={(e) => setNome(e.target.value)}
+            placeholder="pipeline de deploy"
+            className="flex-1"
+            required
+          />
+          <Button type="submit" variant="primary" className="shrink-0">
+            Criar
+          </Button>
         </div>
-        <Button type="submit" variant="primary">
-          Criar
-        </Button>
+        <span className="text-small text-ink-3">Um nome que diga onde ele é usado.</span>
       </form>
 
       {tokens === null ? (
-        <p className="eyebrow">carregando</p>
+        <Loading what="tokens" />
       ) : tokens.length === 0 ? (
-        <Empty
-          title="Nenhum token criado"
-          description="Crie um quando precisar cadastrar monitores ou consultar histórico por script."
-        />
+        <Nothing hint="Crie um quando precisar cadastrar monitores ou consultar histórico por script.">
+          Nenhum token criado.
+        </Nothing>
       ) : (
         <ul className="border-t border-line">
           {tokens.map((token) => (
             <li
               key={token.id}
-              className="flex items-baseline justify-between gap-4 border-b border-line py-2.5"
+              // items-center e não items-baseline: a coluna da esquerda tem
+              // duas linhas, e alinhar pela primeira delas deixaria o botão
+              // da direita flutuando acima do centro da linha.
+              className="flex items-center justify-between gap-4 border-b border-line py-2.5"
             >
               <span className="flex min-w-0 flex-col">
-                <span className="truncate text-[13px] font-medium">{token.name}</span>
-                <span className="tabular text-[12px] text-ink-3">{token.prefix}…</span>
+                <span className="truncate text-body font-medium">{token.name}</span>
+                <span className="tabular text-small text-ink-3">{token.prefix}…</span>
               </span>
 
-              <span className="flex shrink-0 items-baseline gap-4">
-                <span className="text-[12px] text-ink-3">
+              <span className="flex shrink-0 items-center gap-4">
+                <span className="text-small text-ink-3">
                   {token.last_used_at ? `usado ${ago(token.last_used_at)}` : "nunca usado"}
                   <span className="mx-1.5">·</span>
                   criado em {stamp(token.created_at)}
                 </span>
-                <Button variant="danger" onClick={() => revogar(token)}>
+                <Button size="sm" variant="danger" onClick={() => revogar(token)}>
                   Revogar
                 </Button>
               </span>
@@ -163,16 +172,18 @@ function Password({ onSignedOut }: { onSignedOut: () => void }) {
 
   return (
     <section className="flex flex-col gap-4">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-[15px] font-medium">Senha</h2>
-        <p className="text-[13px] text-ink-2">
+      <div className="flex flex-col gap-1.5">
+        <h2 className="text-lead font-medium">Senha</h2>
+        <p className="text-body text-ink-2">
           Trocar a senha encerra todas as sessões abertas, inclusive esta.
         </p>
       </div>
 
       {erro && <Alert>{erro}</Alert>}
 
-      <form onSubmit={trocar} className="flex max-w-sm flex-col gap-4">
+      {/* Mesma largura das outras seções: três blocos com três bordas
+          direitas diferentes deixam a página com a margem serrilhada. */}
+      <form onSubmit={trocar} className="flex flex-col gap-4">
         <Field label="senha atual">
           <Input
             type="password"

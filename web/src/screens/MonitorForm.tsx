@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client";
 import { ApiError, type MonitorInput, type MonitorType } from "../api/types";
-import { Alert, Button, Field, Input, NumberInput, Select } from "../components/ui";
+import { Alert, Button, Field, Input, NumberInput, Select, TextLink } from "../components/ui";
 import { navigate } from "../lib/router";
 
 /**
@@ -13,42 +13,59 @@ import { navigate } from "../lib/router";
  * "degraded_latency".
  */
 
-const TIPOS: { value: MonitorType; label: string; alvo: string; ajuda: string }[] = [
+type Tipo = {
+  value: MonitorType;
+  label: string;
+  /** Exemplo de endereço, usado como placeholder. */
+  alvo: string;
+  /** O que este tipo de verificação faz. */
+  ajuda: string;
+  /** Que forma o endereço precisa ter. */
+  formato: string;
+};
+
+const TIPOS: Tipo[] = [
   {
     value: "http",
     label: "Página ou API (HTTP)",
     alvo: "https://exemplo.com/health",
     ajuda: "Faz uma requisição e confere o código de resposta.",
+    formato: "URL completa, com http:// ou https://.",
   },
   {
     value: "tcp",
     label: "Porta (TCP)",
     alvo: "banco.interno:5432",
     ajuda: "Abre uma conexão e fecha em seguida.",
+    formato: "Máquina e porta, separadas por dois-pontos.",
   },
   {
     value: "tls",
     label: "Certificado (TLS)",
     alvo: "exemplo.com:443",
     ajuda: "Avisa antes de o certificado vencer.",
+    formato: "Máquina e porta; 443 é o usual para HTTPS.",
   },
   {
     value: "dns",
     label: "Registro DNS",
     alvo: "exemplo.com",
     ajuda: "Confere se o nome resolve para onde deveria.",
+    formato: "Apenas o nome, sem esquema nem porta.",
   },
   {
     value: "icmp",
     label: "Ping (ICMP)",
     alvo: "10.0.0.1",
     ajuda: "Envia pacotes e mede perda.",
+    formato: "Nome ou endereço IP.",
   },
   {
     value: "push",
     label: "Sinal do próprio serviço",
     alvo: "",
     ajuda: "O serviço avisa que está vivo. Para tarefas agendadas e processos sem porta exposta.",
+    formato: "",
   },
 ];
 
@@ -134,18 +151,16 @@ export function MonitorForm({ id }: { id?: number }) {
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-6 px-5 py-6">
       <nav>
-        <button onClick={() => history.back()} className="eyebrow hover:text-ink">
-          ← voltar
-        </button>
+        <TextLink onClick={() => history.back()}>← voltar</TextLink>
       </nav>
 
-      <h1 className="text-[22px] font-semibold tracking-tight">
+      <h1 className="text-title font-semibold tracking-tight">
         {editando ? "Editar monitor" : "Novo monitor"}
       </h1>
 
       {erro && !campoErro && <Alert>{erro}</Alert>}
 
-      <form onSubmit={enviar} className="flex flex-col gap-5">
+      <form onSubmit={enviar} className="flex flex-col gap-4">
         <Field label="nome" hint="Como este alvo aparece no painel." error={erroDe("name")}>
           <Input
             value={form.name}
@@ -170,7 +185,7 @@ export function MonitorForm({ id }: { id?: number }) {
         </Field>
 
         {form.type !== "push" && (
-          <Field label="endereço" error={erroDe("target")}>
+          <Field label="endereço" hint={tipo.formato} error={erroDe("target")}>
             <Input
               value={form.target}
               onChange={(e) => set("target", e.target.value)}
@@ -186,7 +201,7 @@ export function MonitorForm({ id }: { id?: number }) {
             label="endereço para o seu serviço chamar"
             hint="Faça o serviço bater neste endereço a cada ciclo. Sem sinal na janela, o monitor acusa parada."
           >
-            <code className="block overflow-x-auto rounded-[3px] border border-line-strong bg-sunken px-2.5 py-2 text-[12px]">
+            <code className="block overflow-x-auto rounded-sm border border-line-strong bg-sunken px-2.5 py-2 text-small">
               {`${location.origin}/api/v1/push/${pushToken}`}
             </code>
           </Field>
@@ -242,7 +257,7 @@ export function MonitorForm({ id }: { id?: number }) {
           </Field>
         </div>
 
-        <div className="flex gap-2 pt-1">
+        <div className="flex gap-2 pt-2">
           <Button type="submit" variant="primary" disabled={enviando}>
             {enviando ? "Salvando" : editando ? "Salvar alterações" : "Criar monitor"}
           </Button>

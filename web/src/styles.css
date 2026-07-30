@@ -7,34 +7,40 @@
 @import "@fontsource/geist-mono/500.css";
 @import "@fontsource/geist-mono/600.css";
 
+/* ═══════════════════════════════════════════════════════════════════
+   SISTEMA DE DESIGN — UPWATCH
+
+   Tese: a tela é um instrumento, não um relatório. Duas regras
+   carregam o resto.
+
+   1. Cor significa estado, e nada mais. Botão, campo e borda vivem na
+      escala de tinta, então qualquer cor na tela é informação.
+
+   2. "No ar" é dessaturado de propósito. Numa parede com cinquenta
+      monitores, quarenta e oito barras verdes berrando são ruído: o
+      olho precisa cair nas duas que não estão.
+
+   Tudo abaixo é token. Valor solto no componente é defeito — se um
+   número não está aqui, ele não pertence ao sistema.
+   ═══════════════════════════════════════════════════════════════════ */
+
 @theme {
-  /* ---------------------------------------------------------------
-     Cor significa estado. Nada mais.
-
-     Elementos interativos são monocromáticos de propósito: num painel
-     de monitoramento, se botão, link e gráfico forem coloridos, a cor
-     deixa de carregar informação. Aqui você aprende que qualquer cor
-     na tela quer dizer alguma coisa.
-     --------------------------------------------------------------- */
-
-  /* Neutros levemente frios, como vidro de instrumento — não o cinza
-     puro nem o creme quente. */
+  /* ─── Cor: neutros ────────────────────────────────────────────────
+     Levemente frios, como vidro de instrumento — não o cinza puro nem
+     o creme quente. */
   --color-paper: #f4f6f7;
   --color-surface: #ffffff;
   --color-sunken: #eceff1;
   --color-line: #e2e7ea;
   --color-line-strong: #cbd3d8;
+  /* Pressionado: um degrau além do hover, para o clique ter resposta. */
+  --color-pressed: #dde3e6;
 
   --color-ink: #10161c;
   --color-ink-2: #4a555f;
   --color-ink-3: #63707a;
 
-  /* Estados.
-
-     "No ar" é dessaturado de propósito. Numa parede com cinquenta
-     monitores, quarenta e oito barras verdes berrando são ruído: o olho
-     precisa cair nas duas que não estão. Saturação fica reservada para
-     o que exige atenção. */
+  /* ─── Cor: estados ─────────────────────────────────────────────── */
   --color-up: #3f8a66;
   --color-up-dim: #d8eae1;
   --color-degraded: #b87514;
@@ -44,19 +50,66 @@
   --color-unknown: #93a0a8;
   --color-unknown-dim: #e4e9eb;
 
-  /* Tipografia.
-
+  /* ─── Tipografia ───────────────────────────────────────────────────
      Archivo na interface — mais encorpada que a Inter, que virou o
-     padrão de todo painel. Geist Mono em toda medição: número que muda
-     de largura ao atualizar ao vivo salta na tela, e em coluna alinhada
-     dá para comparar latências de relance. */
+     padrão de todo painel. Geist Mono em toda medição, com figuras
+     tabulares: número que muda de largura ao atualizar salta na tela,
+     e em coluna alinhada dá para comparar de relance.
+
+     Seis degraus, nomeados pelo papel e não pelo tamanho. Nomear por
+     tamanho convida a inventar um sétimo. */
   --font-sans: "Archivo Variable", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "Geist Mono", ui-monospace, "SF Mono", monospace;
 
-  /* Cantos discretos: instrumento não tem borda arredondada de brinquedo. */
-  --radius-sm: 3px;
+  --text-micro: 0.6875rem; /* 11px — serigrafia do painel */
+  --text-micro--line-height: 1.4;
+  --text-small: 0.75rem; /* 12px — metadado, secundário */
+  --text-small--line-height: 1.45;
+  --text-body: 0.8125rem; /* 13px — padrão da interface */
+  --text-body--line-height: 1.5;
+  --text-lead: 0.9375rem; /* 15px — título de seção */
+  --text-lead--line-height: 1.4;
+  --text-title: 1.1875rem; /* 19px — título de tela */
+  --text-title--line-height: 1.25;
+  --text-hero: 1.625rem; /* 26px — número grande */
+  --text-hero--line-height: 1.15;
+
+  /* ─── Ritmo ────────────────────────────────────────────────────────
+     Base de 4px, seis passos, cada um com um papel. O meio-passo de 6px
+     existe porque a interface é densa: linha de painel com 16px de
+     respiro desperdiçaria a tela que serve justamente para comparar
+     dezenas de alvos de relance.
+
+       1.5 (6px)   dentro de um controle, ou título e seu subtítulo
+       2   (8px)   entre irmãos do mesmo grupo — dois botões, por ex.
+       3   (12px)  entre grupos numa mesma linha
+       4   (16px)  entre campos, e entre as colunas de uma linha
+       6   (24px)  entre seções de uma tela
+       10  (40px)  entre blocos independentes
+
+     Fora da escala, e de propósito: px-5/py-6 é a margem da página, e
+     o preenchimento interno dos controles vem de --control-h com
+     px-2.5/px-3 — são medidas do componente, não do ritmo da página.
+
+     Nove valores viraram seis nesta passada. Escala frouxa não é
+     escala: com gap-1, gap-5 e gap-8 disponíveis, cada tela escolhia o
+     seu, e o olho lia desalinho sem conseguir apontar onde.          */
+
+  /* ─── Controles ───────────────────────────────────────────────────
+     Altura fixa para tudo o que é clicável ficar no mesmo eixo. */
+  --control-h: 2rem; /* 32px */
+  --control-h-sm: 1.625rem; /* 26px */
+
+  /* Cantos discretos: instrumento não tem borda arredondada de
+     brinquedo. */
+  --radius-xs: 1px; /* barras da faixa */
+  --radius-sm: 3px; /* controles */
   --radius-md: 5px;
-  --radius-lg: 8px;
+
+  /* ─── Movimento ───────────────────────────────────────────────────
+     Rápido o bastante para parecer resposta, não animação. */
+  --duration-press: 80ms;
+  --duration-hover: 120ms;
 }
 
 /* Modo escuro: painel à noite. Não é o claro invertido — os estados
@@ -71,9 +124,10 @@
       color-scheme: dark;
       --color-paper: #0d1216;
       --color-surface: #141b21;
-      --color-sunken: #0a0e12;
+      --color-sunken: #1a2228;
       --color-line: #222c34;
       --color-line-strong: #33414b;
+      --color-pressed: #253039;
 
       --color-ink: #e8edf0;
       --color-ink-2: #9ba9b4;
@@ -94,9 +148,10 @@
     color-scheme: dark;
     --color-paper: #0d1216;
     --color-surface: #141b21;
-    --color-sunken: #0a0e12;
+    --color-sunken: #1a2228;
     --color-line: #222c34;
     --color-line-strong: #33414b;
+    --color-pressed: #253039;
 
     --color-ink: #e8edf0;
     --color-ink-2: #9ba9b4;
@@ -120,7 +175,7 @@
     background: var(--color-paper);
     color: var(--color-ink);
     font-family: var(--font-sans);
-    font-size: 0.875rem;
+    font-size: var(--text-body);
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
   }
@@ -135,8 +190,9 @@
     font-feature-settings: "tnum" 1;
   }
 
-  /* Foco sempre visível. Quem opera durante um incidente costuma estar
-     no teclado. */
+  /* Foco sempre visível, e em todo elemento clicável. Quem opera durante
+     um incidente costuma estar no teclado, e um foco invisível deixa a
+     pessoa sem saber onde está. */
   :where(a, button, input, select, textarea, [tabindex]):focus-visible {
     outline: 2px solid var(--color-ink);
     outline-offset: 2px;
@@ -159,11 +215,38 @@
      monoespaçada, como a serigrafia de um painel. */
   .eyebrow {
     font-family: var(--font-mono);
-    font-size: 0.6875rem;
+    font-size: var(--text-micro);
     font-weight: 500;
     letter-spacing: 0.09em;
     text-transform: uppercase;
     color: var(--color-ink-3);
+  }
+
+  /* ─── Estados de interação ──────────────────────────────────────────
+     Cinco estados para tudo o que é clicável, sem exceção.
+
+     Faltava o de pressionado, e a falta se sente: um controle que reage
+     ao passar o mouse mas não ao clique parece travado justamente no
+     instante em que a pessoa espera confirmação. */
+  .pressable {
+    transition:
+      background-color var(--duration-hover) ease,
+      border-color var(--duration-hover) ease,
+      color var(--duration-hover) ease,
+      opacity var(--duration-hover) ease,
+      transform var(--duration-press) ease;
+  }
+
+  .pressable:active:not(:disabled) {
+    /* Meio pixel para baixo: perceptível como resposta tátil, curto o
+       bastante para não parecer que o layout pulou. */
+    transform: translateY(0.5px);
+    transition-duration: var(--duration-press);
+  }
+
+  .pressable:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
   }
 
   /* A faixa desenha da esquerda para a direita no carregamento, como

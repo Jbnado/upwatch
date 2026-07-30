@@ -5,10 +5,11 @@ import { MonitorChannels } from "./Channels";
 import { Pulse } from "../components/Pulse";
 import type { PulseSample } from "../components/pulse-bars";
 import { RangePicker } from "../components/RangePicker";
-import { Alert, Button, Empty, StatusDot } from "../components/ui";
+import { Alert, Button, LinkButton, Loading, Nothing, StatusDot, TextLink } from "../components/ui";
 import { ago, duration, latency, stamp, uptime } from "../lib/format";
 import { DEFAULT_RANGE, windowFor, type Range } from "../lib/ranges";
 import { navigate } from "../lib/router";
+import { bucketStatus, summariseHeartbeats, summariseRollups } from "../lib/series";
 
 /**
  * Detalhe de um alvo.
@@ -51,7 +52,7 @@ export function MonitorDetail({ id }: { id: number }) {
         setSamples(
           items.map((r) => ({
             at: r.bucket_start,
-            status: r.down > 0 ? "down" : r.degraded > 0 ? "degraded" : r.up > 0 ? "up" : "unknown",
+            status: bucketStatus(r.up, r.degraded, r.down),
             latencyMs: r.latency_p95_ms,
           })),
         );
@@ -79,11 +80,15 @@ export function MonitorDetail({ id }: { id: number }) {
     );
   }
   if (!monitor) {
-    return <p className="eyebrow mx-auto max-w-6xl px-5 py-6">carregando</p>;
+    return (
+      <div className="mx-auto max-w-6xl px-5 py-6">
+        <Loading what="este monitor" />
+      </div>
+    );
   }
 
   const atual = statusFrom(samples);
-  const stats = summarise(beats, rollups);
+  const stats = rollups.length > 0 ? summariseRollups(rollups) : summariseHeartbeats(beats);
 
   async function remover() {
     if (!confirm(`Remover "${monitor!.name}" e todo o seu histórico?`)) return;
@@ -95,21 +100,16 @@ export function MonitorDetail({ id }: { id: number }) {
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-6 px-5 py-6">
       <nav>
-        <button
-          onClick={() => navigate({ name: "board" })}
-          className="eyebrow hover:text-ink"
-        >
-          ← todos os monitores
-        </button>
+        <TextLink onClick={() => navigate({ name: "board" })}>← todos os monitores</TextLink>
       </nav>
 
       <header className="flex flex-wrap items-start justify-between gap-4">
-        <div className="flex flex-col gap-1">
+        <div className="flex flex-col gap-1.5">
           <div className="flex items-center gap-2">
             <StatusDot status={atual} withLabel />
-            <h1 className="text-[22px] font-semibold tracking-tight">{monitor.name}</h1>
+            <h1 className="text-title font-semibold tracking-tight">{monitor.name}</h1>
           </div>
-          <p className="tabular text-[13px] text-ink-3">
+          <p className="tabular text-body text-ink-3">
             {monitor.type} · {monitor.target || "recebe sinal do próprio serviço"} · a cada{" "}
             {duration(monitor.interval_seconds)}
           </p>
@@ -125,14 +125,14 @@ export function MonitorDetail({ id }: { id: number }) {
 
       <section className="flex flex-col gap-3">
         <div className="flex flex-wrap items-end justify-between gap-4">
-          <div className="flex gap-8">
+          {/* Ausência já vem como null do resumo, e as funções de formato
+              a traduzem em travessão — nenhuma tela precisa mais decidir
+              sozinha o que fazer com dado que não existe. */}
+          <div className="flex gap-6">
             <Stat label="disponibilidade" value={uptime(stats.uptimePercent)} />
-            {/* Alvo que nunca respondeu não tem percentil: exibir zero
-                sugeriria resposta instantânea, que é o oposto do que
-                aconteceu. */}
-            <Stat label="p50" value={stats.p50 > 0 ? latency(stats.p50) : "—"} />
-            <Stat label="p95" value={stats.p95 > 0 ? latency(stats.p95) : "—"} />
-            <Stat label="p99" value={stats.p99 > 0 ? latency(stats.p99) : "—"} />
+            <Stat label="p50" value={latency(stats.p50)} />
+            <Stat label="p95" value={latency(stats.p95)} />
+            <Stat label="p99" value={latency(stats.p99)} />
           </div>
           <RangePicker value={range} onChange={setRange} />
         </div>
@@ -155,9 +155,9 @@ export function MonitorDetail({ id }: { id: number }) {
         <div className="flex h-5 items-center gap-4">
           {cursor ? (
             <>
-              <span className="tabular text-[12px] text-ink-2">{stamp(cursor.at)}</span>
+              <span className="tabular text-small text-ink-2">{stamp(cursor.at)}</span>
               <StatusDot status={cursor.status} withLabel />
-              <span className="tabular text-[12px] text-ink-2">{latency(cursor.latencyMs)}</span>
+              <span className="tabular text-small text-ink-2">{latency(cursor.latencyMs)}</span>
             </>
           ) : (
             <span className="eyebrow">passe o cursor sobre a faixa para inspecionar</span>
@@ -182,15 +182,16 @@ export function MonitorDetail({ id }: { id: number }) {
 
       <section className="flex flex-col gap-3">
         <h2 className="eyebrow">exportar</h2>
+        {/* LinkButton e não Button: baixar é navegação, e como âncora
+            ganha copiar endereço e abrir em nova aba de graça. */}
         <div className="flex gap-2">
           {(["csv", "json"] as const).map((formato) => (
-            <a
+            <LinkButton
               key={formato}
               href={api.exportUrl(monitor.id, { ...windowFor(range), format: formato })}
-              className="inline-flex h-8 items-center rounded-[3px] border border-line-strong px-3 text-[13px] hover:bg-sunken"
             >
               Baixar {formato.toUpperCase()}
-            </a>
+            </LinkButton>
           ))}
         </div>
       </section>
@@ -202,7 +203,7 @@ function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex flex-col">
       <span className="eyebrow">{label}</span>
-      <span className="tabular text-[22px] leading-tight tracking-tight">{value}</span>
+      <span className="tabular text-title leading-tight tracking-tight">{value}</span>
     </div>
   );
 }
@@ -221,14 +222,13 @@ function Incidents({ monitorID }: { monitorID: number }) {
     void api.incidents({ monitor_id: monitorID, limit: 20 }).then((page) => setItems(page.items));
   }, [monitorID]);
 
-  if (items === null) return <p className="eyebrow">carregando</p>;
+  if (items === null) return <Loading what="quedas" />;
 
   if (items.length === 0) {
     return (
-      <Empty
-        title="Nenhuma queda confirmada"
-        description="Oscilação passageira não entra aqui: uma queda só é registrada depois de confirmada pelo número de falhas seguidas do monitor."
-      />
+      <Nothing hint="Oscilação passageira não entra aqui: uma queda só é registrada depois de confirmada pelo número de falhas seguidas do monitor.">
+        Nenhuma queda confirmada.
+      </Nothing>
     );
   }
 
@@ -238,15 +238,19 @@ function Incidents({ monitorID }: { monitorID: number }) {
         <li key={i.id} className="flex items-baseline justify-between gap-4 border-b border-line py-2">
           <span className="flex min-w-0 items-baseline gap-3">
             <StatusDot status={i.open ? "down" : "up"} />
-            <span className="tabular shrink-0 text-[13px]">
+            <span className="tabular w-[72px] shrink-0 text-body">
               {i.open ? "em curso" : "resolvido"}
             </span>
-            {i.cause && <span className="truncate text-[12px] text-ink-2">{i.cause}</span>}
+            {i.cause && <span className="truncate text-small text-ink-2">{i.cause}</span>}
           </span>
 
-          <span className="flex shrink-0 items-baseline gap-3">
-            <span className="tabular text-[12px] text-ink">{duration(i.duration_seconds)}</span>
-            <span className="tabular text-[12px] text-ink-3">{stamp(i.started_at)}</span>
+          {/* Duração à direita numa coluna própria: durante uma conversa
+              sobre disponibilidade é o número que se compara entre linhas. */}
+          <span className="flex shrink-0 items-baseline gap-3 text-small">
+            <span className="tabular w-[64px] text-right text-ink">
+              {duration(i.duration_seconds)}
+            </span>
+            <span className="tabular text-ink-3">{stamp(i.started_at)}</span>
           </span>
         </li>
       ))}
@@ -266,10 +270,9 @@ function Events({ beats }: { beats: Heartbeat[] }) {
 
   if (transicoes.length === 0) {
     return (
-      <Empty
-        title="Nenhuma mudança no período"
-        description="O estado se manteve do início ao fim da janela escolhida."
-      />
+      <Nothing hint="O estado se manteve do início ao fim da janela escolhida.">
+        Nenhuma mudança no período.
+      </Nothing>
     );
   }
 
@@ -280,13 +283,16 @@ function Events({ beats }: { beats: Heartbeat[] }) {
           key={hb.timestamp + i}
           className="flex items-baseline justify-between gap-4 border-b border-line py-2"
         >
-          <span className="flex items-baseline gap-3">
+          <span className="flex min-w-0 items-baseline gap-3">
             <StatusDot status={hb.status} withLabel />
-            {hb.message && <span className="truncate text-[13px] text-ink-2">{hb.message}</span>}
+            {hb.message && <span className="truncate text-body text-ink-2">{hb.message}</span>}
           </span>
-          <span className="flex shrink-0 items-baseline gap-3">
-            <span className="tabular text-[12px] text-ink-3">{stamp(hb.timestamp)}</span>
-            <span className="tabular text-[12px] text-ink-3">{ago(hb.timestamp)}</span>
+          {/* Largura fixa no tempo relativo: sem ela "agora" e "há 11 min"
+              empurram o horário absoluto para posições diferentes, e as
+              duas colunas de tempo deixam de ser colunas. */}
+          <span className="flex shrink-0 items-baseline gap-3 text-small text-ink-3">
+            <span className="tabular">{stamp(hb.timestamp)}</span>
+            <span className="tabular w-[68px] text-right">{ago(hb.timestamp)}</span>
           </span>
         </li>
       ))}
@@ -296,50 +302,4 @@ function Events({ beats }: { beats: Heartbeat[] }) {
 
 function statusFrom(samples: PulseSample[]): Status {
   return samples.at(-1)?.status ?? "unknown";
-}
-
-function summarise(beats: Heartbeat[], rollups: Rollup[]) {
-  if (rollups.length > 0) {
-    const observadas = rollups.reduce((n, r) => n + r.up + r.degraded + r.down, 0);
-    const fora = rollups.reduce((n, r) => n + r.down, 0);
-
-    return {
-      uptimePercent: observadas ? ((observadas - fora) / observadas) * 100 : 0,
-      p50: max(rollups.map((r) => r.latency_p50_ms)),
-      p95: max(rollups.map((r) => r.latency_p95_ms)),
-      p99: max(rollups.map((r) => r.latency_p99_ms)),
-    };
-  }
-
-  const observadas = beats.filter((hb) => hb.status !== "unknown");
-  const respondidas = beats.filter((hb) => hb.status === "up" || hb.status === "degraded");
-  const latencias = respondidas.map((hb) => hb.latency_ms);
-
-  return {
-    uptimePercent: observadas.length
-      ? (observadas.filter((hb) => hb.status !== "down").length / observadas.length) * 100
-      : 0,
-    p50: percentile(latencias, 50),
-    p95: percentile(latencias, 95),
-    p99: percentile(latencias, 99),
-  };
-}
-
-/**
- * max é usado sobre percentis de agregados.
- *
- * Somar ou tirar média de percentis produziria um número que não
- * corresponde a medição alguma; o pior percentil da janela é uma
- * afirmação verdadeira sobre o período.
- */
-function max(values: number[]): number {
-  return values.length ? Math.max(...values) : 0;
-}
-
-function percentile(values: number[], p: number): number {
-  if (values.length === 0) return 0;
-
-  const ordenados = [...values].sort((a, b) => a - b);
-  const posto = Math.ceil((p / 100) * ordenados.length);
-  return ordenados[Math.min(Math.max(posto, 1), ordenados.length) - 1]!;
 }

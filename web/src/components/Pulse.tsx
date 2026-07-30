@@ -64,12 +64,27 @@ export function Pulse({
   const resumo = useMemo(() => summarise(samples, rangeLabel), [samples, rangeLabel]);
 
   if (bars.length === 0) {
+    // A altura decide a forma do vazio. Numa linha de painel não cabe
+    // frase: o texto saía cortado em dois tracinhos, que pareciam dado.
+    // Ali o vazio é só o eixo — a mesma linha que existe sob a faixa
+    // cheia, dizendo "este período existe e nada foi medido nele".
+    const cabeFrase = height >= 48;
+
     return (
       <div
-        className="flex items-center border border-dashed border-line px-2"
+        className="flex items-center justify-center"
         style={{ height }}
+        role="img"
+        aria-label={`Sem verificações${rangeLabel ? ` em ${rangeLabel}` : ""}.`}
+        title={`Sem verificações${rangeLabel ? ` em ${rangeLabel}` : ""}`}
       >
-        <span className="eyebrow">sem verificações no período</span>
+        {cabeFrase ? (
+          <span className="eyebrow border border-dashed border-line px-2 py-1">
+            sem verificações no período
+          </span>
+        ) : (
+          <span className="h-px w-full bg-line" aria-hidden />
+        )}
       </div>
     );
   }
@@ -110,7 +125,7 @@ export function Pulse({
             <div
               className={[
                 STATUS_FILL[bar.status],
-                "w-full rounded-[1px] transition-opacity duration-100",
+                "w-full rounded-xs transition-opacity duration-100",
                 // Quem está sob o cursor mantém opacidade cheia e o resto
                 // recua, para o olho achar a amostra sem perder o contexto.
                 active === null || active === i ? "opacity-100" : "opacity-35",

@@ -6,6 +6,7 @@ import { Gate, Mark } from "./screens/Gate";
 import { MonitorDetail } from "./screens/MonitorDetail";
 import { MonitorForm } from "./screens/MonitorForm";
 import { Settings } from "./screens/Settings";
+import { TextLink } from "./components/ui";
 import { navigate, useRoute } from "./lib/router";
 
 /** Estados possíveis da aplicação antes de mostrar qualquer tela. */
@@ -76,27 +77,24 @@ export function App() {
 
 function TopBar({ user, onSignOut }: { user: User; onSignOut: () => void }) {
   return (
-    <div className="border-b border-line">
+    // sticky: numa lista longa de alvos, rolar até o fim não deveria custar
+    // a volta ao painel nem o acesso aos ajustes.
+    <div className="sticky top-0 z-10 border-b border-line bg-paper/95 backdrop-blur-sm">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-5 py-2.5">
+        {/* -m-1 p-1 dá área de clique à marca sem deslocá-la da margem: o
+            alvo cresce para dentro do preenchimento, não para o lado. */}
         <button
           onClick={() => navigate({ name: "board" })}
-          className="flex items-center gap-2"
+          className="pressable -m-1 flex items-center rounded-sm p-1 opacity-100 hover:opacity-70 active:opacity-90"
           aria-label="Ir para o painel"
         >
           <Mark />
         </button>
 
         <div className="flex items-center gap-4">
-          <span className="text-[12px] text-ink-3">{user.username}</span>
-          <button
-            onClick={() => navigate({ name: "settings" })}
-            className="eyebrow hover:text-ink"
-          >
-            ajustes
-          </button>
-          <button onClick={onSignOut} className="eyebrow hover:text-ink">
-            sair
-          </button>
+          <span className="text-small text-ink-3">{user.username}</span>
+          <TextLink onClick={() => navigate({ name: "settings" })}>ajustes</TextLink>
+          <TextLink onClick={onSignOut}>sair</TextLink>
         </div>
       </div>
     </div>

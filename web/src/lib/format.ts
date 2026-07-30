@@ -9,8 +9,8 @@ const NUMERO = new Intl.NumberFormat("pt-BR");
  * Mostrar "1483 ms" obriga o leitor a contar casas; "1,48 s" é lido de
  * imediato. A troca acontece no segundo, onde a intuição muda.
  */
-export function latency(ms: number): string {
-  if (!Number.isFinite(ms) || ms < 0) return "—";
+export function latency(ms: number | null): string {
+  if (ms === null || !Number.isFinite(ms) || ms < 0) return "—";
   if (ms === 0) return "0 ms";
   if (ms < 1000) return `${Math.round(ms)} ms`;
 
@@ -23,9 +23,13 @@ export function latency(ms: number): string {
  * A diferença entre 99,9% e 99,99% é a diferença entre nove horas e
  * cinquenta minutos de indisponibilidade por ano; arredondar para
  * inteiro apagaria justamente o número que se contrata.
+ *
+ * Aceita null porque ausência de medição precisa atravessar até aqui:
+ * "0%" afirma queda total, e afirmar isso sobre o que não se mediu é
+ * pior do que não mostrar número.
  */
-export function uptime(percent: number): string {
-  if (!Number.isFinite(percent)) return "—";
+export function uptime(percent: number | null): string {
+  if (percent === null || !Number.isFinite(percent)) return "—";
 
   const casas = percent === 100 || percent === 0 ? 0 : 2;
   return `${NUMERO.format(Number(percent.toFixed(casas)))}%`;

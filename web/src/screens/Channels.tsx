@@ -1,7 +1,17 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client";
 import { ApiError, type Channel, type ChannelType } from "../api/types";
-import { Alert, Button, Empty, Field, Input, Select } from "../components/ui";
+import {
+  Alert,
+  Button,
+  Checkbox,
+  Field,
+  InlineLink,
+  Input,
+  Loading,
+  Nothing,
+  Select,
+} from "../components/ui";
 
 /**
  * Canais de aviso.
@@ -72,9 +82,9 @@ export function Channels() {
 
   return (
     <section className="flex flex-col gap-4">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-[15px] font-medium">Canais de aviso</h2>
-        <p className="text-[13px] text-ink-2">
+      <div className="flex flex-col gap-1.5">
+        <h2 className="text-lead font-medium">Canais de aviso</h2>
+        <p className="text-body text-ink-2">
           Para onde o UpWatch manda o alerta quando um alvo cai. Vincule cada canal aos
           monitores na tela do próprio monitor.
         </p>
@@ -91,30 +101,31 @@ export function Channels() {
       />
 
       {canais === null ? (
-        <p className="eyebrow">carregando</p>
+        <Loading what="canais" />
       ) : canais.length === 0 ? (
-        <Empty
-          title="Nenhum canal cadastrado"
-          description="Sem canal, o UpWatch registra as quedas mas não avisa ninguém."
-        />
+        <Nothing hint="Sem canal, o UpWatch registra as quedas mas não avisa ninguém.">
+          Nenhum canal cadastrado.
+        </Nothing>
       ) : (
         <ul className="border-t border-line">
           {canais.map((canal) => (
             <li key={canal.id} className="flex flex-col gap-1.5 border-b border-line py-2.5">
-              <div className="flex items-baseline justify-between gap-4">
+              <div className="flex items-center justify-between gap-4">
                 <span className="flex min-w-0 items-baseline gap-2">
-                  <span className="truncate text-[13px] font-medium">{canal.name}</span>
+                  <span className="truncate text-body font-medium">{canal.name}</span>
                   <span className="eyebrow">{TIPOS[canal.type]?.label ?? canal.type}</span>
                   {!canal.enabled && (
-                    <span className="text-[12px] text-ink-3">desligado</span>
+                    <span className="text-small text-ink-3">desligado</span>
                   )}
                 </span>
 
+                {/* Ação em linha usa o tamanho menor: o botão de altura
+                    cheia esticaria cada item e a lista perderia densidade. */}
                 <span className="flex shrink-0 items-center gap-2">
-                  <Button onClick={() => testar(canal)} disabled={testando === canal.id}>
+                  <Button size="sm" onClick={() => testar(canal)} disabled={testando === canal.id}>
                     {testando === canal.id ? "Enviando" : "Testar"}
                   </Button>
-                  <Button variant="danger" onClick={() => remover(canal)}>
+                  <Button size="sm" variant="danger" onClick={() => remover(canal)}>
                     Remover
                   </Button>
                 </span>
@@ -124,7 +135,7 @@ export function Channels() {
                   aviso global: com vários canais, saber qual respondeu é a
                   informação que importa. */}
               {resultado?.id === canal.id && (
-                <span className={`text-[12px] ${resultado.ok ? "text-up" : "text-down"}`}>
+                <span className={`text-small ${resultado.ok ? "text-up" : "text-down"}`}>
                   {resultado.texto}
                 </span>
               )}
@@ -176,7 +187,7 @@ function NewChannel({
   const erroDe = (campo: string) => (campoErro?.campo === campo ? campoErro.msg : undefined);
 
   return (
-    <form onSubmit={criar} className="flex flex-col gap-4 border border-line-strong p-4">
+    <form onSubmit={criar} className="flex flex-col gap-4 rounded-sm border border-line-strong p-4">
       <div className="grid gap-4 sm:grid-cols-[160px_minmax(0,1fr)]">
         <Field label="onde avisar">
           <Select value={tipo} onChange={(e) => setTipo(e.target.value as ChannelType)}>
@@ -264,35 +275,30 @@ export function MonitorChannels({ monitorID }: { monitorID: number }) {
     }
   }
 
-  if (carregando) return <p className="eyebrow">carregando</p>;
+  if (carregando) return <Loading what="canais" />;
 
   if (todos.length === 0) {
     return (
-      <p className="text-[13px] text-ink-2">
+      <p className="text-body text-ink-2">
         Nenhum canal cadastrado. Crie um em{" "}
-        <a href="/settings" className="underline">
-          ajustes
-        </a>{" "}
-        para receber alerta quando este alvo cair.
+        <InlineLink to={{ name: "settings" }}>ajustes</InlineLink> para receber alerta quando este
+        alvo cair.
       </p>
     );
   }
 
+  // -mx-1 alinha o texto das caixas com o resto da coluna: o Checkbox tem
+  // preenchimento próprio para a área de clique cobrir o rótulo inteiro,
+  // e sem isso a lista apareceria recuada em relação ao título da seção.
   return (
-    <ul className="flex flex-col gap-1.5">
+    <ul className="-mx-1 flex flex-col">
       {todos.map((canal) => (
         <li key={canal.id}>
-          <label className="flex cursor-pointer items-center gap-2 text-[13px]">
-            <input
-              type="checkbox"
-              checked={vinculados.has(canal.id)}
-              onChange={() => alternar(canal)}
-              className="accent-ink"
-            />
+          <Checkbox checked={vinculados.has(canal.id)} onChange={() => alternar(canal)}>
             <span>{canal.name}</span>
             <span className="eyebrow">{TIPOS[canal.type]?.label ?? canal.type}</span>
-            {!canal.enabled && <span className="text-[12px] text-ink-3">desligado</span>}
-          </label>
+            {!canal.enabled && <span className="text-small text-ink-3">desligado</span>}
+          </Checkbox>
         </li>
       ))}
     </ul>

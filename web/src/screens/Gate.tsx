@@ -55,11 +55,11 @@ export function Gate({ mode, onDone }: GateProps) {
       <div className="flex w-full max-w-[340px] flex-col gap-6">
         <Mark />
 
-        <div className="flex flex-col gap-1">
-          <h1 className="text-[19px] font-semibold tracking-tight">
+        <div className="flex flex-col gap-1.5">
+          <h1 className="text-title font-semibold tracking-tight">
             {criando ? "Crie a conta de administração" : "Entrar"}
           </h1>
-          <p className="text-[13px] text-ink-2">
+          <p className="text-body text-ink-2">
             {criando
               ? "Esta é a única conta criada sem autenticação. Depois dela, o cadastro fecha."
               : "Use as credenciais definidas na instalação."}
@@ -93,7 +93,7 @@ export function Gate({ mode, onDone }: GateProps) {
             />
           </Field>
 
-          <Button type="submit" variant="primary" disabled={enviando} className="mt-1">
+          <Button type="submit" variant="primary" disabled={enviando} className="mt-2">
             {enviando ? "Aguarde" : criando ? "Criar conta e entrar" : "Entrar"}
           </Button>
         </form>
@@ -116,7 +116,7 @@ export function Mark({ className = "" }: { className?: string }) {
       {alturas.map((h, i) => (
         <span
           key={i}
-          className={`w-[4px] rounded-[1px] ${i === 3 ? "bg-degraded" : "bg-up"}`}
+          className={`w-[4px] rounded-xs ${i === 3 ? "bg-degraded" : "bg-up"}`}
           style={{ height: `${(h / 100) * 26}px` }}
         />
       ))}
