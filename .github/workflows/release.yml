@@ -1,0 +1,112 @@
+name: Release
+
+# Dispara na tag. A tag é a decisão de publicar: rodar isto em todo push
+# encheria o registro de imagens que ninguém pediu.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  binaries:
+    name: Binários
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      # A interface é embarcada por go:embed, então construí-la é
+      # pré-requisito de compilar o servidor. Sem esta etapa o binário
+      # sairia servindo a página de "interface não construída".
+      - name: Construir a interface
+        run: |
+          cd web
+          pnpm install --frozen-lockfile
+          pnpm vite build
+
+      # Um binário por plataforma, todos estáticos. CGO desligado porque
+      # o driver SQLite é pure Go — é o que permite copiar o arquivo para
+      # qualquer máquina e simplesmente rodar.
+      - name: Compilar
+        env:
+          CGO_ENABLED: '0'
+          VERSION: ${{ github.ref_name }}
+        run: |
+          mkdir -p dist
+          for alvo in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            os=${alvo%/*}
+            arch=${alvo#*/}
+            saida=dist/upwatch_${os}_${arch}
+            if [ "$os" = "windows" ]; then saida="${saida}.exe"; fi
+
+            GOOS=$os GOARCH=$arch go build \
+              -trimpath \
+              -ldflags="-s -w -X main.version=${VERSION}" \
+              -o "$saida" ./cmd/upwatch
+          done
+
+      # Somas de verificação: quem baixa um binário de release precisa
+      # conseguir confirmar que recebeu o que foi publicado.
+      - name: Somas de verificação
+        run: cd dist && sha256sum * > SHA256SUMS
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+
+  image:
+    name: Imagem
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          # latest só na tag estável: quem fixa em latest não deveria
+          # receber uma pré-versão sem pedir.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          # arm64 não é luxo: boa parte das instalações caseiras roda em
+          # placa ARM, e é justamente esse público que quer um contêiner
+          # só.
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

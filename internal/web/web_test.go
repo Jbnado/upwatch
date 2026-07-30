@@ -63,6 +63,8 @@ func TestShellIsNotCached(t *testing.T) {
 	}
 }
 
+// A casca é HTML nos dois casos: construída, é a aplicação; não
+// construída, é a página que diz como construí-la.
 func TestShellIsServedAsHTML(t *testing.T) {
 	rec := get(t, "/")
 
@@ -76,10 +78,25 @@ func TestShellIsServedAsHTML(t *testing.T) {
 func TestTraversalIsContained(t *testing.T) {
 	rec := get(t, "/../../etc/passwd")
 
-	if rec.Code >= 500 {
-		t.Errorf("status = %d, want the traversal to be contained rather than crash", rec.Code)
-	}
+	// O vazamento é o que importa, e vale construída ou não.
 	if strings.Contains(rec.Body.String(), "root:") {
 		t.Error("the response leaked a file from outside the embedded filesystem")
 	}
+
+	// O código de erro só diz alguma coisa com a interface construída:
+	// sem ela, todo caminho responde 503 com a instrução de build, e
+	// exigir menos que 500 aqui faria a suíte falhar num clone limpo por
+	// um motivo que não é defeito.
+	if !construida(t) {
+		return
+	}
+	if rec.Code >= 500 {
+		t.Errorf("status = %d, want the traversal to be contained rather than crash", rec.Code)
+	}
+}
+
+// construida informa se a interface foi construída neste ambiente.
+func construida(t *testing.T) bool {
+	t.Helper()
+	return get(t, "/").Code != http.StatusServiceUnavailable
 }

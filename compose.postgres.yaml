@@ -1,0 +1,54 @@
+# UpWatch com PostgreSQL.
+#
+# O SQLite dá conta de uma instalação inteira num arquivo, mas não de
+# duas instâncias do UpWatch escrevendo ao mesmo tempo — que é o que se
+# quer quando a disponibilidade do próprio monitorador importa.
+#
+# A mesma suíte de conformidade roda contra os dois bancos, com o mesmo
+# número de casos: trocar de backend não muda o comportamento.
+#
+#   docker compose -f compose.postgres.yaml up -d
+
+services:
+  upwatch:
+    image: ghcr.io/bernardojoao/upwatch:latest
+    build:
+      context: .
+      args:
+        VERSION: dev
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      UPWATCH_DB_DRIVER: postgres
+      UPWATCH_DB_DSN: postgres://upwatch:${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD}@postgres:5432/upwatch?sslmode=disable
+      UPWATCH_RETENTION_RAW: 168h
+      UPWATCH_RETENTION_HOURLY: 2160h
+      UPWATCH_RETENTION_DAILY: 17520h
+    security_opt:
+      - no-new-privileges:true
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: upwatch
+      POSTGRES_DB: upwatch
+      # Sem valor padrão de propósito: uma senha padrão em arquivo de
+      # exemplo vira a senha de produção de alguém.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD}
+    volumes:
+      - upwatch-postgres:/var/lib/postgresql/data
+    # O UpWatch só sobe depois que o banco aceita conexão; sem isto, a
+    # primeira tentativa de migration falharia numa corrida de arranque.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U upwatch -d upwatch"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  upwatch-postgres:

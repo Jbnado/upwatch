@@ -1,0 +1,51 @@
+# UpWatch com SQLite: um contêiner e um volume.
+#
+# É o arranjo padrão, e dá conta de uma instalação inteira. Quem precisa
+# de duas instâncias do UpWatch ao mesmo tempo — porque a disponibilidade
+# do monitorador também importa — usa o compose.postgres.yaml.
+
+services:
+  upwatch:
+    image: ghcr.io/bernardojoao/upwatch:latest
+    # Para construir localmente em vez de baixar:
+    #   docker compose build
+    build:
+      context: .
+      args:
+        VERSION: dev
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - upwatch-data:/data
+    environment:
+      # Quanto histórico guardar em cada camada. O cru é caro e some
+      # cedo; o agregado horário e o diário é que sustentam meses de
+      # página pública sem varrer milhões de linhas.
+      UPWATCH_RETENTION_RAW: 168h
+      UPWATCH_RETENTION_HOURLY: 2160h
+      UPWATCH_RETENTION_DAILY: 17520h
+
+      # Endereço externo, quando houver proxy na frente. Sem isto o feed
+      # da página pública usa endereços relativos — que é o padrão
+      # seguro, porque reconstruí-los a partir do cabeçalho Host deixaria
+      # qualquer pessoa injetar o próprio domínio num documento cacheado.
+      # UPWATCH_PUBLIC_URL: https://status.exemplo.com
+
+      # Ligue quando servir por HTTPS. Fica desligado por padrão porque
+      # muita instalação caseira serve em HTTP na rede local, e um cookie
+      # Secure ali simplesmente não é enviado — o login pareceria
+      # quebrado sem explicação.
+      # UPWATCH_SECURE_COOKIES: "true"
+    # Sem privilégio nenhum: o processo não precisa de root, e a imagem
+    # já roda como usuário sem privilégio.
+    security_opt:
+      - no-new-privileges:true
+    # O ICMP é a única verificação que precisaria de privilégio de rede.
+    # Descomente se for usar monitor de ping; sem isso, os demais tipos
+    # funcionam normalmente.
+    # cap_add:
+    #   - NET_RAW
+
+volumes:
+  upwatch-data:

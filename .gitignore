@@ -19,7 +19,13 @@ coverage.txt
 # Frontend
 /web/node_modules/
 /web/dist/
-/internal/web/dist/
+
+# O build da interface não entra no versionamento, mas o diretório
+# precisa existir: o go:embed aponta para ele, e sem um arquivo dentro o
+# pacote não compila. Um clone limpo falharia antes de qualquer teste
+# rodar — que é a pior primeira impressão possível.
+/internal/web/dist/*
+!/internal/web/dist/.gitkeep
 # Cache incremental do tsc: muda a cada build e não descreve o código.
 /web/tsconfig.tsbuildinfo
 

@@ -1,0 +1,24 @@
+# O contexto de build vai inteiro para o daemon; o que não é usado só
+# custa tempo de envio e invalida camadas sem motivo.
+
+.git
+.github
+*.md
+LICENSE
+
+# Dependências e artefatos reconstruídos dentro da imagem.
+web/node_modules
+web/dist
+internal/web/dist
+
+# Binários e bancos locais.
+upwatch
+upwatch.exe
+*.db
+*.db-shm
+*.db-wal
+coverage.out
+
+# Saída de conferência de interface.
+.playwright-mcp
+*.png

@@ -38,6 +38,61 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: go tool cover -func=coverage.out | tail -n 1
 
+  postgres:
+    name: Conformidade contra PostgreSQL
+    runs-on: ubuntu-latest
+    # É o que impede "banco plugável" de virar fachada: a mesma bateria
+    # que o SQLite passa, contra um servidor de verdade. Sem isto, o
+    # caminho de produção seria exercitado só em produção.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: upwatch
+          POSTGRES_PASSWORD: upwatch
+          POSTGRES_DB: upwatch
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U upwatch"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Suíte de conformidade
+        env:
+          UPWATCH_TEST_POSTGRES_DSN: postgres://upwatch:upwatch@127.0.0.1:5432/upwatch?sslmode=disable
+        run: go test ./internal/store/... -race -count=1
+
+  web:
+    name: Interface
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Instalar
+        run: cd web && pnpm install --frozen-lockfile
+
+      - name: Tipos
+        run: cd web && pnpm exec tsc -b
+
+      - name: Testes
+        run: cd web && pnpm vitest run
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -71,10 +126,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
           cache: true
+
+      # A interface entra no binário por go:embed. Compilar sem
+      # construí-la produz um executável que serve a página de "interface
+      # não construída" — e nada indica que foi isso que aconteceu.
+      - name: Construir a interface
+        run: |
+          cd web
+          pnpm install --frozen-lockfile
+          pnpm vite build
 
       # CGO desligado: o driver SQLite é pure Go, então o binário final é
       # estático e a imagem Docker fica mínima.
@@ -82,3 +154,39 @@ jobs:
         env:
           CGO_ENABLED: '0'
         run: go build -trimpath -ldflags='-s -w' -o upwatch ./cmd/upwatch
+
+  image:
+    name: Imagem Docker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Construir sem publicar: um Dockerfile que só é exercitado no dia
+      # do release quebra no dia do release.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: upwatch:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # A imagem precisa subir sem privilégio e responder: um build que
+      # passa mas não executa não prova nada.
+      - name: Subir e conferir
+        run: |
+          docker run -d --name upwatch-ci -p 8080:8080 upwatch:ci
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8080/healthz >/dev/null; then break; fi
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:8080/healthz
+          curl -sf http://127.0.0.1:8080/metrics | head -3
+
+          # Rodar como root numa imagem que não precisa disso é o achado
+          # mais comum de qualquer varredura de contêiner.
+          test "$(docker exec upwatch-ci id -u)" = "10001"
+          docker rm -f upwatch-ci
