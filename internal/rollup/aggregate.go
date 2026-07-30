@@ -10,7 +10,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/bernardojoao/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/domain"
 )
 
 // Bucket identifica a janela agregada.

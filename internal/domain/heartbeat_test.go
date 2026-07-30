@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bernardojoao/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/domain"
 )
 
 // Heartbeats gravados sem probe explícito pertencem à instância local.

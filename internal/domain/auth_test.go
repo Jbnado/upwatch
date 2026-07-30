@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bernardojoao/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/domain"
 )
 
 func TestUserValidateAcceptsWellFormedUser(t *testing.T) {

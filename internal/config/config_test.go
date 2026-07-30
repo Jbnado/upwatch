@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bernardojoao/upwatch/internal/config"
+	"github.com/Jbnado/upwatch/internal/config"
 )
 
 // writeFile grava um arquivo de configuração temporário.

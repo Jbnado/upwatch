@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bernardojoao/upwatch/internal/clock"
-	"github.com/bernardojoao/upwatch/internal/domain"
-	"github.com/bernardojoao/upwatch/internal/rollup"
-	"github.com/bernardojoao/upwatch/internal/store"
-	"github.com/bernardojoao/upwatch/internal/store/sqlstore"
+	"github.com/Jbnado/upwatch/internal/clock"
+	"github.com/Jbnado/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/rollup"
+	"github.com/Jbnado/upwatch/internal/store"
+	"github.com/Jbnado/upwatch/internal/store/sqlstore"
 )
 
 // now é o instante de referência: 14:30 UTC, dentro do bucket das 14h, de

@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bernardojoao/upwatch/internal/clock"
+	"github.com/Jbnado/upwatch/internal/clock"
 )
 
 // DefaultTargets são os alvos consultados para decidir se a rota para fora

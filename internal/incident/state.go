@@ -10,7 +10,7 @@ package incident
 import (
 	"time"
 
-	"github.com/bernardojoao/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/domain"
 )
 
 // Kind e Event são apelidos dos tipos do domínio.

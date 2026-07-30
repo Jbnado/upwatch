@@ -15,7 +15,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/bernardojoao/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/domain"
 )
 
 // Limites de paginação. Listagem sem teto é o que degrada quando a tabela

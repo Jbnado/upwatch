@@ -10,7 +10,7 @@ possa ficar defasada em relação ao servidor que os acompanha.
 
 ```
 docker run -d --name upwatch -p 8080:8080 -v upwatch:/data \
-  ghcr.io/bernardojoao/upwatch:latest
+  ghcr.io/jbnado/upwatch:latest
 ```
 
 Abra `http://localhost:8080` e crie a conta de administração. É a única
@@ -57,7 +57,7 @@ o alerta morar onde já mora o resto.
 ### Docker Compose
 
 ```bash
-curl -O https://raw.githubusercontent.com/bernardojoao/upwatch/main/compose.yaml
+curl -O https://raw.githubusercontent.com/Jbnado/upwatch/main/compose.yaml
 docker compose up -d
 ```
 
@@ -65,7 +65,7 @@ Com PostgreSQL, quando a disponibilidade do próprio monitorador importa e
 você quer mais de uma instância:
 
 ```bash
-curl -O https://raw.githubusercontent.com/bernardojoao/upwatch/main/compose.postgres.yaml
+curl -O https://raw.githubusercontent.com/Jbnado/upwatch/main/compose.postgres.yaml
 POSTGRES_PASSWORD=$(openssl rand -base64 24) docker compose -f compose.postgres.yaml up -d
 ```
 
@@ -193,6 +193,14 @@ UPWATCH_TEST_POSTGRES_DSN='postgres://...?sslmode=disable' go test ./internal/st
 credencial: travessia de caminho em nove formas, injeção de SQL no slug,
 enumeração de páginas, texto hostil, cabeçalho `Host` forjado. Um deles
 encontrou um defeito real durante o desenvolvimento.
+
+## Como contribuir
+
+Leia [CONTRIBUTING.md](CONTRIBUTING.md) antes de abrir um pull request —
+sobretudo a parte de testes, que é onde este projeto tem opinião.
+
+Falha de segurança não vai em issue pública: veja
+[SECURITY.md](SECURITY.md).
 
 ## Licença
 

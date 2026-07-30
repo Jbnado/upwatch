@@ -1,0 +1,36 @@
+version: 2
+
+# Atualização automática de dependências.
+#
+# Semanal, e agrupada: um pull request por ecossistema por semana é
+# revisável; um por dependência transforma a caixa de entrada em ruído e
+# ensina a ignorar todos — inclusive o de correção de segurança.
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      go:
+        patterns: ['*']
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+    groups:
+      web:
+        patterns: ['*']
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly

@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bernardojoao/upwatch/internal/checker"
-	"github.com/bernardojoao/upwatch/internal/clock"
-	"github.com/bernardojoao/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/checker"
+	"github.com/Jbnado/upwatch/internal/clock"
+	"github.com/Jbnado/upwatch/internal/domain"
 )
 
 // DefaultWorkers é o teto padrão de checks simultâneos.

@@ -8,8 +8,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/bernardojoao/upwatch/internal/api"
-	"github.com/bernardojoao/upwatch/internal/server"
+	"github.com/Jbnado/upwatch/internal/api"
+	"github.com/Jbnado/upwatch/internal/server"
 )
 
 // Toda rota da API precisa chegar até ela.

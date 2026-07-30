@@ -4,8 +4,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/bernardojoao/upwatch/internal/domain"
-	"github.com/bernardojoao/upwatch/internal/metrics"
+	"github.com/Jbnado/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/metrics"
 )
 
 func TestCountersSeparamOsEstados(t *testing.T) {

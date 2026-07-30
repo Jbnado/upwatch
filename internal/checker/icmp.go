@@ -11,7 +11,7 @@ import (
 
 	probing "github.com/prometheus-community/pro-bing"
 
-	"github.com/bernardojoao/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/domain"
 )
 
 // DefaultPingCount é quantos pacotes cada verificação envia.

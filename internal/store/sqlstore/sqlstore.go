@@ -16,8 +16,8 @@ import (
 
 	"github.com/pressly/goose/v3"
 
-	"github.com/bernardojoao/upwatch/internal/store"
-	"github.com/bernardojoao/upwatch/internal/store/migrations"
+	"github.com/Jbnado/upwatch/internal/store"
+	"github.com/Jbnado/upwatch/internal/store/migrations"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // driver PostgreSQL pure Go
 	_ "modernc.org/sqlite"             // driver SQLite pure Go: sem CGO, binário estático

@@ -15,12 +15,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bernardojoao/upwatch/internal/checker"
-	"github.com/bernardojoao/upwatch/internal/clock"
-	"github.com/bernardojoao/upwatch/internal/domain"
-	"github.com/bernardojoao/upwatch/internal/scheduler"
-	"github.com/bernardojoao/upwatch/internal/store"
-	"github.com/bernardojoao/upwatch/internal/store/sqlstore"
+	"github.com/Jbnado/upwatch/internal/checker"
+	"github.com/Jbnado/upwatch/internal/clock"
+	"github.com/Jbnado/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/scheduler"
+	"github.com/Jbnado/upwatch/internal/store"
+	"github.com/Jbnado/upwatch/internal/store/sqlstore"
 )
 
 // pipeline é a cadeia montada, com os componentes já em execução.

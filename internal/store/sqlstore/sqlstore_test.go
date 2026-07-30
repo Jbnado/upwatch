@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bernardojoao/upwatch/internal/domain"
-	"github.com/bernardojoao/upwatch/internal/store"
-	"github.com/bernardojoao/upwatch/internal/store/sqlstore"
-	"github.com/bernardojoao/upwatch/internal/store/storetest"
+	"github.com/Jbnado/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/store"
+	"github.com/Jbnado/upwatch/internal/store/sqlstore"
+	"github.com/Jbnado/upwatch/internal/store/storetest"
 )
 
 // newStore devolve uma store limpa em arquivo temporário.

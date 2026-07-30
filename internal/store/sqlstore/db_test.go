@@ -3,7 +3,7 @@ package sqlstore
 import (
 	"testing"
 
-	"github.com/bernardojoao/upwatch/internal/store/migrations"
+	"github.com/Jbnado/upwatch/internal/store/migrations"
 )
 
 // A tradução de marcadores é o ponto onde um SQL só serve a dois bancos.

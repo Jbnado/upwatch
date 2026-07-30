@@ -7,8 +7,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bernardojoao/upwatch/internal/clock"
-	"github.com/bernardojoao/upwatch/internal/metrics"
+	"github.com/Jbnado/upwatch/internal/clock"
+	"github.com/Jbnado/upwatch/internal/metrics"
 )
 
 // Padrões do despachante.

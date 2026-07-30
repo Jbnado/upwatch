@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bernardojoao/upwatch/internal/domain"
-	"github.com/bernardojoao/upwatch/internal/store"
+	"github.com/Jbnado/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/store"
 )
 
 // Limite ausente não pode virar "traga tudo": uma listagem sem teto é

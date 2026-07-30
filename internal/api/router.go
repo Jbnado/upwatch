@@ -6,12 +6,12 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/bernardojoao/upwatch/internal/auth"
-	"github.com/bernardojoao/upwatch/internal/checker"
-	"github.com/bernardojoao/upwatch/internal/clock"
-	"github.com/bernardojoao/upwatch/internal/domain"
-	"github.com/bernardojoao/upwatch/internal/metrics"
-	"github.com/bernardojoao/upwatch/internal/store"
+	"github.com/Jbnado/upwatch/internal/auth"
+	"github.com/Jbnado/upwatch/internal/checker"
+	"github.com/Jbnado/upwatch/internal/clock"
+	"github.com/Jbnado/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/metrics"
+	"github.com/Jbnado/upwatch/internal/store"
 )
 
 // Options reúne as dependências da API.

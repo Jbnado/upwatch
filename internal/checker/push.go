@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/bernardojoao/upwatch/internal/clock"
-	"github.com/bernardojoao/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/clock"
+	"github.com/Jbnado/upwatch/internal/domain"
 )
 
 // MinPushTokenLength é o tamanho mínimo do segredo do endpoint de push.

@@ -3,7 +3,7 @@ package domain_test
 import (
 	"testing"
 
-	"github.com/bernardojoao/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/domain"
 )
 
 func TestRollupUptimePercent(t *testing.T) {

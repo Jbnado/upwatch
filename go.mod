@@ -1,4 +1,4 @@
-module github.com/bernardojoao/upwatch
+module github.com/Jbnado/upwatch
 
 go 1.25.7
 

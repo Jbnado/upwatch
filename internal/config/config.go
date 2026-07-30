@@ -19,9 +19,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/bernardojoao/upwatch/internal/rollup"
-	"github.com/bernardojoao/upwatch/internal/scheduler"
-	"github.com/bernardojoao/upwatch/internal/sentinel"
+	"github.com/Jbnado/upwatch/internal/rollup"
+	"github.com/Jbnado/upwatch/internal/scheduler"
+	"github.com/Jbnado/upwatch/internal/sentinel"
 )
 
 // envPrefix identifica as variáveis do UpWatch no ambiente.

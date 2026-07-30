@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bernardojoao/upwatch/internal/clock"
-	"github.com/bernardojoao/upwatch/internal/notifier"
+	"github.com/Jbnado/upwatch/internal/clock"
+	"github.com/Jbnado/upwatch/internal/notifier"
 )
 
 // channel é um destino controlável.

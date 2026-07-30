@@ -14,9 +14,9 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/bernardojoao/upwatch/internal/auth"
-	"github.com/bernardojoao/upwatch/internal/domain"
-	"github.com/bernardojoao/upwatch/internal/store"
+	"github.com/Jbnado/upwatch/internal/auth"
+	"github.com/Jbnado/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/store"
 )
 
 // maxRequestBytes limita o corpo aceito. Sem teto, um corpo enorme

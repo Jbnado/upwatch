@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bernardojoao/upwatch/internal/domain"
-	"github.com/bernardojoao/upwatch/internal/incident"
-	"github.com/bernardojoao/upwatch/internal/notifier"
+	"github.com/Jbnado/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/incident"
+	"github.com/Jbnado/upwatch/internal/notifier"
 )
 
 var epoch = time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)

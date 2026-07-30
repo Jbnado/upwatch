@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bernardojoao/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/domain"
 )
 
 func TestMonitorTypeString(t *testing.T) {

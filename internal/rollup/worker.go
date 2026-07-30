@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/bernardojoao/upwatch/internal/clock"
-	"github.com/bernardojoao/upwatch/internal/domain"
-	"github.com/bernardojoao/upwatch/internal/store"
+	"github.com/Jbnado/upwatch/internal/clock"
+	"github.com/Jbnado/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/store"
 )
 
 // DefaultInterval é a frequência de execução do ciclo. Buckets horários

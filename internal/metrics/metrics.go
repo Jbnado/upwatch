@@ -13,7 +13,7 @@ package metrics
 import (
 	"sync/atomic"
 
-	"github.com/bernardojoao/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/domain"
 )
 
 // Counters acumula o que o processo viu desde que subiu.

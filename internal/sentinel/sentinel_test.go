@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bernardojoao/upwatch/internal/clock"
-	"github.com/bernardojoao/upwatch/internal/sentinel"
+	"github.com/Jbnado/upwatch/internal/clock"
+	"github.com/Jbnado/upwatch/internal/sentinel"
 )
 
 var epoch = time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)

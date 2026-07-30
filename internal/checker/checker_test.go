@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bernardojoao/upwatch/internal/checker"
-	"github.com/bernardojoao/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/checker"
+	"github.com/Jbnado/upwatch/internal/domain"
 )
 
 // stub é um Checker controlável, para exercitar o registry sem depender de

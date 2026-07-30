@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/bernardojoao/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/domain"
 )
 
 // Result é o desfecho de um check.

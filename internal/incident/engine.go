@@ -6,10 +6,10 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/bernardojoao/upwatch/internal/domain"
-	"github.com/bernardojoao/upwatch/internal/metrics"
-	"github.com/bernardojoao/upwatch/internal/notifier"
-	"github.com/bernardojoao/upwatch/internal/store"
+	"github.com/Jbnado/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/metrics"
+	"github.com/Jbnado/upwatch/internal/notifier"
+	"github.com/Jbnado/upwatch/internal/store"
 )
 
 // Sink recebe a batida depois de o motor observá-la.

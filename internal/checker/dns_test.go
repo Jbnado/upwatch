@@ -11,8 +11,8 @@ import (
 
 	"github.com/miekg/dns"
 
-	"github.com/bernardojoao/upwatch/internal/checker"
-	"github.com/bernardojoao/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/checker"
+	"github.com/Jbnado/upwatch/internal/domain"
 )
 
 // dnsServer é um servidor DNS local. Responder de dentro do teste elimina

@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bernardojoao/upwatch/internal/store"
-	"github.com/bernardojoao/upwatch/internal/store/sqlstore"
-	"github.com/bernardojoao/upwatch/internal/store/storetest"
+	"github.com/Jbnado/upwatch/internal/store"
+	"github.com/Jbnado/upwatch/internal/store/sqlstore"
+	"github.com/Jbnado/upwatch/internal/store/storetest"
 )
 
 // A mesma bateria, contra PostgreSQL.

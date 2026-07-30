@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bernardojoao/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/domain"
 )
 
 // A página pública é a única superfície do UpWatch que qualquer pessoa

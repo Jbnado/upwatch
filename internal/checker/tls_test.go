@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bernardojoao/upwatch/internal/checker"
-	"github.com/bernardojoao/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/checker"
+	"github.com/Jbnado/upwatch/internal/domain"
 )
 
 // authority é uma CA de teste capaz de emitir certificados com validade

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bernardojoao/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/domain"
 )
 
 // newMonitorBody devolve um corpo válido de criação de monitor.

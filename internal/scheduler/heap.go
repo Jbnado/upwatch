@@ -4,7 +4,7 @@ import (
 	"container/heap"
 	"time"
 
-	"github.com/bernardojoao/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/domain"
 )
 
 // entry é um monitor agendado com seu próximo vencimento.

@@ -116,9 +116,12 @@ jobs:
             exit 1
           fi
 
+      # Versão fixa, não "latest": um lançamento novo do linter pode
+      # deixar a build vermelha num projeto que não mudou uma linha, e
+      # isso ensina a ignorar a build vermelha.
       - uses: golangci/golangci-lint-action@v6
         with:
-          version: latest
+          version: v2.12.2
 
   build:
     name: Build static binary

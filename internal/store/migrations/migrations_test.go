@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bernardojoao/upwatch/internal/store/migrations"
+	"github.com/Jbnado/upwatch/internal/store/migrations"
 )
 
 func TestFSExposesMigrationsForEachDialect(t *testing.T) {

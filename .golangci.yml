@@ -1,0 +1,41 @@
+version: "2"
+
+# Configuração explícita em vez dos padrões implícitos.
+#
+# Sem arquivo, a ferramenta usa o conjunto que vier na versão instalada —
+# e "version: latest" no CI significa que um lançamento novo pode deixar
+# a build vermelha num projeto que não mudou. Aqui o conjunto é escolhido,
+# e o CI fixa a versão.
+
+linters:
+  default: standard
+
+  settings:
+    errcheck:
+      # Close adiado em leitura não tem erro acionável: o de rows já é
+      # reportado por rows.Err(), e o de um statement ou de uma conexão
+      # que está sendo descartada não muda o que o chamador faz. Ignorar
+      # explicitamente aqui é melhor que espalhar //nolint pelo código —
+      # e mantém errcheck útil para o resto, onde erro ignorado é
+      # defeito de verdade.
+      exclude-functions:
+        - (*database/sql.Rows).Close
+        - (*database/sql.Stmt).Close
+        - (*database/sql.DB).Close
+        - (io.Closer).Close
+        # Conexão de sonda sendo descartada: o alvo já respondeu ou não,
+        # e o resultado da verificação não muda pelo fechamento.
+        - (*crypto/tls.Conn).Close
+        - (net.Conn).Close
+
+  exclusions:
+    rules:
+      # Teste pode ignorar erro de limpeza: falhar ao fechar um recurso
+      # temporário não invalida o que o teste verificou, e tratar isso
+      # encheria os testes de ruído que compete com o que eles afirmam.
+      - path: _test\.go
+        linters: [errcheck]
+
+formatters:
+  enable:
+    - gofmt

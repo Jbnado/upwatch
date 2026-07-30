@@ -6,7 +6,7 @@
 
 services:
   upwatch:
-    image: ghcr.io/bernardojoao/upwatch:latest
+    image: ghcr.io/jbnado/upwatch:latest
     # Para construir localmente em vez de baixar:
     #   docker compose build
     build:

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bernardojoao/upwatch/internal/clock"
+	"github.com/Jbnado/upwatch/internal/clock"
 )
 
 var epoch = time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)

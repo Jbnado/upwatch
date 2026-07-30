@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bernardojoao/upwatch/internal/web"
+	"github.com/Jbnado/upwatch/internal/web"
 )
 
 func get(t *testing.T, path string) *httptest.ResponseRecorder {

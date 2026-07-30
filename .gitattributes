@@ -1,0 +1,23 @@
+# Fim de linha normalizado no repositório.
+#
+# Sem isto, um commit feito no Windows carrega CRLF, e um arquivo com
+# CRLF dentro de um contêiner Linux falha de formas que não parecem ter
+# relação com fim de linha: script que não executa, YAML que o parser
+# recusa, teste que compara texto e diverge por um caractere invisível.
+* text=auto eol=lf
+
+# Binários e imagens não passam por conversão nenhuma.
+*.png binary
+*.woff binary
+*.woff2 binary
+*.exe binary
+*.db binary
+
+# O lockfile é gerado; esconder o diff na revisão deixa o que importa
+# visível.
+web/pnpm-lock.yaml linguist-generated=true
+go.sum linguist-generated=true
+
+# A linguagem do repositório é Go: sem isto o contador do GitHub o
+# classificaria pelo volume de CSS e JavaScript do build.
+*.sql linguist-language=SQL

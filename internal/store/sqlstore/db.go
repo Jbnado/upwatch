@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/bernardojoao/upwatch/internal/store/migrations"
+	"github.com/Jbnado/upwatch/internal/store/migrations"
 )
 
 // A ponte entre um SQL só e dois dialetos.

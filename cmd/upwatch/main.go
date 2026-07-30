@@ -18,22 +18,22 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/bernardojoao/upwatch/internal/api"
-	"github.com/bernardojoao/upwatch/internal/auth"
-	"github.com/bernardojoao/upwatch/internal/checker"
-	"github.com/bernardojoao/upwatch/internal/clock"
-	"github.com/bernardojoao/upwatch/internal/config"
-	"github.com/bernardojoao/upwatch/internal/domain"
-	"github.com/bernardojoao/upwatch/internal/incident"
-	"github.com/bernardojoao/upwatch/internal/metrics"
-	"github.com/bernardojoao/upwatch/internal/notifier"
-	"github.com/bernardojoao/upwatch/internal/rollup"
-	"github.com/bernardojoao/upwatch/internal/scheduler"
-	"github.com/bernardojoao/upwatch/internal/sentinel"
-	"github.com/bernardojoao/upwatch/internal/server"
-	"github.com/bernardojoao/upwatch/internal/store"
-	"github.com/bernardojoao/upwatch/internal/store/sqlstore"
-	"github.com/bernardojoao/upwatch/internal/web"
+	"github.com/Jbnado/upwatch/internal/api"
+	"github.com/Jbnado/upwatch/internal/auth"
+	"github.com/Jbnado/upwatch/internal/checker"
+	"github.com/Jbnado/upwatch/internal/clock"
+	"github.com/Jbnado/upwatch/internal/config"
+	"github.com/Jbnado/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/incident"
+	"github.com/Jbnado/upwatch/internal/metrics"
+	"github.com/Jbnado/upwatch/internal/notifier"
+	"github.com/Jbnado/upwatch/internal/rollup"
+	"github.com/Jbnado/upwatch/internal/scheduler"
+	"github.com/Jbnado/upwatch/internal/sentinel"
+	"github.com/Jbnado/upwatch/internal/server"
+	"github.com/Jbnado/upwatch/internal/store"
+	"github.com/Jbnado/upwatch/internal/store/sqlstore"
+	"github.com/Jbnado/upwatch/internal/web"
 )
 
 // version é preenchido no build pelo ldflags.
@@ -73,7 +73,14 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	defer st.Close()
+	// O erro de fechamento vai para o log, não para o vazio: no SQLite é
+	// aqui que o checkpoint final do WAL acontece, e uma falha silenciosa
+	// deixaria o banco íntegro porém sem o último trecho consolidado.
+	defer func() {
+		if err := st.Close(); err != nil {
+			slog.Error("falha ao fechar o banco", "erro", err)
+		}
+	}()
 
 	// O contexto encerra no primeiro sinal. O segundo deixa o processo
 	// morrer de imediato, para quem estiver com pressa não ficar preso a

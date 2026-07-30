@@ -120,12 +120,22 @@ func (a *API) handleEvents(w http.ResponseWriter, r *http.Request) {
 				slog.Error("api: falha ao serializar evento", "erro", err, "tipo", e.Type)
 				continue
 			}
-			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", e.Type, payload)
+			// Falha na escrita significa cliente desconectado. Encerrar
+			// aqui libera o assinante na hora; ignorar deixaria o laço
+			// girando até o cancelamento do contexto chegar, publicando
+			// num socket que ninguém lê.
+			if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", e.Type, payload); err != nil {
+				return
+			}
 			flusher.Flush()
 
 		case <-keepAlive.C:
-			// Comentário SSE: mantém a conexão viva sem entregar dado.
-			fmt.Fprint(w, ": keep-alive\n\n")
+			// Comentário SSE: mantém a conexão viva sem entregar dado. É
+			// também como se descobre que o cliente sumiu sem avisar:
+			// numa rede que caiu, o erro aparece nesta escrita.
+			if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil {
+				return
+			}
 			flusher.Flush()
 		}
 	}

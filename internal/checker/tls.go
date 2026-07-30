@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/bernardojoao/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/domain"
 )
 
 // DefaultDegradedDaysBefore é quantos dias antes do vencimento o

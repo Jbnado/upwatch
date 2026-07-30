@@ -7,7 +7,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/bernardojoao/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/domain"
 )
 
 // TCPConfig é a configuração de um monitor TCP. Hoje vazia: abrir a

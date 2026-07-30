@@ -14,12 +14,12 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/bernardojoao/upwatch/internal/api"
-	"github.com/bernardojoao/upwatch/internal/auth"
-	"github.com/bernardojoao/upwatch/internal/checker"
-	"github.com/bernardojoao/upwatch/internal/clock"
-	"github.com/bernardojoao/upwatch/internal/domain"
-	"github.com/bernardojoao/upwatch/internal/store/sqlstore"
+	"github.com/Jbnado/upwatch/internal/api"
+	"github.com/Jbnado/upwatch/internal/auth"
+	"github.com/Jbnado/upwatch/internal/checker"
+	"github.com/Jbnado/upwatch/internal/clock"
+	"github.com/Jbnado/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/store/sqlstore"
 )
 
 var epoch = time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)

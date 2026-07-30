@@ -10,7 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"gopkg.in/yaml.v3"
 
-	"github.com/bernardojoao/upwatch/internal/api"
+	"github.com/Jbnado/upwatch/internal/api"
 )
 
 // spec é a parte da especificação que o teste examina.

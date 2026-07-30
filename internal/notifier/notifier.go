@@ -15,7 +15,7 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/bernardojoao/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/domain"
 )
 
 // sendTimeout limita cada entrega.

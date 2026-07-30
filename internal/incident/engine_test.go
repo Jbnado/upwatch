@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bernardojoao/upwatch/internal/domain"
-	"github.com/bernardojoao/upwatch/internal/incident"
-	"github.com/bernardojoao/upwatch/internal/notifier"
-	"github.com/bernardojoao/upwatch/internal/store"
-	"github.com/bernardojoao/upwatch/internal/store/sqlstore"
+	"github.com/Jbnado/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/incident"
+	"github.com/Jbnado/upwatch/internal/notifier"
+	"github.com/Jbnado/upwatch/internal/store"
+	"github.com/Jbnado/upwatch/internal/store/sqlstore"
 )
 
 // recordingSink guarda o que passou por ele e pode falhar sob comando.

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bernardojoao/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/domain"
 )
 
 // MaxBodyBytes limita quanto do corpo é lido para avaliar as condições.
@@ -23,7 +23,7 @@ const MaxBodyBytes = 1 << 20 // 1 MiB
 
 // userAgent identifica o UpWatch para que o operador do alvo saiba de onde
 // vem o tráfego ao investigar os próprios logs.
-const userAgent = "UpWatch/0.1 (+https://github.com/bernardojoao/upwatch)"
+const userAgent = "UpWatch/0.1 (+https://github.com/Jbnado/upwatch)"
 
 // maxRedirects é o teto de saltos seguidos, para um laço de
 // redirecionamento virar falha em vez de execução infinita.

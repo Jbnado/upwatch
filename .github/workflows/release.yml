@@ -1,9 +1,17 @@
 name: Release
 
-# Dispara na tag. A tag é a decisão de publicar: rodar isto em todo push
-# encheria o registro de imagens que ninguém pediu.
+# Duas coisas diferentes acontecem aqui, e por isso dois gatilhos.
+#
+# Na main, publica a imagem com a tag "main": é a versão de quem quer
+# acompanhar o desenvolvimento, e existir sempre evita o buraco entre
+# lançamentos.
+#
+# Na tag, publica também os binários e move "latest". A tag é a decisão
+# de dizer "esta serve"; binário de todo push encheria a página de
+# releases de coisas que ninguém pediu.
 on:
   push:
+    branches: [main]
     tags: ['v*']
 
 permissions:
@@ -13,6 +21,8 @@ permissions:
 jobs:
   binaries:
     name: Binários
+    # Só na tag: é o que distingue publicar de acompanhar.
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -88,13 +98,17 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v5
         with:
+          # A action põe o nome em minúsculas sozinha; o GHCR não aceita
+          # maiúscula no caminho e o dono do repositório tem.
           images: ghcr.io/${{ github.repository }}
-          # latest só na tag estável: quem fixa em latest não deveria
-          # receber uma pré-versão sem pedir.
+          # "main" acompanha o desenvolvimento; "latest" só se move numa
+          # tag estável, porque quem fixou em latest não deveria receber
+          # uma pré-versão sem pedir.
           tags: |
+            type=ref,event=branch
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-') }}
 
       - uses: docker/build-push-action@v6
         with:
