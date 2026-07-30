@@ -235,3 +235,45 @@ func TestHeartbeatRangeQueryUsesIndex(t *testing.T) {
 		t.Errorf("plano de execução faz varredura completa de heartbeat:\n%s", got)
 	}
 }
+
+// Open precisa aceitar todo driver que o pacote implementa.
+//
+// Este teste existe por causa de um defeito real: o binário tinha um
+// switch próprio de driver e continuou recusando "postgres" depois de a
+// implementação entrar. O sintoma só apareceu ao subir a pilha de
+// verdade — a suíte inteira passava, porque testava o store diretamente.
+//
+// A correção foi estrutural: a escolha vive num lugar só. O teste é o que
+// impede o segundo lugar de voltar.
+func TestOpenAcceptsEveryImplementedDriver(t *testing.T) {
+	casos := map[string]string{
+		"sqlite":   filepath.Join(t.TempDir(), "upwatch.db"),
+		"postgres": "postgres://ninguem@127.0.0.1:1/vazio?sslmode=disable&connect_timeout=1",
+	}
+
+	for driver, dsn := range casos {
+		t.Run(driver, func(t *testing.T) {
+			s, err := sqlstore.Open(driver, dsn)
+			if s != nil {
+				t.Cleanup(func() { _ = s.Close() })
+			}
+
+			// Falhar por não haver servidor é aceitável; recusar o driver
+			// não é. A distinção é justamente o que estava quebrado.
+			if err != nil && strings.Contains(err.Error(), "driver desconhecido") {
+				t.Fatalf("driver %q foi recusado: %v", driver, err)
+			}
+		})
+	}
+}
+
+func TestOpenRefusesUnknownDriver(t *testing.T) {
+	_, err := sqlstore.Open("mysql", "qualquer-coisa")
+
+	if err == nil {
+		t.Fatal("driver desconhecido foi aceito")
+	}
+	if !strings.Contains(err.Error(), "mysql") {
+		t.Errorf("o erro não diz qual driver foi pedido: %v", err)
+	}
+}

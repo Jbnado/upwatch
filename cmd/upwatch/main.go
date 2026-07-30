@@ -319,17 +319,13 @@ func (a *application) sweepSessions(ctx context.Context) {
 }
 
 // openStore abre o armazenamento configurado.
+//
+// A escolha do driver vive no sqlstore, ao lado das duas implementações,
+// e não aqui: um segundo lugar decidindo isso é um segundo lugar para
+// esquecer de atualizar — foi exatamente o que aconteceu quando o driver
+// PostgreSQL entrou e este switch continuou recusando-o.
 func openStore(cfg config.Config) (store.Store, error) {
-	switch cfg.Database.Driver {
-	case "sqlite":
-		return sqlstore.OpenSQLite(cfg.Database.DSN)
-	case "postgres":
-		// O driver PostgreSQL chega no M7; recusar aqui com a causa é
-		// melhor que falhar depois com erro de conexão enigmático.
-		return nil, fmt.Errorf("o driver postgres ainda nao esta disponivel nesta versao")
-	default:
-		return nil, fmt.Errorf("driver de banco desconhecido %q", cfg.Database.Driver)
-	}
+	return sqlstore.Open(cfg.Database.Driver, cfg.Database.DSN)
 }
 
 // setupLogging configura a saída estruturada.
