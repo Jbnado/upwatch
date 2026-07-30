@@ -14,7 +14,7 @@ import (
 )
 
 type monitorRepo struct {
-	db *sql.DB
+	db *db
 }
 
 const monitorColumns = `
@@ -50,7 +50,7 @@ func (r *monitorRepo) Create(ctx context.Context, m *domain.Monitor) error {
 			enabled, tags, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-	res, err := r.db.ExecContext(ctx, q,
+	id, err := r.db.insertID(ctx, q,
 		m.Name, m.Type.String(), m.Target,
 		m.Interval.Milliseconds(), m.Timeout.Milliseconds(),
 		m.ConfirmationThreshold, m.DegradedLatency.Milliseconds(),
@@ -59,11 +59,6 @@ func (r *monitorRepo) Create(ctx context.Context, m *domain.Monitor) error {
 	)
 	if err != nil {
 		return translateWriteErr(err)
-	}
-
-	id, err := res.LastInsertId()
-	if err != nil {
-		return fmt.Errorf("sqlstore: lendo id gerado: %w", err)
 	}
 	m.ID = id
 	return nil

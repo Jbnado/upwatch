@@ -21,7 +21,7 @@ func (s *Store) WriteHeartbeats(ctx context.Context, hbs []domain.Heartbeat) err
 		return nil
 	}
 
-	return s.inTx(ctx, func(tx *sql.Tx) error {
+	return s.inTx(ctx, func(tx *tx) error {
 		const q = `
 			INSERT INTO heartbeat (monitor_id, probe_id, ts, status, latency_ms, message)
 			VALUES (?, ?, ?, ?, ?, ?)`
@@ -160,7 +160,7 @@ func (s *Store) WriteRollups(ctx context.Context, rs []domain.Rollup) error {
 		return nil
 	}
 
-	return s.inTx(ctx, func(tx *sql.Tx) error {
+	return s.inTx(ctx, func(tx *tx) error {
 		const q = `
 			INSERT INTO rollup (
 				monitor_id, probe_id, resolution, bucket_start,

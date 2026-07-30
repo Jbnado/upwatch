@@ -13,7 +13,7 @@ import (
 
 // ---------- páginas públicas ----------
 
-type statusPageRepo struct{ db *sql.DB }
+type statusPageRepo struct{ db *db }
 
 const statusPageColumns = `id, slug, title, description, show_latency, time_zone, enabled, is_default, created_at, updated_at`
 
@@ -21,7 +21,7 @@ func (r *statusPageRepo) Create(ctx context.Context, p *domain.StatusPage) error
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	p.CreatedAt, p.UpdatedAt = now, now
 
-	res, err := r.db.ExecContext(ctx, `
+	id, err := r.db.insertID(ctx, `
 		INSERT INTO status_page (slug, title, description, show_latency, time_zone, enabled, is_default, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.Slug, p.Title, p.Description, boolToInt(p.ShowLatency), p.TimeZone,
@@ -30,11 +30,6 @@ func (r *statusPageRepo) Create(ctx context.Context, p *domain.StatusPage) error
 		// Slug repetido vira conflito: duas páginas no mesmo endereço
 		// fariam a resposta depender da ordem da varredura.
 		return translateAuthErr(err, "página de estado")
-	}
-
-	id, err := res.LastInsertId()
-	if err != nil {
-		return fmt.Errorf("sqlstore: lendo id gerado: %w", err)
 	}
 	p.ID = id
 	return nil
@@ -172,16 +167,11 @@ func scanStatusPage(sc scanner) (domain.StatusPage, error) {
 // ---------- grupos ----------
 
 func (r *statusPageRepo) CreateGroup(ctx context.Context, g *domain.StatusPageGroup) error {
-	res, err := r.db.ExecContext(ctx,
+	id, err := r.db.insertID(ctx,
 		`INSERT INTO status_page_group (page_id, name, position) VALUES (?, ?, ?)`,
 		g.PageID, g.Name, g.Position)
 	if err != nil {
 		return fmt.Errorf("sqlstore: criando grupo da página %d: %w", g.PageID, err)
-	}
-
-	id, err := res.LastInsertId()
-	if err != nil {
-		return fmt.Errorf("sqlstore: lendo id gerado: %w", err)
 	}
 	g.ID = id
 	return nil
@@ -301,7 +291,7 @@ func (r *statusPageRepo) Components(ctx context.Context, pageID int64) ([]domain
 
 // ---------- relatos ----------
 
-type announcementRepo struct{ db *sql.DB }
+type announcementRepo struct{ db *db }
 
 const announcementColumns = `id, title, impact, phase, global, incident_id, started_at, resolved_at, created_at, updated_at`
 
@@ -315,7 +305,7 @@ func (r *announcementRepo) Create(ctx context.Context, a *domain.Announcement) e
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	res, err := tx.ExecContext(ctx, `
+	id, err := tx.insertID(ctx, `
 		INSERT INTO announcement (title, impact, phase, global, incident_id, started_at, resolved_at, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.Title, a.Impact.String(), a.Phase.String(), boolToInt(a.Global),
@@ -323,11 +313,6 @@ func (r *announcementRepo) Create(ctx context.Context, a *domain.Announcement) e
 		toMillis(now), toMillis(now))
 	if err != nil {
 		return fmt.Errorf("sqlstore: criando relato: %w", err)
-	}
-
-	id, err := res.LastInsertId()
-	if err != nil {
-		return fmt.Errorf("sqlstore: lendo id gerado: %w", err)
 	}
 	a.ID = id
 
@@ -456,17 +441,12 @@ func (r *announcementRepo) List(ctx context.Context, f store.AnnouncementFilter)
 }
 
 func (r *announcementRepo) AddUpdate(ctx context.Context, u *domain.AnnouncementUpdate) error {
-	res, err := r.db.ExecContext(ctx, `
+	id, err := r.db.insertID(ctx, `
 		INSERT INTO announcement_update (announcement_id, phase, body, published_at)
 		VALUES (?, ?, ?, ?)`,
 		u.AnnouncementID, u.Phase.String(), u.Body, toMillis(u.PublishedAt))
 	if err != nil {
 		return fmt.Errorf("sqlstore: publicando atualização do relato %d: %w", u.AnnouncementID, err)
-	}
-
-	id, err := res.LastInsertId()
-	if err != nil {
-		return fmt.Errorf("sqlstore: lendo id gerado: %w", err)
 	}
 	u.ID = id
 	return nil
@@ -529,7 +509,7 @@ func (r *announcementRepo) components(ctx context.Context, announcementID int64)
 }
 
 // replaceComponents troca o conjunto inteiro dentro da transação.
-func replaceComponents(ctx context.Context, tx *sql.Tx, announcementID int64, monitorIDs []int64) error {
+func replaceComponents(ctx context.Context, tx *tx, announcementID int64, monitorIDs []int64) error {
 	_, err := tx.ExecContext(ctx,
 		`DELETE FROM announcement_component WHERE announcement_id = ?`, announcementID)
 	if err != nil {

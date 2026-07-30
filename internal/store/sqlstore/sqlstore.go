@@ -19,12 +19,13 @@ import (
 	"github.com/bernardojoao/upwatch/internal/store"
 	"github.com/bernardojoao/upwatch/internal/store/migrations"
 
-	_ "modernc.org/sqlite" // driver SQLite pure Go: sem CGO, binário estático
+	_ "github.com/jackc/pgx/v5/stdlib" // driver PostgreSQL pure Go
+	_ "modernc.org/sqlite"             // driver SQLite pure Go: sem CGO, binário estático
 )
 
 // Store é a implementação relacional de store.Store.
 type Store struct {
-	db      *sql.DB
+	db      *db
 	dialect migrations.Dialect
 }
 
@@ -53,17 +54,82 @@ func OpenSQLite(path string) (*Store, error) {
 	// o trava enquanto isso.
 	params.Add("_pragma", "auto_vacuum(incremental)")
 
-	db, err := sql.Open("sqlite", "file:"+path+"?"+params.Encode())
+	conn, err := sql.Open("sqlite", "file:"+path+"?"+params.Encode())
 	if err != nil {
 		return nil, fmt.Errorf("sqlstore: abrindo %q: %w", path, err)
 	}
 
-	s := &Store{db: db, dialect: migrations.SQLite}
+	s := &Store{db: &db{sql: conn, dialect: migrations.SQLite}, dialect: migrations.SQLite}
 	if err := s.migrate(); err != nil {
-		_ = db.Close()
+		_ = conn.Close()
 		return nil, err
 	}
 	return s, nil
+}
+
+// OpenPostgres abre a conexão com PostgreSQL e aplica as migrations.
+//
+// É o caminho de produção: SQLite dá conta de uma instalação inteira num
+// arquivo, mas não de duas instâncias do UpWatch escrevendo ao mesmo
+// tempo, que é o que se quer quando a disponibilidade do monitorador
+// também importa.
+//
+// O mesmo SQL serve aos dois bancos. As duas diferenças que o schema não
+// resolve — marcador de parâmetro e descoberta do id gerado — vivem em
+// db.go, na borda, e não espalhadas pelos repositórios.
+func OpenPostgres(dsn string) (*Store, error) {
+	conn, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("sqlstore: abrindo postgres: %w", err)
+	}
+
+	// Teto de conexões: o padrão do database/sql é ilimitado, e uma
+	// instalação com muitos monitores abriria conexões até o servidor
+	// recusar — falha que aparece como erro de banco no meio de um
+	// incidente, quando a carga é maior.
+	conn.SetMaxOpenConns(maxPostgresConns)
+	conn.SetMaxIdleConns(maxPostgresConns)
+	conn.SetConnMaxLifetime(time.Hour)
+
+	// Verifica antes de migrar: um erro de DSN precisa aparecer como
+	// "não consegui conectar", e não como uma migration que falhou pela
+	// metade.
+	ctx, cancel := context.WithTimeout(context.Background(), postgresPingTimeout)
+	defer cancel()
+	if err := conn.PingContext(ctx); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("sqlstore: conectando ao postgres: %w", err)
+	}
+
+	s := &Store{db: &db{sql: conn, dialect: migrations.Postgres}, dialect: migrations.Postgres}
+	if err := s.migrate(); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+const (
+	// maxPostgresConns limita o pool.
+	maxPostgresConns = 16
+
+	// postgresPingTimeout é quanto se espera pela primeira resposta.
+	postgresPingTimeout = 10 * time.Second
+)
+
+// Open escolhe a implementação pelo driver configurado.
+//
+// Existe para o binário não precisar de um switch na inicialização, e
+// para "banco plugável" ter um ponto de entrada só.
+func Open(driver, dsn string) (*Store, error) {
+	switch driver {
+	case string(migrations.SQLite):
+		return OpenSQLite(dsn)
+	case string(migrations.Postgres):
+		return OpenPostgres(dsn)
+	default:
+		return nil, fmt.Errorf("sqlstore: driver desconhecido %q; use sqlite ou postgres", driver)
+	}
 }
 
 // migrate aplica todas as migrations pendentes do dialeto.
@@ -80,7 +146,7 @@ func (s *Store) migrate() error {
 	if err := goose.SetDialect(gooseDialect(s.dialect)); err != nil {
 		return fmt.Errorf("sqlstore: dialeto goose: %w", err)
 	}
-	if err := goose.Up(s.db, "."); err != nil {
+	if err := goose.Up(s.db.sql, "."); err != nil {
 		return fmt.Errorf("sqlstore: aplicando migrations: %w", err)
 	}
 	return nil
@@ -89,7 +155,7 @@ func (s *Store) migrate() error {
 // Rollback desfaz a última migration. Existe para que o teste consiga
 // verificar que o schema desce, não só sobe.
 func (s *Store) Rollback() error {
-	return s.down(func() error { return goose.Down(s.db, ".") })
+	return s.down(func() error { return goose.Down(s.db.sql, ".") })
 }
 
 // RollbackAll desfaz todas as migrations, na ordem inversa.
@@ -99,7 +165,7 @@ func (s *Store) Rollback() error {
 // dia em que alguém precisasse voltar uma versão — que é justamente o
 // pior dia para descobrir.
 func (s *Store) RollbackAll() error {
-	return s.down(func() error { return goose.DownTo(s.db, ".", 0) })
+	return s.down(func() error { return goose.DownTo(s.db.sql, ".", 0) })
 }
 
 func (s *Store) down(run func() error) error {
@@ -129,7 +195,7 @@ func gooseDialect(d migrations.Dialect) string {
 }
 
 // DB expõe a conexão para inspeção em teste (planos de consulta, contagens).
-func (s *Store) DB() *sql.DB { return s.db }
+func (s *Store) DB() *sql.DB { return s.db.sql }
 
 // Monitors devolve o repositório de definições de monitor.
 func (s *Store) Monitors() store.MonitorRepo { return &monitorRepo{db: s.db} }
@@ -159,7 +225,7 @@ func (s *Store) StatusPages() store.StatusPageRepo { return &statusPageRepo{db: 
 func (s *Store) Announcements() store.AnnouncementRepo { return &announcementRepo{db: s.db} }
 
 // Close encerra a conexão.
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error { return s.db.sql.Close() }
 
 // ---------- conversões compartilhadas ----------
 
@@ -180,7 +246,7 @@ func boolToInt(b bool) int64 {
 }
 
 // inTx roda fn numa transação, revertendo em caso de erro ou panic.
-func (s *Store) inTx(ctx context.Context, fn func(*sql.Tx) error) error {
+func (s *Store) inTx(ctx context.Context, fn func(*tx) error) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("sqlstore: iniciando transação: %w", err)

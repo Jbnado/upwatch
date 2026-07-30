@@ -14,7 +14,7 @@ import (
 
 // ---------- usuários ----------
 
-type userRepo struct{ db *sql.DB }
+type userRepo struct{ db *db }
 
 const userColumns = `id, username, password_hash, created_at, updated_at`
 
@@ -22,17 +22,12 @@ func (r *userRepo) Create(ctx context.Context, u *domain.User) error {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	u.CreatedAt, u.UpdatedAt = now, now
 
-	res, err := r.db.ExecContext(ctx, `
+	id, err := r.db.insertID(ctx, `
 		INSERT INTO app_user (username, password_hash, created_at, updated_at)
 		VALUES (?, ?, ?, ?)`,
 		u.Username, u.PasswordHash, toMillis(now), toMillis(now))
 	if err != nil {
 		return translateAuthErr(err, "usuário")
-	}
-
-	id, err := res.LastInsertId()
-	if err != nil {
-		return fmt.Errorf("sqlstore: lendo id gerado: %w", err)
 	}
 	u.ID = id
 	return nil
@@ -94,7 +89,7 @@ func scanUser(sc scanner) (domain.User, error) {
 
 // ---------- sessões ----------
 
-type sessionRepo struct{ db *sql.DB }
+type sessionRepo struct{ db *db }
 
 func (r *sessionRepo) Create(ctx context.Context, s domain.Session) error {
 	_, err := r.db.ExecContext(ctx, `
@@ -161,7 +156,7 @@ func (r *sessionRepo) DeleteByUser(ctx context.Context, userID int64) error {
 
 // ---------- tokens ----------
 
-type tokenRepo struct{ db *sql.DB }
+type tokenRepo struct{ db *db }
 
 const tokenColumns = `id, user_id, name, token_hash, prefix, created_at, last_used_at, expires_at`
 
@@ -169,17 +164,12 @@ func (r *tokenRepo) Create(ctx context.Context, t *domain.APIToken) error {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	t.CreatedAt = now
 
-	res, err := r.db.ExecContext(ctx, `
+	id, err := r.db.insertID(ctx, `
 		INSERT INTO api_token (user_id, name, token_hash, prefix, created_at, expires_at)
 		VALUES (?, ?, ?, ?, ?, ?)`,
 		t.UserID, t.Name, t.Hash, t.Prefix, toMillis(now), millisPtr(t.ExpiresAt))
 	if err != nil {
 		return translateAuthErr(err, "token")
-	}
-
-	id, err := res.LastInsertId()
-	if err != nil {
-		return fmt.Errorf("sqlstore: lendo id gerado: %w", err)
 	}
 	t.ID = id
 	return nil

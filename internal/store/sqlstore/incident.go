@@ -14,7 +14,7 @@ import (
 
 // ---------- estado do monitor ----------
 
-type stateRepo struct{ db *sql.DB }
+type stateRepo struct{ db *db }
 
 func (r *stateRepo) Get(ctx context.Context, monitorID int64) (domain.MonitorState, error) {
 	var (
@@ -104,23 +104,18 @@ func decodeState(statusName, candidateName string, consecutive int, sinceMS int6
 
 // ---------- incidentes ----------
 
-type incidentRepo struct{ db *sql.DB }
+type incidentRepo struct{ db *db }
 
 const incidentColumns = `id, monitor_id, started_at, resolved_at, cause`
 
 func (r *incidentRepo) Open(ctx context.Context, i *domain.Incident) error {
-	res, err := r.db.ExecContext(ctx, `
+	id, err := r.db.insertID(ctx, `
 		INSERT INTO incident (monitor_id, started_at, cause) VALUES (?, ?, ?)`,
 		i.MonitorID, toMillis(i.StartedAt), i.Cause)
 	if err != nil {
 		// O índice parcial garante uma queda aberta por monitor; a
 		// violação vira conflito para o chamador distinguir de falha real.
 		return translateAuthErr(err, "incidente")
-	}
-
-	id, err := res.LastInsertId()
-	if err != nil {
-		return fmt.Errorf("sqlstore: lendo id gerado: %w", err)
 	}
 	i.ID = id
 	return nil
@@ -217,7 +212,7 @@ func scanIncident(sc scanner) (domain.Incident, error) {
 
 // ---------- canais ----------
 
-type channelRepo struct{ db *sql.DB }
+type channelRepo struct{ db *db }
 
 const channelColumns = `id, name, type, config, enabled, created_at, updated_at`
 
@@ -225,17 +220,12 @@ func (r *channelRepo) Create(ctx context.Context, c *domain.Channel) error {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	c.CreatedAt, c.UpdatedAt = now, now
 
-	res, err := r.db.ExecContext(ctx, `
+	id, err := r.db.insertID(ctx, `
 		INSERT INTO notification_channel (name, type, config, enabled, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?)`,
 		c.Name, c.Type, encodeConfig(c.Config), boolToInt(c.Enabled), toMillis(now), toMillis(now))
 	if err != nil {
 		return translateAuthErr(err, "canal")
-	}
-
-	id, err := res.LastInsertId()
-	if err != nil {
-		return fmt.Errorf("sqlstore: lendo id gerado: %w", err)
 	}
 	c.ID = id
 	return nil
