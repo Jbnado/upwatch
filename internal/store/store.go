@@ -224,6 +224,67 @@ type ChannelRepo interface {
 	ForMonitor(ctx context.Context, monitorID int64) ([]domain.Channel, error)
 }
 
+// StatusPageRepo guarda as páginas públicas, seus grupos e componentes.
+//
+// Um contrato só, e não três, porque grupo e componente não existem fora
+// de uma página: separá-los criaria três repositórios que só se usam
+// juntos e nunca sozinhos.
+type StatusPageRepo interface {
+	// Create insere a página. Devolve ErrConflict se o slug já existir —
+	// dois slugs iguais fariam duas páginas responderem no mesmo
+	// endereço, e qual delas responde dependeria da ordem da varredura.
+	Create(ctx context.Context, p *domain.StatusPage) error
+	Get(ctx context.Context, id int64) (domain.StatusPage, error)
+	// GetBySlug é o caminho da requisição anônima.
+	GetBySlug(ctx context.Context, slug string) (domain.StatusPage, error)
+	Update(ctx context.Context, p domain.StatusPage) error
+	Delete(ctx context.Context, id int64) error
+	List(ctx context.Context) ([]domain.StatusPage, error)
+
+	CreateGroup(ctx context.Context, g *domain.StatusPageGroup) error
+	UpdateGroup(ctx context.Context, g domain.StatusPageGroup) error
+	// DeleteGroup desfaz o agrupamento sem despublicar os componentes:
+	// quem tira um grupo espera reorganizar, não remover da página.
+	DeleteGroup(ctx context.Context, id int64) error
+	Groups(ctx context.Context, pageID int64) ([]domain.StatusPageGroup, error)
+
+	// SetComponent publica um monitor na página, ou atualiza o vínculo
+	// existente. Idempotente: a interface reenvia o conjunto inteiro em
+	// vez de calcular a diferença.
+	SetComponent(ctx context.Context, c domain.StatusPageComponent) error
+	RemoveComponent(ctx context.Context, pageID, monitorID int64) error
+	Components(ctx context.Context, pageID int64) ([]domain.StatusPageComponent, error)
+}
+
+// AnnouncementFilter seleciona relatos numa listagem.
+type AnnouncementFilter struct {
+	Page PageFilter
+	// Since corta a janela. Sem ele, uma instalação de dois anos
+	// devolveria o histórico inteiro a cada visita anônima.
+	Since time.Time
+	// OnlyOpen restringe aos que ainda não foram resolvidos.
+	OnlyOpen bool
+}
+
+// AnnouncementRepo guarda os relatos públicos e sua linha do tempo.
+type AnnouncementRepo interface {
+	Create(ctx context.Context, a *domain.Announcement) error
+	Get(ctx context.Context, id int64) (domain.Announcement, error)
+	// Update substitui os componentes em vez de acumulá-los: um relato
+	// que agora só afeta o console não pode continuar aparecendo na
+	// página que publica a API.
+	Update(ctx context.Context, a domain.Announcement) error
+	Delete(ctx context.Context, id int64) error
+	// List devolve do mais recente para o mais antigo, que é como
+	// "incidentes anteriores" se lê.
+	List(ctx context.Context, f AnnouncementFilter) (Page[domain.Announcement], error)
+
+	AddUpdate(ctx context.Context, u *domain.AnnouncementUpdate) error
+	// Updates devolve em ordem cronológica: a linha do tempo de um
+	// incidente se lê do começo para o fim.
+	Updates(ctx context.Context, announcementID int64) ([]domain.AnnouncementUpdate, error)
+}
+
 // MetadataStore guarda as definições do sistema.
 type MetadataStore interface {
 	Monitors() MonitorRepo
@@ -233,6 +294,8 @@ type MetadataStore interface {
 	States() StateRepo
 	Incidents() IncidentRepo
 	Channels() ChannelRepo
+	StatusPages() StatusPageRepo
+	Announcements() AnnouncementRepo
 	Close() error
 }
 

@@ -188,8 +188,16 @@ type Announcement struct {
 	// relatada por cliente, ou uma janela de manutenção.
 	IncidentID *int64 `json:"incident_id,omitempty"`
 
-	// Components são os monitores afetados. Vazio significa "toda a
-	// plataforma", e é o que se quer para um aviso amplo.
+	// Global anuncia para a plataforma inteira, em qualquer página.
+	//
+	// Explícito, e não deduzido de uma lista vazia de componentes: apagar
+	// um monitor esvazia a lista por cascata, e um relato sobre serviço
+	// desativado passaria a aparecer na página de todo mundo — sem
+	// ninguém ver acontecer, porque a mudança vem de uma exclusão feita em
+	// outra tela.
+	Global bool `json:"global"`
+
+	// Components são os monitores afetados.
 	Components []int64 `json:"components,omitempty"`
 
 	StartedAt  time.Time  `json:"started_at"`
@@ -214,6 +222,12 @@ func (a Announcement) Validate() error {
 	if !a.Phase.Valid() {
 		return invalid("phase", "fase desconhecida")
 	}
+	// Recusa na entrada o estado que ShowsOn trata com segurança: um
+	// relato que não aparece em página nenhuma é trabalho perdido, e quem
+	// escreveu não descobre sozinho.
+	if !a.Global && len(a.Components) == 0 {
+		return invalid("components", "escolha ao menos um componente, ou marque como aviso da plataforma inteira")
+	}
 	return nil
 }
 
@@ -227,13 +241,15 @@ func (a Announcement) Resolved() bool { return a.Phase == PhaseResolved }
 // ShowsOn informa se o relato aparece numa página, dados os monitores
 // que a página publica.
 //
-// Sem componente algum o relato é da plataforma inteira e aparece em
-// todas as páginas — é o que se quer de "migração de banco hoje à
-// noite". Com componentes, aparece onde ao menos um deles é publicado:
-// escrever a mesma queda uma vez por página é o caminho para versões
-// divergentes do mesmo fato.
+// Global aparece em todas — é o que se quer de "migração de banco hoje à
+// noite". Caso contrário, aparece onde ao menos um componente afetado é
+// publicado: escrever a mesma queda uma vez por página é o caminho para
+// versões divergentes do mesmo fato.
+//
+// Falha fechando. Sem Global e sem componente que sobreviva, não aparece
+// em lugar nenhum — o silêncio é recuperável, o vazamento não.
 func (a Announcement) ShowsOn(pageMonitorIDs []int64) bool {
-	if len(a.Components) == 0 {
+	if a.Global {
 		return true
 	}
 

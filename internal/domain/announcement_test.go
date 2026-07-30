@@ -22,6 +22,7 @@ func TestAnnouncementValidateAceitaRelatoCompleto(t *testing.T) {
 		Title:  "Lentidão na API de pagamentos",
 		Impact: domain.ImpactMajor,
 		Phase:  domain.PhaseInvestigating,
+		Global: true,
 	}
 
 	if err := a.Validate(); err != nil {
@@ -32,7 +33,7 @@ func TestAnnouncementValidateAceitaRelatoCompleto(t *testing.T) {
 func TestAnnouncementValidateExigeTitulo(t *testing.T) {
 	// Sem título não há o que listar em "incidentes anteriores": a página
 	// mostraria uma linha vazia com um horário.
-	a := domain.Announcement{Impact: domain.ImpactMinor, Phase: domain.PhaseInvestigating}
+	a := domain.Announcement{Impact: domain.ImpactMinor, Phase: domain.PhaseInvestigating, Global: true}
 
 	err := a.Validate()
 	if err == nil {
@@ -42,7 +43,7 @@ func TestAnnouncementValidateExigeTitulo(t *testing.T) {
 }
 
 func TestAnnouncementValidateRecusaFaseDesconhecida(t *testing.T) {
-	a := domain.Announcement{Title: "Falha", Impact: domain.ImpactMinor, Phase: domain.IncidentPhase(99)}
+	a := domain.Announcement{Title: "Falha", Impact: domain.ImpactMinor, Phase: domain.IncidentPhase(99), Global: true}
 
 	err := a.Validate()
 	if err == nil {
@@ -56,6 +57,7 @@ func TestAnnouncementValidateRecusaImpactoDesconhecido(t *testing.T) {
 		Title:  "Falha",
 		Impact: domain.IncidentImpact(99),
 		Phase:  domain.PhaseInvestigating,
+		Global: true,
 	}
 
 	err := a.Validate()
@@ -165,18 +167,47 @@ func TestPublicAnnouncementNaoRevelaCausaDetectada(t *testing.T) {
 	}
 }
 
-func TestAnnouncementSemComponenteApareceEmTodaPagina(t *testing.T) {
+func TestAnnouncementGlobalApareceEmTodaPagina(t *testing.T) {
 	// "Migração de banco hoje à noite" vale para a plataforma inteira, e
 	// exigir que o operador marque os quarenta monitores um a um faria com
 	// que ele simplesmente não marcasse nenhum.
-	a := domain.Announcement{Title: "Manutenção programada"}
+	a := domain.Announcement{Title: "Manutenção programada", Global: true}
 
 	if !a.ShowsOn([]int64{7, 8}) {
-		t.Error("relato sem componente deveria aparecer na página")
+		t.Error("relato global deveria aparecer na página")
 	}
 	if !a.ShowsOn(nil) {
-		t.Error("relato sem componente deveria aparecer até em página sem alvo")
+		t.Error("relato global deveria aparecer até em página sem alvo")
 	}
+}
+
+func TestAnnouncementSemComponenteRestanteFalhaFechando(t *testing.T) {
+	// Apagar o monitor esvazia a lista de componentes por cascata. Se
+	// "vazio" significasse "plataforma inteira", um relato sobre um
+	// serviço desativado passaria a aparecer na página de todo mundo — e
+	// ninguém veria a mudança acontecer, porque ela vem de uma exclusão
+	// feita em outra tela.
+	//
+	// Por isso o alcance é explícito: sem Global e sem componente, não
+	// aparece em lugar nenhum.
+	a := domain.Announcement{Title: "Falha no serviço desativado"}
+
+	if a.ShowsOn([]int64{7, 8}) {
+		t.Error("relato sem alcance definido apareceu numa página")
+	}
+}
+
+func TestAnnouncementValidateExigeAlcance(t *testing.T) {
+	// A validação recusa na entrada o estado que ShowsOn trata com
+	// segurança: relato que não aparece em página nenhuma é trabalho
+	// perdido, e quem escreveu não vai perceber sozinho.
+	a := domain.Announcement{Title: "Falha", Impact: domain.ImpactMinor, Phase: domain.PhaseInvestigating}
+
+	err := a.Validate()
+	if err == nil {
+		t.Fatal("relato sem componente e sem alcance global passou pela validação")
+	}
+	assertCampo(t, err, "components")
 }
 
 func TestAnnouncementApareceOndeUmComponenteEhPublicado(t *testing.T) {

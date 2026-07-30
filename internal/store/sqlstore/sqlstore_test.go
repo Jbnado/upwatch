@@ -44,7 +44,12 @@ func TestSQLiteConformance(t *testing.T) {
 func TestOpenSQLiteAppliesMigrations(t *testing.T) {
 	s := newStore(t).(*sqlstore.Store)
 
-	for _, table := range []string{"monitor", "heartbeat", "rollup", "rollup_state"} {
+	tabelas := []string{
+		"monitor", "heartbeat", "rollup", "rollup_state",
+		"status_page", "status_page_group", "status_page_component",
+		"announcement", "announcement_component", "announcement_update",
+	}
+	for _, table := range tabelas {
 		t.Run(table, func(t *testing.T) {
 			var name string
 			err := s.DB().QueryRow(
@@ -58,6 +63,10 @@ func TestOpenSQLiteAppliesMigrations(t *testing.T) {
 }
 
 // Migration que não desce impede rollback de uma versão com defeito.
+//
+// Desce todas, e não só a última: uma migration antiga sem reversão
+// passaria despercebida até o dia em que alguém precisasse voltar uma
+// versão — justamente o pior dia para descobrir.
 func TestMigrationsRollBackCleanly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rollback.db")
 	s, err := sqlstore.OpenSQLite(path)
@@ -66,15 +75,18 @@ func TestMigrationsRollBackCleanly(t *testing.T) {
 	}
 	defer s.Close()
 
-	if err := s.Rollback(); err != nil {
-		t.Fatalf("Rollback returned unexpected error: %v", err)
+	if err := s.RollbackAll(); err != nil {
+		t.Fatalf("RollbackAll returned unexpected error: %v", err)
 	}
 
-	var name string
-	err = s.DB().QueryRow(
-		`SELECT name FROM sqlite_master WHERE type='table' AND name = 'monitor'`).Scan(&name)
-	if err == nil {
-		t.Error("tabela monitor ainda existe após o rollback")
+	// Uma tabela de cada migration: a primeira e a das páginas públicas.
+	for _, tabela := range []string{"monitor", "status_page", "announcement"} {
+		var name string
+		err = s.DB().QueryRow(
+			`SELECT name FROM sqlite_master WHERE type='table' AND name = ?`, tabela).Scan(&name)
+		if err == nil {
+			t.Errorf("tabela %q ainda existe após o rollback", tabela)
+		}
 	}
 }
 

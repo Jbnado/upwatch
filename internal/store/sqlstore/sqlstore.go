@@ -89,6 +89,20 @@ func (s *Store) migrate() error {
 // Rollback desfaz a última migration. Existe para que o teste consiga
 // verificar que o schema desce, não só sobe.
 func (s *Store) Rollback() error {
+	return s.down(func() error { return goose.Down(s.db, ".") })
+}
+
+// RollbackAll desfaz todas as migrations, na ordem inversa.
+//
+// É o que exercita o Down de cada uma. Verificar só a última deixaria
+// passar uma migration antiga sem reversão, e o defeito só apareceria no
+// dia em que alguém precisasse voltar uma versão — que é justamente o
+// pior dia para descobrir.
+func (s *Store) RollbackAll() error {
+	return s.down(func() error { return goose.DownTo(s.db, ".", 0) })
+}
+
+func (s *Store) down(run func() error) error {
 	fsys, err := migrations.FS(s.dialect)
 	if err != nil {
 		return err
@@ -101,7 +115,7 @@ func (s *Store) Rollback() error {
 	if err := goose.SetDialect(gooseDialect(s.dialect)); err != nil {
 		return fmt.Errorf("sqlstore: dialeto goose: %w", err)
 	}
-	if err := goose.Down(s.db, "."); err != nil {
+	if err := run(); err != nil {
 		return fmt.Errorf("sqlstore: revertendo migration: %w", err)
 	}
 	return nil
@@ -137,6 +151,12 @@ func (s *Store) Incidents() store.IncidentRepo { return &incidentRepo{db: s.db} 
 
 // Channels devolve o repositório de destinos de aviso.
 func (s *Store) Channels() store.ChannelRepo { return &channelRepo{db: s.db} }
+
+// StatusPages devolve o repositório das páginas públicas.
+func (s *Store) StatusPages() store.StatusPageRepo { return &statusPageRepo{db: s.db} }
+
+// Announcements devolve o repositório dos relatos públicos.
+func (s *Store) Announcements() store.AnnouncementRepo { return &announcementRepo{db: s.db} }
 
 // Close encerra a conexão.
 func (s *Store) Close() error { return s.db.Close() }
