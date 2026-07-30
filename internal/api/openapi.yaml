@@ -308,6 +308,115 @@ paths:
         "204": { description: Token revogado }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/v1/users:
+    get:
+      tags: [auth]
+      summary: Lista as contas
+      description: |
+        Só administrador. A lista de contas é material de reconhecimento&#58;
+        nomes de usuário válidos são metade do trabalho de quem tenta
+        entrar.
+      responses:
+        "200":
+          description: Contas cadastradas
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [auth]
+      summary: Cria uma conta
+      description: |
+        Só administrador. O papel é obrigatório e não tem valor padrão&#58;
+        o padrão que menos incomoda é justamente o que concede acesso
+        demais.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password, role]
+              properties:
+                username: { type: string, maxLength: 64 }
+                password: { type: string, minLength: 12, maxLength: 72 }
+                role: { type: string, enum: [admin, viewer] }
+      responses:
+        "201":
+          description: Conta criada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/users/{id}:
+    put:
+      tags: [auth]
+      summary: Troca o papel de uma conta
+      description: |
+        Só o papel. Nome de usuário e senha não se editam por aqui&#58;
+        trocar a senha de outra pessoa sem ela saber é poder que uma
+        ferramenta de monitoramento não precisa ter, e renomear conta
+        quebra o rastro de quem fez o quê.
+
+        Rebaixar o último administrador devolve 409 — a instalação
+        ficaria sem ninguém capaz de criar outro.
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { type: string, enum: [admin, viewer] }
+      responses:
+        "200":
+          description: Papel atualizado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Não é possível rebaixar o último administrador
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      tags: [auth]
+      summary: Remove uma conta
+      description: |
+        As sessões saem em cascata, então quem for removido perde o
+        acesso na hora e não no vencimento do cookie.
+
+        Remover o último administrador devolve 409.
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+      responses:
+        "204": { description: Conta removida }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Não é possível remover o último administrador
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/v1/monitors:
     get:
       tags: [monitors]
@@ -1229,6 +1338,13 @@ components:
       description: Fim do período (RFC 3339). Padrão&#58; agora.
 
   responses:
+    Forbidden:
+      description: |
+        A conta está autenticada, mas não tem permissão. Devolvido a um
+        observador em qualquer rota de escrita.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     BadRequest:
       description: Requisição inválida
       content:
@@ -1272,6 +1388,13 @@ components:
       properties:
         id: { type: integer, format: int64 }
         username: { type: string }
+        role:
+          type: string
+          enum: [admin, viewer]
+          description: |
+            `admin` administra; `viewer` só lê. A separação é por verbo&#58;
+            tudo que altera o estado exige administrador, tudo que só lê
+            aceita observador.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 

@@ -27,7 +27,7 @@ type Reading = {
   p95: number | null;
 };
 
-export function Board() {
+export function Board({ podeEscrever }: { podeEscrever: boolean }) {
   const [range, setRange] = useState<Range>(DEFAULT_RANGE);
   const [readings, setReadings] = useState<Reading[] | null>(null);
   const [erro, setErro] = useState<string | null>(null);
@@ -80,9 +80,11 @@ export function Board() {
         <Summary {...resumo} total={readings?.length ?? 0} />
         <div className="flex items-center gap-3">
           <RangePicker value={range} onChange={setRange} />
-          <Button variant="primary" onClick={() => navigate({ name: "monitor-new" })}>
-            Novo monitor
-          </Button>
+          {podeEscrever && (
+            <Button variant="primary" onClick={() => navigate({ name: "monitor-new" })}>
+              Novo monitor
+            </Button>
+          )}
         </div>
       </header>
 
@@ -112,9 +114,11 @@ export function Board() {
           title="Nenhum alvo sendo vigiado"
           description="Cadastre o primeiro serviço para começar a acompanhar disponibilidade e latência."
           action={
-            <Button variant="primary" onClick={() => navigate({ name: "monitor-new" })}>
-              Cadastrar monitor
-            </Button>
+            podeEscrever ? (
+              <Button variant="primary" onClick={() => navigate({ name: "monitor-new" })}>
+                Cadastrar monitor
+              </Button>
+            ) : undefined
           }
         />
       ) : (

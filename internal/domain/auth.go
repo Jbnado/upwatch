@@ -39,6 +39,9 @@ type User struct {
 	ID       int64  `json:"id"`
 	Username string `json:"username"`
 
+	// Role decide o que a conta pode fazer. Ver role.go.
+	Role Role `json:"role"`
+
 	// PasswordHash nunca sai pela API; MarshalJSON o omite.
 	PasswordHash string `json:"-"`
 
@@ -54,6 +57,9 @@ func (u User) Validate() error {
 	}
 	if len(name) > maxUsernameLength {
 		return invalid("username", fmt.Sprintf("não pode passar de %d caracteres", maxUsernameLength))
+	}
+	if !u.Role.Valid() {
+		return invalid("role", "papel desconhecido")
 	}
 	return nil
 }
@@ -107,11 +113,12 @@ func (u User) MarshalJSON() ([]byte, error) {
 	type alias struct {
 		ID        int64     `json:"id"`
 		Username  string    `json:"username"`
+		Role      Role      `json:"role"`
 		CreatedAt time.Time `json:"created_at"`
 		UpdatedAt time.Time `json:"updated_at"`
 	}
 	return json.Marshal(alias{
-		ID: u.ID, Username: u.Username,
+		ID: u.ID, Username: u.Username, Role: u.Role,
 		CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt,
 	})
 }

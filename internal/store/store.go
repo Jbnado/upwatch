@@ -143,6 +143,14 @@ type UserRepo interface {
 	Update(ctx context.Context, u domain.User) error
 	// Count decide se o assistente de primeiro acesso deve aparecer.
 	Count(ctx context.Context) (int, error)
+
+	List(ctx context.Context) ([]domain.User, error)
+	Delete(ctx context.Context, id int64) error
+
+	// CountByRole é o que impede a instalação de se trancar para fora:
+	// remover ou rebaixar o último administrador deixaria a interface
+	// sem ninguém capaz de criar outro.
+	CountByRole(ctx context.Context, role domain.Role) (int, error)
 }
 
 // SessionRepo guarda os logins ativos da interface.

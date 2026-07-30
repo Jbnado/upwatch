@@ -15,6 +15,7 @@ import {
   type MonitorInput,
   type Page,
   type PublicView,
+  type Role,
   type Rollup,
   type StatusPage,
   type StatusPageComponent,
@@ -170,6 +171,18 @@ export const api = {
 
   incidents: (params: { monitor_id?: number; open?: string; limit?: number } = {}) =>
     request<Page<Incident>>(`/incidents${query(params)}`),
+
+  // ---------- contas ----------
+
+  listUsers: () => request<{ items: User[] }>("/users"),
+
+  createUser: (input: { username: string; password: string; role: Role }) =>
+    request<User>("/users", { method: "POST", body: JSON.stringify(input) }),
+
+  setUserRole: (id: number, role: Role) =>
+    request<User>(`/users/${id}`, { method: "PUT", body: JSON.stringify({ role }) }),
+
+  deleteUser: (id: number) => request<void>(`/users/${id}`, { method: "DELETE" }),
 
   // ---------- páginas públicas ----------
 

@@ -30,6 +30,7 @@ type errorCode string
 const (
 	codeInvalidRequest errorCode = "invalid_request"
 	codeUnauthorized   errorCode = "unauthorized"
+	codeForbidden      errorCode = "forbidden"
 	codeNotFound       errorCode = "not_found"
 	codeConflict       errorCode = "conflict"
 	codeTooManyReqs    errorCode = "too_many_requests"
@@ -99,6 +100,11 @@ func writeStoreError(w http.ResponseWriter, err error) {
 		// Sem detalhar: distinguir os casos ajudaria quem está tentando
 		// descobrir contas válidas.
 		writeError(w, http.StatusUnauthorized, codeUnauthorized, "credenciais inválidas")
+	case errors.Is(err, auth.ErrLastAdmin):
+		// Conflito, não erro de validação: o pedido está bem formado, o
+		// estado atual é que não permite atendê-lo.
+		writeError(w, http.StatusConflict, codeConflict,
+			"é preciso manter ao menos um administrador")
 	case errors.Is(err, auth.ErrTooManyAttempts):
 		writeError(w, http.StatusTooManyRequests, codeTooManyReqs,
 			"tentativas demais; aguarde antes de tentar novamente")

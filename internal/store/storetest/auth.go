@@ -42,7 +42,7 @@ func authCases() []conformanceCase {
 func mustCreateUser(t *testing.T, s store.Store, username string) domain.User {
 	t.Helper()
 
-	u := domain.User{Username: username}
+	u := domain.User{Username: username, Role: domain.RoleAdmin}
 	if err := u.SetPassword("uma-senha-bem-longa"); err != nil {
 		t.Fatalf("SetPassword returned unexpected error: %v", err)
 	}
@@ -475,5 +475,105 @@ func testTokenRoundTripsExpiry(t *testing.T, newStore Factory) {
 	}
 	if !got.ExpiresAt.Equal(expires) {
 		t.Errorf("ExpiresAt = %v, want %v", got.ExpiresAt, expires)
+	}
+}
+
+// ---------- papéis ----------
+
+func testUserRoleRoundTrips(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	u := domain.User{Username: "observador", Role: domain.RoleViewer, PasswordHash: "x"}
+	if err := s.Users().Create(ctx, &u); err != nil {
+		t.Fatalf("criando: %v", err)
+	}
+
+	volta, err := s.Users().Get(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("lendo: %v", err)
+	}
+	// O papel decide o que a conta pode fazer. Se ele não sobrevivesse à
+	// ida e volta, um observador viraria administrador no próximo login.
+	if volta.Role != domain.RoleViewer {
+		t.Fatalf("papel divergiu: %s", volta.Role)
+	}
+}
+
+func testUserListBringsEveryone(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	mustCreateUser(t, s, "ana")
+	mustCreateUser(t, s, "bruno")
+
+	contas, err := s.Users().List(ctx)
+	if err != nil {
+		t.Fatalf("listando: %v", err)
+	}
+	if len(contas) != 2 {
+		t.Fatalf("esperava 2 contas, vieram %d", len(contas))
+	}
+	// Nenhuma listagem devolve o hash: a tela de contas mostra quem
+	// existe, não material para ataque offline.
+	for _, c := range contas {
+		if c.Username == "" {
+			t.Error("conta veio sem nome de usuário")
+		}
+	}
+}
+
+func testUserDeleteRemovesSessions(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	u := mustCreateUser(t, s, "demitido")
+	sessao := domain.Session{
+		Hash: "hash-da-sessao", UserID: u.ID,
+		CreatedAt: epoch, ExpiresAt: epoch.Add(24 * time.Hour),
+	}
+	if err := s.Sessions().Create(ctx, sessao); err != nil {
+		t.Fatalf("criando sessão: %v", err)
+	}
+
+	if err := s.Users().Delete(ctx, u.ID); err != nil {
+		t.Fatalf("apagando conta: %v", err)
+	}
+
+	// A sessão precisa sair junto: quem perdeu o acesso não pode
+	// continuar dentro até o cookie vencer.
+	if _, err := s.Sessions().Get(ctx, sessao.Hash); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("sessão sobreviveu à remoção da conta: %v", err)
+	}
+}
+
+func testUserCountByRoleSeparates(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	mustCreateUser(t, s, "admin-1")
+	mustCreateUser(t, s, "admin-2")
+
+	observador := domain.User{Username: "so-olha", Role: domain.RoleViewer, PasswordHash: "x"}
+	if err := s.Users().Create(ctx, &observador); err != nil {
+		t.Fatalf("criando observador: %v", err)
+	}
+
+	// É esta contagem que impede remover o último administrador e deixar
+	// a instalação sem ninguém capaz de criar outro.
+	admins, err := s.Users().CountByRole(ctx, domain.RoleAdmin)
+	if err != nil {
+		t.Fatalf("contando: %v", err)
+	}
+	if admins != 2 {
+		t.Fatalf("esperava 2 administradores, vieram %d", admins)
+	}
+
+	viewers, err := s.Users().CountByRole(ctx, domain.RoleViewer)
+	if err != nil {
+		t.Fatalf("contando: %v", err)
+	}
+	if viewers != 1 {
+		t.Fatalf("esperava 1 observador, vieram %d", viewers)
 	}
 }

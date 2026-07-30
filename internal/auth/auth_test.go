@@ -231,7 +231,7 @@ func TestLockoutIsScopedToTheUsername(t *testing.T) {
 	f.withAdmin(t)
 	ctx := context.Background()
 
-	other := domain.User{Username: "operador"}
+	other := domain.User{Username: "operador", Role: domain.RoleAdmin}
 	if err := other.SetPassword(goodPassword); err != nil {
 		t.Fatalf("SetPassword returned unexpected error: %v", err)
 	}
@@ -499,7 +499,7 @@ func TestRevokeTokenRefusesAnotherUsersToken(t *testing.T) {
 	admin := f.withAdmin(t)
 	ctx := context.Background()
 
-	other := domain.User{Username: "operador"}
+	other := domain.User{Username: "operador", Role: domain.RoleAdmin}
 	if err := other.SetPassword(goodPassword); err != nil {
 		t.Fatalf("SetPassword returned unexpected error: %v", err)
 	}

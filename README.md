@@ -48,6 +48,11 @@ lista única de quarenta linhas: etiquete os alvos e o painel oferece
 agrupar por qualquer uma delas. As etiquetas são normalizadas na entrada
 — "Produção", "produção " e "PRODUÇÃO" são o mesmo grupo, e não três.
 
+**Tem dois papéis de acesso.** Administrador cadastra e altera;
+observador só lê — serve para plantão, gerência e time vizinho
+acompanharem sem poder mexer. A barreira está no servidor, não em botão
+escondido: um observador com token recebe 403 em qualquer escrita.
+
 **Publica uma página de estado** no formato que Anthropic, Cloudflare e
 Google consolidaram: veredito no topo, componentes agrupados, noventa
 barras de histórico, incidentes anteriores com linha do tempo. Ela nunca

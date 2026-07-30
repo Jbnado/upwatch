@@ -59,9 +59,13 @@ export type Rollup = {
   latency_p99_ms: number;
 };
 
+export type Role = "admin" | "viewer";
+
 export type User = {
   id: number;
   username: string;
+  /** admin administra; viewer só lê. */
+  role: Role;
   created_at: string;
   updated_at: string;
 };

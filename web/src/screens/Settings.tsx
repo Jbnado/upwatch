@@ -1,13 +1,18 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client";
-import { ApiError, type APIToken } from "../api/types";
+import { ApiError, type APIToken, type User } from "../api/types";
 import { Alert, Button, Field, Input, Loading, Nothing, TextLink } from "../components/ui";
 import { ago, stamp } from "../lib/format";
 import { navigate } from "../lib/router";
 import { Channels } from "./Channels";
+import { Users } from "./Users";
 
 /** Ajustes: credenciais de acesso programático e troca de senha. */
-export function Settings({ onSignedOut }: { onSignedOut: () => void }) {
+export function Settings({ onSignedOut, eu }: { onSignedOut: () => void; eu: User }) {
+  // O observador não vê o que não pode usar. A barreira de verdade está
+  // no servidor — esconder aqui só evita oferecer um botão que devolve
+  // "sem permissão".
+  const administra = eu.role === "admin";
   return (
     <div className="mx-auto flex max-w-2xl flex-col gap-10 px-5 py-6">
       {/* Navegação e título formam um bloco. Soltos no ritmo de 40px que
@@ -20,9 +25,10 @@ export function Settings({ onSignedOut }: { onSignedOut: () => void }) {
         <h1 className="text-title font-semibold tracking-tight">Ajustes</h1>
       </div>
 
-      <PaginasPublicas />
-      <Channels />
-      <Tokens />
+      {administra && <PaginasPublicas />}
+      {administra && <Channels />}
+      {administra && <Users eu={eu} />}
+      {administra && <Tokens />}
       <Password onSignedOut={onSignedOut} />
     </div>
   );

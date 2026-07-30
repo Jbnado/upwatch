@@ -79,12 +79,12 @@ export function App() {
       <TopBar user={session.user} onSignOut={sair} />
 
       <main>
-        {route.name === "board" && <Board />}
+        {route.name === "board" && <Board podeEscrever={session.user.role === "admin"} />}
         {route.name === "monitor" && <MonitorDetail id={route.id} />}
         {route.name === "monitor-new" && <MonitorForm />}
         {route.name === "monitor-edit" && <MonitorForm id={route.id} />}
         {route.name === "settings" && (
-          <Settings onSignedOut={() => setSession({ kind: "anonymous" })} />
+          <Settings onSignedOut={() => setSession({ kind: "anonymous" })} eu={session.user} />
         )}
         {route.name === "status-pages" && <StatusPages />}
         {route.name === "status-page" && <StatusPageAdmin id={route.id} />}
@@ -110,7 +110,12 @@ function TopBar({ user, onSignOut }: { user: User; onSignOut: () => void }) {
         </button>
 
         <div className="flex items-center gap-4">
-          <span className="text-small text-ink-3">{user.username}</span>
+          <span className="flex items-baseline gap-2">
+            <span className="text-small text-ink-3">{user.username}</span>
+            {/* O papel fica visível: sem isso, um observador só descobre
+                que não pode mexer ao tentar e receber uma recusa. */}
+            {user.role === "viewer" && <span className="eyebrow">só leitura</span>}
+          </span>
           <TextLink onClick={() => navigate({ name: "settings" })}>ajustes</TextLink>
           <TextLink onClick={onSignOut}>sair</TextLink>
         </div>

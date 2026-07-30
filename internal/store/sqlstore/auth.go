@@ -16,16 +16,16 @@ import (
 
 type userRepo struct{ db *db }
 
-const userColumns = `id, username, password_hash, created_at, updated_at`
+const userColumns = `id, username, role, password_hash, created_at, updated_at`
 
 func (r *userRepo) Create(ctx context.Context, u *domain.User) error {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	u.CreatedAt, u.UpdatedAt = now, now
 
 	id, err := r.db.insertID(ctx, `
-		INSERT INTO app_user (username, password_hash, created_at, updated_at)
-		VALUES (?, ?, ?, ?)`,
-		u.Username, u.PasswordHash, toMillis(now), toMillis(now))
+		INSERT INTO app_user (username, role, password_hash, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?)`,
+		u.Username, u.Role.String(), u.PasswordHash, toMillis(now), toMillis(now))
 	if err != nil {
 		return translateAuthErr(err, "usuário")
 	}
@@ -57,8 +57,8 @@ func (r *userRepo) Update(ctx context.Context, u domain.User) error {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 
 	res, err := r.db.ExecContext(ctx, `
-		UPDATE app_user SET username = ?, password_hash = ?, updated_at = ? WHERE id = ?`,
-		u.Username, u.PasswordHash, toMillis(now), u.ID)
+		UPDATE app_user SET username = ?, role = ?, password_hash = ?, updated_at = ? WHERE id = ?`,
+		u.Username, u.Role.String(), u.PasswordHash, toMillis(now), u.ID)
 	if err != nil {
 		return translateAuthErr(err, "usuário")
 	}
@@ -76,15 +76,66 @@ func (r *userRepo) Count(ctx context.Context) (int, error) {
 func scanUser(sc scanner) (domain.User, error) {
 	var (
 		u         domain.User
+		roleName  string
 		createdMS int64
 		updatedMS int64
 	)
-	if err := sc.Scan(&u.ID, &u.Username, &u.PasswordHash, &createdMS, &updatedMS); err != nil {
+	if err := sc.Scan(&u.ID, &u.Username, &roleName, &u.PasswordHash, &createdMS, &updatedMS); err != nil {
 		return domain.User{}, err
 	}
+
+	// Papel desconhecido falha alto em vez de virar admin por omissão:
+	// no caso em que não se sabe o que está gravado, conceder acesso é o
+	// pior desfecho possível.
+	role, err := domain.ParseRole(roleName)
+	if err != nil {
+		return domain.User{}, fmt.Errorf("sqlstore: conta %d: %w", u.ID, err)
+	}
+	u.Role = role
 	u.CreatedAt = fromMillis(createdMS)
 	u.UpdatedAt = fromMillis(updatedMS)
 	return u, nil
+}
+
+// List devolve as contas, da mais antiga para a mais nova.
+func (r *userRepo) List(ctx context.Context) ([]domain.User, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT `+userColumns+` FROM app_user ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlstore: listando contas: %w", err)
+	}
+	defer rows.Close()
+
+	var out []domain.User
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// Delete remove a conta. As sessões saem em cascata pelo schema, então
+// quem for removido perde o acesso na hora, e não no vencimento do
+// cookie.
+func (r *userRepo) Delete(ctx context.Context, id int64) error {
+	res, err := r.db.ExecContext(ctx, `DELETE FROM app_user WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("sqlstore: apagando conta %d: %w", id, err)
+	}
+	return requireAffected(res, fmt.Sprintf("conta %d", id))
+}
+
+// CountByRole conta as contas de um papel.
+func (r *userRepo) CountByRole(ctx context.Context, role domain.Role) (int, error) {
+	var n int
+	err := r.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM app_user WHERE role = ?`, role.String()).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("sqlstore: contando contas do papel %s: %w", role, err)
+	}
+	return n, nil
 }
 
 // ---------- sessões ----------

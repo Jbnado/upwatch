@@ -9,7 +9,10 @@ import (
 )
 
 func TestUserValidateAcceptsWellFormedUser(t *testing.T) {
-	u := domain.User{Username: "admin"}
+	// O papel é obrigatório: sem ele, uma conta criada por engano cairia
+	// num padrão, e o padrão que menos incomoda é justamente o que
+	// concede acesso demais.
+	u := domain.User{Username: "admin", Role: domain.RoleAdmin}
 
 	if err := u.Validate(); err != nil {
 		t.Errorf("Validate() returned unexpected error: %v", err)
@@ -17,7 +20,7 @@ func TestUserValidateAcceptsWellFormedUser(t *testing.T) {
 }
 
 func TestUserValidateRejectsEmptyUsername(t *testing.T) {
-	u := domain.User{Username: "   "}
+	u := domain.User{Username: "   ", Role: domain.RoleAdmin}
 
 	assertFieldError(t, u.Validate(), "username")
 }

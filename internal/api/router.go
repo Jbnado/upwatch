@@ -149,46 +149,80 @@ func (a *API) routes() http.Handler {
 		r.Get("/public/{slug}", a.handlePublicStatus)
 		r.Get("/public/{slug}/feed.atom", a.handlePublicFeed)
 
+		// Leitura: administrador e observador entram igual.
+		//
+		// O observador enxerga tudo o que o administrador enxerga,
+		// inclusive endereço de alvo e causa de falha. Ele é de dentro;
+		// quem não é vê a página pública, que tem outras regras.
 		r.Group(func(r chi.Router) {
 			r.Use(a.authenticate)
 
 			r.Post("/auth/logout", a.handleLogout)
 			r.Get("/auth/me", a.handleMe)
+			// Trocar a própria senha não é administrar. Exigir
+			// administrador aqui obrigaria a pedir ajuda justamente
+			// quando alguém suspeita da própria credencial.
 			r.Post("/auth/password", a.handleChangePassword)
+
+			r.Get("/monitors", a.handleListMonitors)
+			r.Get("/monitors/{id}", a.handleGetMonitor)
+			r.Get("/monitors/{id}/heartbeats", a.handleHeartbeats)
+			r.Get("/monitors/{id}/rollups", a.handleRollups)
+			r.Get("/monitors/{id}/export", a.handleExport)
+			r.Get("/monitors/{id}/channels", a.handleListMonitorChannels)
+
+			r.Get("/channel-types", a.handleListChannelTypes)
+			r.Get("/channels", a.handleListChannels)
+			r.Get("/channels/{id}", a.handleGetChannel)
+
+			r.Get("/incidents", a.handleListIncidents)
+
+			r.Get("/status-pages", a.handleListStatusPages)
+			r.Get("/status-pages/{id}", a.handleGetStatusPage)
+
+			r.Get("/announcements", a.handleListAnnouncements)
+			r.Get("/announcements/{id}", a.handleGetAnnouncement)
+
+			r.Get("/events", a.handleEvents)
+		})
+
+		// Escrita: só administrador.
+		//
+		// A barreira é um grupo de rotas, não uma checagem repetida em
+		// cada handler. Esquecer a checagem num handler novo é o modo
+		// mais provável de a permissão vazar; aqui o esquecimento é
+		// impossível, porque a rota nasce dentro do grupo.
+		r.Group(func(r chi.Router) {
+			r.Use(a.authenticate, a.requireAdmin)
+
+			// Token de API faz tudo o que a interface faz, então criá-lo
+			// é operação de administrador — senão o observador emitiria
+			// para si mesmo uma credencial sem as suas restrições.
 			r.Get("/auth/tokens", a.handleListTokens)
 			r.Post("/auth/tokens", a.handleCreateToken)
 			r.Delete("/auth/tokens/{id}", a.handleRevokeToken)
 
-			r.Get("/monitors", a.handleListMonitors)
+			r.Get("/users", a.handleListUsers)
+			r.Post("/users", a.handleCreateUser)
+			r.Put("/users/{id}", a.handleUpdateUserRole)
+			r.Delete("/users/{id}", a.handleDeleteUser)
+
 			r.Post("/monitors", a.handleCreateMonitor)
-			r.Get("/monitors/{id}", a.handleGetMonitor)
 			r.Put("/monitors/{id}", a.handleUpdateMonitor)
 			r.Delete("/monitors/{id}", a.handleDeleteMonitor)
 
-			r.Get("/monitors/{id}/heartbeats", a.handleHeartbeats)
-			r.Get("/monitors/{id}/rollups", a.handleRollups)
-			r.Get("/monitors/{id}/export", a.handleExport)
-
-			r.Get("/monitors/{id}/channels", a.handleListMonitorChannels)
 			r.Put("/monitors/{id}/channels/{channelID}", a.handleLinkChannel)
 			r.Delete("/monitors/{id}/channels/{channelID}", a.handleUnlinkChannel)
 
-			r.Get("/channel-types", a.handleListChannelTypes)
-			r.Get("/channels", a.handleListChannels)
 			r.Post("/channels", a.handleCreateChannel)
-			r.Get("/channels/{id}", a.handleGetChannel)
 			r.Put("/channels/{id}", a.handleUpdateChannel)
 			r.Delete("/channels/{id}", a.handleDeleteChannel)
 			// Entrega um aviso de exemplo. Sem isto, a única forma de saber
 			// que o canal funciona seria esperar uma queda de verdade.
 			r.Post("/channels/{id}/test", a.handleTestChannel)
 
-			r.Get("/incidents", a.handleListIncidents)
-
 			// Administração das páginas públicas.
-			r.Get("/status-pages", a.handleListStatusPages)
 			r.Post("/status-pages", a.handleCreateStatusPage)
-			r.Get("/status-pages/{id}", a.handleGetStatusPage)
 			r.Put("/status-pages/{id}", a.handleUpdateStatusPage)
 			r.Delete("/status-pages/{id}", a.handleDeleteStatusPage)
 			r.Put("/status-pages/{id}/default", a.handleSetDefaultStatusPage)
@@ -204,14 +238,10 @@ func (a *API) routes() http.Handler {
 
 			// Relatos: o que uma pessoa escreve, separado do incidente que a
 			// sonda detecta.
-			r.Get("/announcements", a.handleListAnnouncements)
 			r.Post("/announcements", a.handleCreateAnnouncement)
-			r.Get("/announcements/{id}", a.handleGetAnnouncement)
 			r.Put("/announcements/{id}", a.handleUpdateAnnouncement)
 			r.Delete("/announcements/{id}", a.handleDeleteAnnouncement)
 			r.Post("/announcements/{id}/updates", a.handlePublishUpdate)
-
-			r.Get("/events", a.handleEvents)
 		})
 	})
 

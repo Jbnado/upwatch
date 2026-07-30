@@ -39,6 +39,12 @@ func RunConformance(t *testing.T, newStore Factory) {
 
 	cases := append(monitoringCases(), authCases()...)
 	cases = append(cases, incidentCases()...)
+	cases = append(cases, []conformanceCase{
+		{"UserRoleRoundTrips", testUserRoleRoundTrips},
+		{"UserListBringsEveryone", testUserListBringsEveryone},
+		{"UserDeleteRemovesSessions", testUserDeleteRemovesSessions},
+		{"UserCountByRoleSeparates", testUserCountByRoleSeparates},
+	}...)
 	cases = append(cases, statusPageCases()...)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) { tc.run(t, newStore) })
