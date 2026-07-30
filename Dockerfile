@@ -10,7 +10,16 @@ FROM node:22-alpine AS web
 
 WORKDIR /app/web
 
-RUN corepack enable
+# pnpm instalado explicitamente, e não por corepack.
+#
+# O corepack saiu da distribuição do Node a partir da linha 25, então
+# "corepack enable" quebra o build inteiro na primeira atualização da
+# imagem base — foi assim que a subida para node:26-alpine falhou.
+#
+# A versão fica fixa e igual à do CI. Com corepack ela era a que viesse
+# embutida na imagem base, o que fazia a versão do pnpm mudar junto com o
+# Node sem ninguém decidir isso.
+RUN npm install -g pnpm@10
 
 # Só o manifesto primeiro: a instalação de dependências é a camada cara,
 # e mexer no código-fonte não deveria invalidá-la.
