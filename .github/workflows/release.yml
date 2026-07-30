@@ -18,6 +18,21 @@ permissions:
   contents: write
   packages: write
 
+# Sem isto, dois pushes seguidos na main viram duas publicações
+# simultâneas que empurram a mesma tag "main" — e quem termina por último
+# ganha, que não é necessariamente o commit mais novo. Mergear quatro PRs
+# em sequência chegou a deixar quatro publicações correndo juntas, e a
+# tag poderia acabar apontando para uma imagem antiga.
+#
+# Na main o build mais novo cancela o anterior: a tag acompanha o
+# desenvolvimento, e a imagem de um commit já superado não interessa a
+# ninguém. Numa tag de versão, nunca cancela — cada tag tem grupo próprio,
+# e interromper a publicação de um lançamento pela metade deixaria a
+# página de releases sem os binários.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 jobs:
   binaries:
     name: Binários
