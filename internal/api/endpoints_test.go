@@ -533,3 +533,71 @@ func TestEventStreamRequiresAuthentication(t *testing.T) {
 
 	assertStatus(t, resp, http.StatusUnauthorized)
 }
+
+func TestMonitorTagsAreNormalized(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+
+	// O campo da interface separa por vírgula, e o que chega é o que a
+	// pessoa digitou: caixa misturada, espaço sobrando, repetição.
+	resp := s.do(t, http.MethodPost, "/api/v1/monitors", map[string]any{
+		"name": "api", "type": "http", "target": "https://exemplo.com",
+		"interval_seconds": 60, "timeout_seconds": 10,
+		"tags": []string{"Produção", "  produção ", "API", ""},
+	})
+	assertStatus(t, resp, http.StatusCreated)
+
+	criado := decode[struct {
+		ID   int64    `json:"id"`
+		Tags []string `json:"tags"`
+	}](t, resp)
+
+	if len(criado.Tags) != 2 {
+		t.Fatalf("etiquetas não foram unificadas: %v", criado.Tags)
+	}
+	if criado.Tags[0] != "api" || criado.Tags[1] != "produção" {
+		t.Fatalf("forma canônica divergiu: %v", criado.Tags)
+	}
+}
+
+func TestMonitorListFiltersByTag(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+
+	for nome, tag := range map[string]string{"api-prod": "produção", "api-homolog": "homolog"} {
+		resp := s.do(t, http.MethodPost, "/api/v1/monitors", map[string]any{
+			"name": nome, "type": "http", "target": "https://exemplo.com/" + nome,
+			"interval_seconds": 60, "timeout_seconds": 10, "tags": []string{tag},
+		})
+		assertStatus(t, resp, http.StatusCreated)
+	}
+
+	resp := s.do(t, http.MethodGet, "/api/v1/monitors?tag=produ%C3%A7%C3%A3o", nil)
+	assertStatus(t, resp, http.StatusOK)
+
+	page := decode[struct {
+		Items []struct {
+			Name string `json:"name"`
+		} `json:"items"`
+	}](t, resp)
+
+	if len(page.Items) != 1 || page.Items[0].Name != "api-prod" {
+		t.Fatalf("filtro por etiqueta divergiu: %+v", page.Items)
+	}
+}
+
+func TestMonitorRejectsHostileTag(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+
+	resp := s.do(t, http.MethodPost, "/api/v1/monitors", map[string]any{
+		"name": "api", "type": "http", "target": "https://exemplo.com",
+		"interval_seconds": 60, "timeout_seconds": 10,
+		"tags": []string{`pro"d`},
+	})
+
+	assertStatus(t, resp, http.StatusBadRequest)
+	if !strings.Contains(readBody(t, resp), `"field":"tags"`) {
+		t.Error("erro não apontou o campo tags")
+	}
+}

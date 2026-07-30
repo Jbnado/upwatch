@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { api } from "../api/client";
 import type { Monitor, Status } from "../api/types";
 import { Pulse } from "../components/Pulse";
@@ -31,6 +31,7 @@ export function Board() {
   const [range, setRange] = useState<Range>(DEFAULT_RANGE);
   const [readings, setReadings] = useState<Reading[] | null>(null);
   const [erro, setErro] = useState<string | null>(null);
+  const [agrupamento, setAgrupamento] = useState<string | null>(null);
 
   const carregar = useCallback(async () => {
     try {
@@ -61,6 +62,18 @@ export function Board() {
 
   const resumo = useMemo(() => summarise(readings ?? []), [readings]);
 
+  // As etiquetas vêm dos próprios monitores, não de um cadastro à parte:
+  // uma lista separada exigiria manter dois lugares em dia, e etiqueta
+  // sem alvo nenhum não tem o que agrupar.
+  const etiquetas = useMemo(() => etiquetasDe(readings ?? []), [readings]);
+
+  // O agrupamento escolhido some se a etiqueta deixar de existir —
+  // acontece ao apagar o último monitor que a usava, e sem isto o painel
+  // ficaria preso num grupo vazio.
+  useEffect(() => {
+    if (agrupamento && !etiquetas.includes(agrupamento)) setAgrupamento(null);
+  }, [etiquetas, agrupamento]);
+
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-6 px-5 py-6">
       <header className="flex flex-wrap items-baseline justify-between gap-4">
@@ -72,6 +85,23 @@ export function Board() {
           </Button>
         </div>
       </header>
+
+      {/* O agrupamento só aparece quando há etiqueta cadastrada: numa
+          instalação sem elas, o controle seria uma escolha entre uma
+          opção só. */}
+      {etiquetas.length > 0 && (
+        <div className="-mt-2 flex flex-wrap items-center gap-2">
+          <span className="eyebrow mr-1">agrupar por</span>
+          <Chip ativo={agrupamento === null} onClick={() => setAgrupamento(null)}>
+            nada
+          </Chip>
+          {etiquetas.map((t) => (
+            <Chip key={t} ativo={agrupamento === t} onClick={() => setAgrupamento(t)}>
+              {t}
+            </Chip>
+          ))}
+        </div>
+      )}
 
       {erro && <Alert>{erro}</Alert>}
 
@@ -108,8 +138,21 @@ export function Board() {
             </span>
           </div>
 
-          {readings.map((reading) => (
-            <Row key={reading.monitor.id} reading={reading} range={range} />
+          {agrupar(readings, agrupamento).map((grupo) => (
+            <div key={grupo.nome}>
+              {/* O cabeçalho do grupo só aparece quando há agrupamento:
+                  numa instalação de um ambiente só, ele seria uma linha
+                  de ruído em cima de cada bloco. */}
+              {agrupamento && (
+                <div className="flex items-baseline gap-3 border-b border-line px-1 pb-1.5 pt-4">
+                  <span className="text-body font-medium">{grupo.nome}</span>
+                  <span className="eyebrow">{grupo.leituras.length}</span>
+                </div>
+              )}
+              {grupo.leituras.map((reading) => (
+                <Row key={reading.monitor.id} reading={reading} range={range} />
+              ))}
+            </div>
           ))}
         </div>
       )}
@@ -168,6 +211,76 @@ function Row({ reading, range }: { reading: Reading; range: Range }) {
       </span>
     </RowLink>
   );
+}
+
+/**
+ * Chip é um seletor de agrupamento.
+ *
+ * Fileira de fichas em vez de menu suspenso: são poucas opções, e trocar
+ * de recorte é gesto frequente enquanto se investiga — cada clique a
+ * mais é um clique dado com o serviço fora do ar.
+ */
+function Chip({
+  ativo,
+  onClick,
+  children,
+}: {
+  ativo: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={ativo}
+      onClick={onClick}
+      className={[
+        "pressable inline-flex h-[var(--control-h-sm)] items-center rounded-sm px-2.5 text-small",
+        ativo
+          ? "bg-ink text-paper"
+          : "border border-line-strong text-ink-2 hover:bg-sunken hover:text-ink active:bg-pressed",
+      ].join(" ")}
+    >
+      {children}
+    </button>
+  );
+}
+
+/**
+ * etiquetasDe reúne as etiquetas em uso, ordenadas.
+ *
+ * O servidor já as devolve normalizadas, então não há o que unificar
+ * aqui — só juntar e ordenar para a fileira ficar estável entre visitas.
+ */
+export function etiquetasDe(readings: { monitor: Monitor }[]): string[] {
+  const todas = new Set<string>();
+  for (const r of readings) {
+    for (const t of r.monitor.tags ?? []) todas.add(t);
+  }
+  return [...todas].sort();
+}
+
+/**
+ * agrupar reparte as leituras pela etiqueta escolhida.
+ *
+ * Um monitor pode ter várias etiquetas, mas o agrupamento é por uma só:
+ * repetir a mesma linha em dois grupos faria as contagens do topo não
+ * fecharem com o que está na tela. Quem não tem a etiqueta cai num grupo
+ * final — some da lista seria pior, porque some sem avisar.
+ */
+export function agrupar<T extends { monitor: Monitor }>(
+  readings: T[],
+  etiqueta: string | null,
+): { nome: string; leituras: T[] }[] {
+  if (!etiqueta) return [{ nome: "", leituras: readings }];
+
+  const dentro = readings.filter((r) => (r.monitor.tags ?? []).includes(etiqueta));
+  const fora = readings.filter((r) => !(r.monitor.tags ?? []).includes(etiqueta));
+
+  const grupos: { nome: string; leituras: T[] }[] = [];
+  if (dentro.length > 0) grupos.push({ nome: etiqueta, leituras: dentro });
+  if (fora.length > 0) grupos.push({ nome: `sem "${etiqueta}"`, leituras: fora });
+  return grupos;
 }
 
 /**

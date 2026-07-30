@@ -63,6 +63,9 @@ func monitoringCases() []conformanceCase {
 		{"MonitorDefaultsToEmptyConfig", testMonitorDefaultsToEmptyConfig},
 		{"MonitorListPaginatesStably", testMonitorListPaginatesStably},
 		{"MonitorListFiltersByEnabled", testMonitorListFiltersByEnabled},
+		{"MonitorListFiltersByTag", testMonitorListFiltersByTag},
+		{"MonitorListTagFilterIsExact", testMonitorListTagFilterIsExact},
+		{"MonitorListTagFilterEscapesWildcards", testMonitorListTagFilterEscapesWildcards},
 		{"MonitorListCapsLimit", testMonitorListCapsLimit},
 
 		{"HeartbeatWriteAndQuery", testHeartbeatWriteAndQuery},

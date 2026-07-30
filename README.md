@@ -43,6 +43,11 @@ todos os alertas para sempre.
 canal. Descobrir que o alerta não chega durante a queda é descobrir
 tarde.
 
+**Agrupa por etiqueta.** Homolog e produção lado a lado sem virar uma
+lista única de quarenta linhas: etiquete os alvos e o painel oferece
+agrupar por qualquer uma delas. As etiquetas são normalizadas na entrada
+— "Produção", "produção " e "PRODUÇÃO" são o mesmo grupo, e não três.
+
 **Publica uma página de estado** no formato que Anthropic, Cloudflare e
 Google consolidaram: veredito no topo, componentes agrupados, noventa
 barras de histórico, incidentes anteriores com linha do tempo. Ela nunca

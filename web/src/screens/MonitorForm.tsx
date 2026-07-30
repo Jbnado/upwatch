@@ -85,6 +85,10 @@ export function MonitorForm({ id }: { id?: number }) {
   const [campoErro, setCampoErro] = useState<string | null>(null);
   const [enviando, setEnviando] = useState(false);
   const [pushToken, setPushToken] = useState("");
+  // Texto livre separado por vírgula, não uma lista de fichas: digitar
+  // "produção, api" e sair do campo é mais rápido que apertar Enter a
+  // cada etiqueta, e o servidor normaliza o que chegar.
+  const [tags, setTags] = useState("");
 
   const editando = id !== undefined;
   const tipo = TIPOS.find((t) => t.value === form.type)!;
@@ -104,6 +108,7 @@ export function MonitorForm({ id }: { id?: number }) {
         config: m.config,
       });
       setPushToken(String(m.config?.["token"] ?? ""));
+      setTags((m.tags ?? []).join(", "));
     });
   }, [id]);
 
@@ -126,6 +131,7 @@ export function MonitorForm({ id }: { id?: number }) {
 
     const payload: MonitorInput = {
       ...form,
+      tags: tags.split(",").map((t) => t.trim()).filter(Boolean),
       config: form.type === "push" ? { token: pushToken } : form.config,
     };
 
@@ -256,6 +262,18 @@ export function MonitorForm({ id }: { id?: number }) {
             />
           </Field>
         </div>
+
+        <Field
+          label="etiquetas"
+          hint="Separadas por vírgula. Agrupam o painel — produção, homolog, o time responsável."
+          error={erroDe("tags")}
+        >
+          <Input
+            value={tags}
+            onChange={(e) => setTags(e.target.value)}
+            placeholder="produção, plataforma"
+          />
+        </Field>
 
         <div className="flex gap-2 pt-2">
           <Button type="submit" variant="primary" disabled={enviando}>

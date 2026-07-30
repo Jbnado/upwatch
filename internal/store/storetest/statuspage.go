@@ -973,3 +973,82 @@ func testLatestHeartbeatsCoverEveryMonitor(t *testing.T, newStore Factory) {
 		t.Error("monitor sem verificação apareceu nas últimas batidas")
 	}
 }
+
+// ---------- filtro por etiqueta ----------
+
+// comTags cria um monitor já etiquetado.
+func comTags(t *testing.T, s store.Store, nome string, tags ...string) int64 {
+	t.Helper()
+
+	m := newMonitor(nome)
+	m.Tags = tags
+	if err := s.Monitors().Create(context.Background(), &m); err != nil {
+		t.Fatalf("criando monitor %q: %v", nome, err)
+	}
+	return m.ID
+}
+
+func testMonitorListFiltersByTag(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	comTags(t, s, "api-prod", "produção", "api")
+	comTags(t, s, "api-homolog", "homolog", "api")
+	comTags(t, s, "sem-etiqueta")
+
+	page, err := s.Monitors().List(ctx, store.MonitorFilter{Tag: "produção"})
+	if err != nil {
+		t.Fatalf("listando: %v", err)
+	}
+
+	if len(page.Items) != 1 || page.Items[0].Name != "api-prod" {
+		t.Fatalf("filtro por etiqueta divergiu: %+v", page.Items)
+	}
+}
+
+func testMonitorListTagFilterIsExact(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	comTags(t, s, "curto", "prod")
+	comTags(t, s, "longo", "producao")
+
+	// "prod" não pode trazer "producao": as etiquetas são guardadas como
+	// array JSON e a busca precisa casar o valor inteiro, não um pedaço.
+	page, err := s.Monitors().List(ctx, store.MonitorFilter{Tag: "prod"})
+	if err != nil {
+		t.Fatalf("listando: %v", err)
+	}
+	if len(page.Items) != 1 || page.Items[0].Name != "curto" {
+		t.Fatalf("filtro casou por prefixo: %+v", page.Items)
+	}
+}
+
+func testMonitorListTagFilterEscapesWildcards(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	comTags(t, s, "com-sublinhado", "a_b")
+	comTags(t, s, "parecido", "axb")
+	comTags(t, s, "porcentagem", "100%")
+	comTags(t, s, "outro", "1000")
+
+	// A etiqueta entra numa cláusula LIKE. Sem escape, "a_b" casaria
+	// "axb" e "100%" casaria qualquer coisa começando em "100" — a
+	// listagem traria demais, em silêncio.
+	casos := map[string]string{
+		"a_b":  "com-sublinhado",
+		"100%": "porcentagem",
+	}
+	for tag, esperado := range casos {
+		t.Run(tag, func(t *testing.T) {
+			page, err := s.Monitors().List(ctx, store.MonitorFilter{Tag: tag})
+			if err != nil {
+				t.Fatalf("listando: %v", err)
+			}
+			if len(page.Items) != 1 || page.Items[0].Name != esperado {
+				t.Fatalf("curinga não escapado; veio %+v", page.Items)
+			}
+		})
+	}
+}

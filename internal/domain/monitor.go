@@ -169,5 +169,8 @@ func (m Monitor) Validate() error {
 	if m.ParentID != nil && *m.ParentID == m.ID && m.ID != 0 {
 		return invalid("parent_id", "um monitor não pode ser pai de si mesmo")
 	}
+	if err := validateTags(m.Tags); err != nil {
+		return err
+	}
 	return nil
 }

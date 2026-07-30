@@ -64,7 +64,10 @@ func (req monitorRequest) toDomain() (domain.Monitor, error) {
 		Config:                req.Config,
 		ParentID:              req.ParentID,
 		Enabled:               enabled,
-		Tags:                  req.Tags,
+		// Normalizada na entrada, não na leitura: "Produção" e "produção"
+		// digitadas em momentos diferentes viram o mesmo grupo, e quem
+		// consome a API recebe sempre a forma canônica.
+		Tags: domain.NormalizeTags(req.Tags),
 	}, nil
 }
 

@@ -131,10 +131,15 @@ func (r *monitorRepo) List(ctx context.Context, f store.MonitorFilter) (store.Pa
 		args = append(args, boolToInt(*f.Enabled))
 	}
 	if f.Tag != "" {
-		// tags é um array JSON; a busca por substring com aspas evita
-		// casar "prod" dentro de "producao".
-		conds = append(conds, "tags LIKE ?")
-		args = append(args, "%\""+f.Tag+"\"%")
+		// tags é um array JSON; a busca por substring com aspas em volta
+		// evita casar "prod" dentro de "producao".
+		//
+		// A etiqueta é escapada porque vai dentro de um padrão de LIKE, e
+		// ali "%" e "_" são curingas. Sem isto, filtrar por "a_b" traria
+		// também "axb", e por "100%" traria tudo que começa com 100 — a
+		// listagem simplesmente vem demais, sem erro nenhum aparecer.
+		conds = append(conds, `tags LIKE ? ESCAPE '\'`)
+		args = append(args, "%\""+escapeLike(f.Tag)+"\"%")
 	}
 
 	// Pede um a mais que o limite para saber se há próxima página sem
@@ -267,4 +272,15 @@ func translateWriteErr(err error) error {
 		return fmt.Errorf("%w: %s", store.ErrConflict, err)
 	}
 	return fmt.Errorf("sqlstore: escrevendo monitor: %w", err)
+}
+
+// escapeLike neutraliza os curingas de um padrão de LIKE.
+//
+// Vale para os dois dialetos: "%" e "_" são curingas em ambos, e a
+// cláusula ESCAPE tem a mesma sintaxe. A barra invertida vem primeiro,
+// senão o escape das outras seria escapado de novo.
+func escapeLike(v string) string {
+	v = strings.ReplaceAll(v, `\`, `\`)
+	v = strings.ReplaceAll(v, "%", `\%`)
+	return strings.ReplaceAll(v, "_", `\_`)
 }

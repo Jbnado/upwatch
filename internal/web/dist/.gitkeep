@@ -1,9 +1,0 @@
-Este arquivo existe para o diretório sobreviver ao versionamento.
-
-O go:embed do pacote web aponta para "dist", e um padrão sem nenhum
-arquivo correspondente é erro de compilação — não aviso. Sem este
-arquivo, um clone limpo não compila, e quem chega ao repositório
-encontra um erro antes de conseguir rodar o primeiro teste.
-
-O build real da interface substitui o conteúdo deste diretório; o
-.gitignore ignora tudo aqui dentro, menos este arquivo.
