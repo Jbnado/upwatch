@@ -87,9 +87,9 @@ func Aggregate(b Bucket, hbs []domain.Heartbeat) domain.Rollup {
 	out.LatencyMinMS = latencies[0]
 	out.LatencyMaxMS = latencies[len(latencies)-1]
 	out.LatencyAvgMS = mean(latencies)
-	out.LatencyP50MS = percentile(latencies, 50)
-	out.LatencyP95MS = percentile(latencies, 95)
-	out.LatencyP99MS = percentile(latencies, 99)
+	out.LatencyP50MS = Percentile(latencies, 50)
+	out.LatencyP95MS = Percentile(latencies, 95)
+	out.LatencyP99MS = Percentile(latencies, 99)
 
 	return out
 }
@@ -102,13 +102,17 @@ func mean(sorted []float64) float64 {
 	return sum / float64(len(sorted))
 }
 
-// percentile usa o método do posto mais próximo sobre a amostra já
+// Percentile usa o método do posto mais próximo sobre a amostra já
 // ordenada.
 //
 // Sem interpolação de propósito: todo valor reportado corresponde a uma
 // latência que de fato foi medida, em vez de a um ponto sintético entre
 // duas medições. Para p95, o posto é ceil(0,95 × n).
-func percentile(sorted []float64, p float64) float64 {
+//
+// Exportado para o resumo de janela usar exatamente este cálculo. Duas
+// implementações do mesmo percentil divergiriam sem que nada acusasse, e
+// a mesma pergunta passaria a ter duas respostas conforme quem calculou.
+func Percentile(sorted []float64, p float64) float64 {
 	rank := int(math.Ceil(p / 100 * float64(len(sorted))))
 	if rank < 1 {
 		rank = 1

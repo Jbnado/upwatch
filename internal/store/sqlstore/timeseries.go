@@ -67,7 +67,18 @@ func (s *Store) QueryHeartbeats(ctx context.Context, q store.HeartbeatQuery) ([]
 		sqlText += ` AND probe_id = ?`
 		args = append(args, q.ProbeID)
 	}
-	sqlText += ` ORDER BY ts LIMIT ?`
+	// DESC porque o limite precisa cortar o começo da janela, e não o fim.
+	//
+	// Com ASC, quem pergunta "como está agora" recebia o passado: intervalo
+	// de 20 s e limite de 200 devolviam a primeira hora de uma janela de
+	// 24 h, e a interface desenhava aquilo como estado atual — inclusive
+	// acusando o monitor de abandonado, porque a amostra mais nova
+	// entregue tinha horas de idade.
+	//
+	// A saída volta a ser cronológica logo abaixo: quem consome desenha uma
+	// linha do tempo, e inverter isso aqui empurraria a inversão para todo
+	// chamador.
+	sqlText += ` ORDER BY ts DESC LIMIT ?`
 	args = append(args, q.Limit)
 
 	rows, err := s.db.QueryContext(ctx, sqlText, args...)
@@ -96,6 +107,11 @@ func (s *Store) QueryHeartbeats(ctx context.Context, q store.HeartbeatQuery) ([]
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("sqlstore: lendo heartbeats: %w", err)
+	}
+
+	// Do mais novo para o mais velho de volta para ordem de leitura.
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
 	}
 	return out, nil
 }

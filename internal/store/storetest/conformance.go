@@ -83,6 +83,7 @@ func monitoringCases() []conformanceCase {
 		{"HeartbeatWriteLargeBatch", testHeartbeatWriteLargeBatch},
 		{"HeartbeatQueryEmptyRangeReturnsNothing", testHeartbeatQueryEmptyRangeReturnsNothing},
 		{"HeartbeatQueryRespectsLimit", testHeartbeatQueryRespectsLimit},
+		{"HeartbeatQueryKeepsTheMostRecent", testHeartbeatQueryKeepsTheMostRecent},
 		{"HeartbeatQueryReturnsChronologicalOrder", testHeartbeatQueryReturnsChronologicalOrder},
 		{"StreamHeartbeatsIgnoresPaginationCap", testStreamHeartbeatsIgnoresPaginationCap},
 		{"StreamHeartbeatsRespectsRange", testStreamHeartbeatsRespectsRange},
@@ -760,6 +761,62 @@ func testHeartbeatQueryRespectsLimit(t *testing.T, newStore Factory) {
 	}
 	if len(got) != 5 {
 		t.Errorf("QueryHeartbeats returned %d rows, want 5", len(got))
+	}
+}
+
+// O limite precisa cortar o começo da janela, não o fim.
+//
+// Cortando o fim, quem pergunta "como está agora" recebe o passado: com
+// intervalo de 20 s e limite de 200, uma janela de 24 h devolvia a
+// primeira hora e a interface a desenhava como estado atual — inclusive
+// acusando o monitor de abandonado, porque a última amostra entregue
+// tinha mesmo horas de idade.
+//
+// O teste anterior conferia só a quantidade de linhas, e foi por isso que
+// o defeito passou: cinco linhas erradas satisfazem "devolveu cinco".
+func testHeartbeatQueryKeepsTheMostRecent(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	id := mustCreateMonitor(t, s, "api")
+
+	const total = 20
+	var batch []domain.Heartbeat
+	for i := 0; i < total; i++ {
+		batch = append(batch, beat(id, time.Duration(i)*time.Second, domain.StatusUp, int64(i)))
+	}
+	if err := s.WriteHeartbeats(ctx, batch); err != nil {
+		t.Fatalf("WriteHeartbeats returned unexpected error: %v", err)
+	}
+
+	const limite = 5
+	got, err := s.QueryHeartbeats(ctx, store.HeartbeatQuery{
+		MonitorID: id, Range: fullRange(), Limit: limite,
+	})
+	if err != nil {
+		t.Fatalf("QueryHeartbeats returned unexpected error: %v", err)
+	}
+	if len(got) != limite {
+		t.Fatalf("QueryHeartbeats returned %d rows, want %d", len(got), limite)
+	}
+
+	// A última entregue tem de ser a última que existe.
+	ultima := epoch.Add(time.Duration(total-1) * time.Second)
+	if !got[len(got)-1].Timestamp.Equal(ultima) {
+		t.Errorf("a amostra mais recente é %s, want %s — o limite cortou o fim da janela",
+			got[len(got)-1].Timestamp.UTC(), ultima.UTC())
+	}
+
+	// E a fatia precisa ser contígua e cronológica, senão a faixa de pulso
+	// desenha buracos que não existem.
+	primeira := epoch.Add(time.Duration(total-limite) * time.Second)
+	if !got[0].Timestamp.Equal(primeira) {
+		t.Errorf("a amostra mais antiga é %s, want %s", got[0].Timestamp.UTC(), primeira.UTC())
+	}
+	for i := 1; i < len(got); i++ {
+		if !got[i].Timestamp.After(got[i-1].Timestamp) {
+			t.Fatalf("as amostras saíram fora de ordem em %d: %s depois de %s",
+				i, got[i].Timestamp.UTC(), got[i-1].Timestamp.UTC())
+		}
 	}
 }
 

@@ -21,6 +21,7 @@ import {
   type StatusPageComponent,
   type StatusPageGroup,
   type StatusPageInput,
+  type Summary as SummaryDTO,
   type User,
 } from "./types";
 
@@ -125,6 +126,19 @@ export const api = {
   deleteMonitor: (id: number) => request<void>(`/monitors/${id}`, { method: "DELETE" }),
 
   // ---------- dados ----------
+
+  /**
+   * summaries traz estado, disponibilidade, latência e a faixa já pronta
+   * para todos os monitores.
+   *
+   * Uma requisição para a lista inteira, e nenhum cálculo aqui. Antes o
+   * painel abria uma conexão por monitor e somava disponibilidade por
+   * conta própria, com a tela de detalhe fazendo o mesmo numa cópia
+   * separada — as duas discordavam sobre ausência de medição sem que nada
+   * acusasse.
+   */
+  summaries: (params: { from?: string; to?: string; buckets?: number } = {}) =>
+    request<{ items: SummaryDTO[]; from: string; to: string }>(`/summaries${query(params)}`),
 
   heartbeats: (id: number, params: { from?: string; to?: string; limit?: number }) =>
     request<{ items: Heartbeat[] }>(`/monitors/${id}/heartbeats${query(params)}`),

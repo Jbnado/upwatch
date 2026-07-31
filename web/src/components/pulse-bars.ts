@@ -12,7 +12,8 @@ export type PulseSample = {
   /** Instante da verificação, em ISO 8601. */
   at: string;
   status: PulseStatus;
-  latencyMs: number;
+  /** null quando ninguém respondeu: ausência de medição, não zero. */
+  latencyMs: number | null;
 };
 
 export type PulseBar = PulseSample & {
@@ -76,8 +77,8 @@ export function pulseBars(samples: PulseSample[]): PulseBar[] {
   const latencias = samples
     // Latência de amostra sem resposta é ruído: incluí-la na escala
     // distorceria a altura de todas as outras.
-    .filter((s) => respondeu(s.status))
-    .map((s) => s.latencyMs)
+    .filter((s) => respondeu(s.status) && s.latencyMs !== null)
+    .map((s) => s.latencyMs as number)
     .sort((a, b) => a - b);
 
   const escala = percentil(latencias, SCALE_PERCENTILE);
@@ -94,7 +95,7 @@ function altura(s: PulseSample, escala: number): number {
   // fino, não barra cheia.
   if (s.status === "unknown") return MIN_BAR;
 
-  if (escala <= 0) return MIN_RESPONSIVE_BAR;
+  if (escala <= 0 || s.latencyMs === null) return MIN_RESPONSIVE_BAR;
 
   const proporcao = (s.latencyMs / escala) * P95_HEIGHT;
   return Math.min(Math.max(proporcao, MIN_RESPONSIVE_BAR), 1);

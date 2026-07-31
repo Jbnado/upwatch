@@ -34,6 +34,37 @@ export type MonitorInput = {
   tags?: string[];
 };
 
+/**
+ * Resumo de uma janela, calculado no servidor.
+ *
+ * Os numéricos são anuláveis de propósito: null significa que não houve
+ * medição, e zero é uma afirmação — "esteve fora o tempo todo", "respondeu
+ * instantaneamente". Confundir os dois é a forma mais silenciosa de uma
+ * ferramenta de vigilância mentir, e por isso a distinção atravessa a API
+ * inteira até aqui.
+ */
+export type Summary = {
+  monitor_id: number;
+  status: Status;
+  source: "raw" | "hourly" | "daily";
+  uptime_percent: number | null;
+  latency_p50_ms: number | null;
+  latency_p95_ms: number | null;
+  latency_p99_ms: number | null;
+  last_check_at: string | null;
+  up: number;
+  degraded: number;
+  down: number;
+  unknown: number;
+  series: SummaryPoint[];
+};
+
+export type SummaryPoint = {
+  at: string;
+  status: Status;
+  latency_ms: number | null;
+};
+
 export type Heartbeat = {
   timestamp: string;
   status: Status;

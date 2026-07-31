@@ -164,6 +164,11 @@ func (a *API) routes() http.Handler {
 			// quando alguém suspeita da própria credencial.
 			r.Post("/auth/password", a.handleChangePassword)
 
+			// Uma requisição resume a janela para todos os monitores. É o
+			// que a lista consome: sem isso o painel abria uma conexão por
+			// monitor, degradando justamente na instalação grande.
+			r.Get("/summaries", a.handleSummaries)
+
 			r.Get("/monitors", a.handleListMonitors)
 			r.Get("/monitors/{id}", a.handleGetMonitor)
 			r.Get("/monitors/{id}/heartbeats", a.handleHeartbeats)

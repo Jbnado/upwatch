@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
-import type { Heartbeat, Incident, Monitor, Rollup, Status } from "../api/types";
+import type { Heartbeat, Incident, Monitor, Summary as SummaryDTO } from "../api/types";
 import { MonitorChannels } from "./Channels";
 import { Pulse } from "../components/Pulse";
 import type { PulseSample } from "../components/pulse-bars";
@@ -9,7 +9,17 @@ import { Alert, Button, LinkButton, Loading, Nothing, StatusDot, TextLink } from
 import { ago, duration, latency, stamp, uptime } from "../lib/format";
 import { DEFAULT_RANGE, windowFor, type Range } from "../lib/ranges";
 import { navigate } from "../lib/router";
-import { bucketStatus, summariseHeartbeats, summariseRollups } from "../lib/series";
+
+/** Mesma resolução de faixa do painel: as duas telas desenham igual. */
+const PONTOS_DA_FAIXA = 60;
+
+/**
+ * EVENTOS é quantas batidas cruas a lista de mudanças de estado lê.
+ *
+ * Aqui o dado cru é o certo: a lista mostra transições reais, com horário
+ * e causa, e não um resumo. O servidor devolve as mais recentes da janela.
+ */
+const EVENTOS = 300;
 
 /**
  * Detalhe de um alvo.
@@ -22,41 +32,28 @@ import { bucketStatus, summariseHeartbeats, summariseRollups } from "../lib/seri
 export function MonitorDetail({ id }: { id: number }) {
   const [range, setRange] = useState<Range>(DEFAULT_RANGE);
   const [monitor, setMonitor] = useState<Monitor | null>(null);
-  const [samples, setSamples] = useState<PulseSample[]>([]);
+  const [resumo, setResumo] = useState<SummaryDTO | null>(null);
   const [beats, setBeats] = useState<Heartbeat[]>([]);
-  const [rollups, setRollups] = useState<Rollup[]>([]);
   const [cursor, setCursor] = useState<PulseSample | null>(null);
   const [erro, setErro] = useState<string | null>(null);
 
   const carregar = useCallback(async () => {
     try {
       const { from, to } = windowFor(range);
-      const m = await api.getMonitor(id);
-      setMonitor(m);
 
-      if (range.source === "raw") {
-        const { items } = await api.heartbeats(id, { from, to, limit: 300 });
-        setBeats(items);
-        setRollups([]);
-        setSamples(
-          items.map((hb) => ({ at: hb.timestamp, status: hb.status, latencyMs: hb.latency_ms })),
-        );
-      } else {
-        const { items } = await api.rollups(id, {
-          from,
-          to,
-          resolution: range.source === "hourly" ? "hourly" : "daily",
-        });
-        setRollups(items);
-        setBeats([]);
-        setSamples(
-          items.map((r) => ({
-            at: r.bucket_start,
-            status: bucketStatus(r.up, r.degraded, r.down),
-            latencyMs: r.latency_p95_ms,
-          })),
-        );
-      }
+      // Mesma fonte do painel, e nenhum cálculo aqui. Enquanto as duas
+      // telas somavam por conta própria, a mesma janela podia render dois
+      // números — e nada acusava, porque cada cópia estava internamente
+      // coerente.
+      const [m, resumos, historico] = await Promise.all([
+        api.getMonitor(id),
+        api.summaries({ from, to, buckets: PONTOS_DA_FAIXA }),
+        api.heartbeats(id, { from, to, limit: EVENTOS }),
+      ]);
+
+      setMonitor(m);
+      setResumo(resumos.items.find((s) => s.monitor_id === id) ?? null);
+      setBeats(historico.items);
       setErro(null);
     } catch (e) {
       setErro(e instanceof Error ? e.message : "Não foi possível carregar este monitor.");
@@ -87,8 +84,20 @@ export function MonitorDetail({ id }: { id: number }) {
     );
   }
 
-  const atual = statusFrom(samples);
-  const stats = rollups.length > 0 ? summariseRollups(rollups) : summariseHeartbeats(beats);
+  const samples: PulseSample[] =
+    resumo?.series.map((p: SummaryDTO["series"][number]) => ({
+      at: p.at,
+      status: p.status,
+      latencyMs: p.latency_ms,
+    })) ?? [];
+
+  const atual = resumo?.status ?? "unknown";
+  const stats = {
+    uptimePercent: resumo?.uptime_percent ?? null,
+    p50: resumo?.latency_p50_ms ?? null,
+    p95: resumo?.latency_p95_ms ?? null,
+    p99: resumo?.latency_p99_ms ?? null,
+  };
 
   async function remover() {
     if (!confirm(`Remover "${monitor!.name}" e todo o seu histórico?`)) return;
@@ -300,6 +309,3 @@ function Events({ beats }: { beats: Heartbeat[] }) {
   );
 }
 
-function statusFrom(samples: PulseSample[]): Status {
-  return samples.at(-1)?.status ?? "unknown";
-}

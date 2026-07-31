@@ -507,6 +507,53 @@ paths:
         "204": { description: Monitor removido }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/v1/summaries:
+    get:
+      tags: [data]
+      summary: Resumo da janela para todos os monitores
+      description: |
+        Estado, disponibilidade, percentis de latência e a série já
+        dividida em buckets - tudo calculado no servidor.
+
+        Existe para que nenhum cliente precise calcular. O painel e a tela
+        de detalhe somavam disponibilidade cada um por conta própria, em
+        cópias separadas do mesmo cálculo, e discordavam sobre o que fazer
+        com ausência de medição. Aqui o número é um só, e um script recebe
+        exatamente o que a interface mostra.
+
+        A camada é escolhida pela largura da janela: ate 24 h le batidas
+        cruas, ate 30 d le agregado horario, acima disso o diario. Quem
+        chama nao precisa saber que existe uma tabela de agregados; o campo
+        `source` informa de onde veio.
+
+        Campos numericos vem nulos quando nao houve medicao. Nulo e zero
+        sao coisas diferentes - zero afirma "esteve fora o tempo todo" ou
+        "respondeu instantaneamente".
+
+        Uma requisicao cobre todos os monitores: uma por monitor degradava
+        justamente na instalacao grande, onde a lista importa mais.
+      parameters:
+        - $ref: "#/components/parameters/From"
+        - $ref: "#/components/parameters/To"
+        - name: buckets
+          in: query
+          description: Quantos pontos a serie deve ter, cobrindo a janela inteira.
+          schema: { type: integer, minimum: 1, maximum: 500, default: 60 }
+      responses:
+        "200":
+          description: Um resumo por monitor
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  from: { type: string, format: date-time }
+                  to: { type: string, format: date-time }
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Summary" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
   /api/v1/monitors/{id}/heartbeats:
     get:
       tags: [data]
@@ -1541,6 +1588,47 @@ components:
           type: string
           description: A falha observada quando a queda foi confirmada
         open: { type: boolean }
+
+    Summary:
+      type: object
+      description: |
+        Resumo de uma janela. Os numericos sao anulaveis de proposito:
+        nulo significa que nao houve medicao, e zero e uma afirmacao.
+      properties:
+        monitor_id: { type: integer, format: int64 }
+        status: { type: string, enum: [up, down, degraded, unknown] }
+        source:
+          type: string
+          enum: [raw, hourly, daily]
+          description: Camada de onde o resumo saiu.
+        uptime_percent:
+          type: number
+          nullable: true
+          description: |
+            Percentual disponivel. Nulo quando nada foi observado sobre o
+            alvo - o que e diferente de zero. Amostras "unknown" ficam fora
+            do denominador: contar falha do observador como falha do
+            observado seria mentir sobre o alvo.
+        latency_p50_ms: { type: number, nullable: true }
+        latency_p95_ms: { type: number, nullable: true }
+        latency_p99_ms: { type: number, nullable: true }
+        last_check_at: { type: string, format: date-time, nullable: true }
+        up: { type: integer }
+        degraded: { type: integer }
+        down: { type: integer }
+        unknown: { type: integer }
+        series:
+          type: array
+          description: |
+            A janela dividida em buckets de largura igual, cobrindo o
+            periodo inteiro. Bucket sem amostra vem "unknown" com latencia
+            nula, para que um buraco nao seja desenhado como queda.
+          items:
+            type: object
+            properties:
+              at: { type: string, format: date-time }
+              status: { type: string, enum: [up, down, degraded, unknown] }
+              latency_ms: { type: number, nullable: true }
 
     Heartbeat:
       type: object

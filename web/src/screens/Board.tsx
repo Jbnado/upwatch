@@ -1,14 +1,23 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { api } from "../api/client";
-import type { Monitor, Status } from "../api/types";
+import type { Monitor, Status, Summary as SummaryDTO } from "../api/types";
 import { Pulse } from "../components/Pulse";
 import type { PulseSample } from "../components/pulse-bars";
 import { RangePicker } from "../components/RangePicker";
 import { Alert, Button, Empty, Loading, RowLink, StatusDot } from "../components/ui";
 import { ago, latency, uptime } from "../lib/format";
 import { DEFAULT_RANGE, windowFor, type Range } from "../lib/ranges";
-import { navigate, pool } from "../lib/router";
-import { bucketStatus, isStale, summariseHeartbeats, summariseRollups } from "../lib/series";
+import { navigate } from "../lib/router";
+import { isStale } from "../lib/series";
+
+/**
+ * PONTOS_DA_FAIXA é a resolução pedida ao servidor.
+ *
+ * A faixa tem 196 px; mais pontos que isso desenhariam traços de menos de
+ * um pixel. É o servidor que divide a janela nesse número de buckets, o
+ * que garante que a figura e os números descrevam o mesmo período.
+ */
+const PONTOS_DA_FAIXA = 60;
 
 /**
  * O painel.
@@ -25,6 +34,8 @@ type Reading = {
   status: Status;
   uptimePercent: number | null;
   p95: number | null;
+  /** Instante da última verificação, do servidor. */
+  lastCheckAt?: string | null;
 };
 
 export function Board({ podeEscrever }: { podeEscrever: boolean }) {
@@ -36,13 +47,20 @@ export function Board({ podeEscrever }: { podeEscrever: boolean }) {
   const carregar = useCallback(async () => {
     try {
       const { from, to } = windowFor(range);
-      const page = await api.listMonitors({ limit: 200 });
 
-      // Teto de simultaneidade: uma instalação grande abriria requisições
-      // demais de uma vez e o navegador as enfileiraria sem ordem.
-      const lidos = await pool(page.items, 6, (m) => read(m, range, from, to));
+      // Duas requisições para a lista inteira, e nenhum cálculo aqui. Antes
+      // era uma por monitor, com o painel somando disponibilidade e
+      // percentil por conta própria — e a tela de detalhe fazendo o mesmo
+      // numa cópia separada, que discordava sobre ausência de medição sem
+      // que nada acusasse.
+      const [page, resumos] = await Promise.all([
+        api.listMonitors({ limit: 200 }),
+        api.summaries({ from, to, buckets: PONTOS_DA_FAIXA }),
+      ]);
 
-      setReadings(lidos);
+      const porID = new Map(resumos.items.map((s) => [s.monitor_id, s]));
+
+      setReadings(page.items.map((m) => leitura(m, porID.get(m.id))));
       setErro(null);
     } catch (e) {
       setErro(e instanceof Error ? e.message : "Não foi possível carregar os monitores.");
@@ -175,8 +193,7 @@ export function Board({ podeEscrever }: { podeEscrever: boolean }) {
 function Row({ reading, range }: { reading: Reading; range: Range }) {
   const { monitor, samples, status, uptimePercent, p95 } = reading;
 
-  const ultima = samples.at(-1);
-  const stale = isStale(ultima?.at, monitor.interval_seconds, range.source);
+  const stale = isStale(reading.lastCheckAt, monitor.interval_seconds);
 
   return (
     // Link, não botão. Um button só aceita conteúdo de frase, e a div da
@@ -195,7 +212,7 @@ function Row({ reading, range }: { reading: Reading; range: Range }) {
           // Monitor que parou de ser verificado é uma falha própria, não
           // do alvo; sem este aviso ela passaria por "tudo estável".
           <span className="shrink-0 text-micro text-degraded">
-            sem verificar {ago(samples.at(-1)!.at)}
+            sem verificar {ago(reading.lastCheckAt!)}
           </span>
         )}
       </span>
@@ -363,45 +380,28 @@ function summarise(readings: Reading[]) {
 }
 
 /**
- * read busca a série do monitor na camada adequada ao período.
+ * leitura converte o resumo do servidor no que a linha desenha.
  *
- * Janela curta lê batidas cruas; janela longa lê agregados, que é o que
- * permite olhar um ano sem varrer milhões de linhas.
+ * Converte, não calcula. Quem escolhe a camada, soma disponibilidade e
+ * ordena percentil é o servidor — aqui só se traduz nome de campo. Monitor
+ * sem resumo é ausência, e não zero: um alvo recém-criado ainda não disse
+ * nada sobre si.
  */
-async function read(monitor: Monitor, range: Range, from: string, to: string): Promise<Reading> {
-  if (range.source === "raw") {
-    const { items } = await api.heartbeats(monitor.id, { from, to, limit: 200 });
-    const { status, uptimePercent, p95 } = summariseHeartbeats(items);
-
-    return {
-      monitor,
-      samples: items.map((hb) => ({
-        at: hb.timestamp,
-        status: hb.status,
-        latencyMs: hb.latency_ms,
-      })),
-      status,
-      uptimePercent,
-      p95,
-    };
+function leitura(monitor: Monitor, resumo: SummaryDTO | undefined): Reading {
+  if (!resumo) {
+    return { monitor, samples: [], status: "unknown", uptimePercent: null, p95: null };
   }
-
-  const { items } = await api.rollups(monitor.id, {
-    from,
-    to,
-    resolution: range.source === "hourly" ? "hourly" : "daily",
-  });
-  const { status, uptimePercent, p95 } = summariseRollups(items);
 
   return {
     monitor,
-    samples: items.map((r) => ({
-      at: r.bucket_start,
-      status: bucketStatus(r.up, r.degraded, r.down),
-      latencyMs: r.latency_p95_ms,
+    samples: resumo.series.map((p) => ({
+      at: p.at,
+      status: p.status,
+      latencyMs: p.latency_ms,
     })),
-    status,
-    uptimePercent,
-    p95,
+    status: resumo.status,
+    uptimePercent: resumo.uptime_percent,
+    p95: resumo.latency_p95_ms,
+    lastCheckAt: resumo.last_check_at,
   };
 }
