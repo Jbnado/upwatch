@@ -21,6 +21,11 @@ export type Monitor = {
   tags: string[];
   created_at: string;
   updated_at: string;
+  /**
+   * Próxima execução prevista de um push com agenda. Chega com o PR da
+   * agenda do push; até lá vem ausente e a tela simplesmente não a mostra.
+   */
+  next_expected_push?: string;
 };
 
 export type MonitorInput = {
@@ -115,6 +120,63 @@ export type Group = {
   path: string;
   created_at: string;
   updated_at: string;
+};
+
+/**
+ * Cartão de um grupo na tela inicial. O sistema soma os ambientes dele;
+ * group_id nulo é "Sem grupo".
+ */
+export type GroupSummary = {
+  group_id: number | null;
+  parent_id: number | null;
+  name: string;
+  path: string;
+  /** Pior estado entre os ativos. */
+  status: Status;
+  total: number;
+  up: number;
+  degraded: number;
+  down: number;
+  unknown: number;
+  paused: number;
+  /** down + degraded + unknown. */
+  problems: number;
+};
+
+/** Uma linha de "Problemas agora". */
+export type Problem = {
+  monitor_id: number;
+  name: string;
+  type: MonitorType;
+  group_id: number | null;
+  /** Vazio é "Sem grupo". */
+  group_path: string;
+  status: Exclude<Status, "up">;
+  /** Desde quando o estado vale; para monitor nunca medido, o cadastro. */
+  since: string;
+  cause: string;
+  last_check_at: string | null;
+};
+
+/**
+ * Evento da linha do tempo do monitor: mudança confirmada de estado
+ * (`state`) ou batida com falha (`failure`).
+ */
+export type MonitorEvent = {
+  type: "state" | "failure";
+  at: string;
+  status: Status;
+  /** Estado anterior; só em `state`. */
+  from?: Status;
+  message?: string;
+  latency_ms?: number;
+  probe_id?: string;
+};
+
+export type EventPage = {
+  items: MonitorEvent[];
+  has_more: boolean;
+  next_before?: string;
 };
 
 export type User = {
