@@ -51,7 +51,7 @@ var (
 	//
 	// Sem esta guarda, um clique deixaria a instalação sem ninguém capaz
 	// de administrar, e a única saída seria mexer no banco à mão.
-	ErrLastAdmin = errors.New("auth: é preciso manter ao menos um administrador")
+	ErrLastAdmin = errors.New("auth: é preciso manter ao menos um administrador com acesso a todos os grupos")
 
 	// ErrSetupComplete indica que o assistente de primeiro acesso já foi
 	// usado.
@@ -245,7 +245,9 @@ func (s *Service) ChangePassword(ctx context.Context, userID int64, current, nex
 	if err := u.SetPassword(next); err != nil {
 		return err
 	}
-	if err := s.store.Users().Update(ctx, u); err != nil {
+	// Só a senha: regravar a conta lida acima devolveria o papel e o
+	// escopo de antes, desfazendo uma revogação feita nesse meio-tempo.
+	if err := s.store.Users().SetPasswordHash(ctx, userID, u.PasswordHash); err != nil {
 		return err
 	}
 	return s.store.Sessions().DeleteByUser(ctx, userID)
@@ -388,13 +390,17 @@ func (s *Service) clearFailures(username string) {
 	delete(s.failures, username)
 }
 
-// CreateUser cadastra uma conta com o papel indicado.
+// CreateUser cadastra uma conta com o papel e o escopo indicados.
 //
 // Separado de CreateInitialAdmin de propósito: aquele é o assistente de
 // primeiro acesso e recusa a segunda chamada; este exige que já exista
-// alguém administrando, e é chamado por essa pessoa.
-func (s *Service) CreateUser(ctx context.Context, username, password string, role domain.Role) (domain.User, error) {
-	u := domain.User{Username: strings.TrimSpace(username), Role: role}
+// alguém administrando, e é chamado por essa pessoa. Se quem chama pode
+// conceder o escopo pedido é decidido antes, por quem conhece o escopo
+// dela (ver domain.Access.Grants).
+func (s *Service) CreateUser(
+	ctx context.Context, username, password string, role domain.Role, scope domain.Scope,
+) (domain.User, error) {
+	u := domain.User{Username: strings.TrimSpace(username), Role: role, Scope: scope.Normalize()}
 	if err := u.Validate(); err != nil {
 		return domain.User{}, err
 	}
@@ -407,58 +413,47 @@ func (s *Service) CreateUser(ctx context.Context, username, password string, rol
 	return u, nil
 }
 
-// SetRole troca o papel de uma conta.
+// SetAccess troca o papel e, quando informado, o escopo de uma conta.
 //
-// Recusa rebaixar o último administrador. Sem esta guarda, um clique
-// deixaria a instalação sem ninguém capaz de criar contas, cadastrar
-// alvos ou publicar página — e a única saída seria mexer no banco à mão.
-func (s *Service) SetRole(ctx context.Context, id int64, role domain.Role) (domain.User, error) {
-	u, err := s.store.Users().Get(ctx, id)
-	if err != nil {
-		return domain.User{}, err
+// Escopo nulo mantém o atual: trocar o papel não pode alargar o que a
+// conta alcança porque um campo ficou de fora do pedido.
+//
+// Recusa tirar do último administrador com escopo total o papel ou o
+// escopo. Administrador restrito não cria grupo de topo nem mexe em canal
+// ou página pública; sem ninguém com escopo total, a instalação ficaria
+// sem quem faça isso, e a única saída seria mexer no banco à mão.
+//
+// A recusa é do store, na mesma transação da escrita (ver
+// store.UserRepo.SetAccess). Conferir aqui, antes, deixava dois
+// rebaixamentos simultâneos verem "sobra o outro" e gravarem os dois.
+func (s *Service) SetAccess(ctx context.Context, id int64, role domain.Role, scope *domain.Scope) (domain.User, error) {
+	if !role.Valid() {
+		return domain.User{}, &domain.ValidationError{Field: "role", Msg: "papel desconhecido"}
 	}
-	if u.Role == role {
-		return u, nil
-	}
-
-	if u.Role == domain.RoleAdmin {
-		if err := s.requireAnotherAdmin(ctx); err != nil {
+	if scope != nil {
+		normalizado := scope.Normalize()
+		if err := normalizado.Validate(); err != nil {
 			return domain.User{}, err
 		}
+		scope = &normalizado
 	}
 
-	u.Role = role
-	if err := u.Validate(); err != nil {
-		return domain.User{}, err
+	if err := s.store.Users().SetAccess(ctx, id, role, scope); err != nil {
+		return domain.User{}, lastAdmin(err)
 	}
-	if err := s.store.Users().Update(ctx, u); err != nil {
-		return domain.User{}, err
-	}
-	return u, nil
+	return s.store.Users().Get(ctx, id)
 }
 
-// DeleteUser remove a conta, recusando o último administrador.
+// DeleteUser remove a conta, recusando o último administrador com escopo
+// total — também no store, pelo mesmo motivo de SetAccess.
 func (s *Service) DeleteUser(ctx context.Context, id int64) error {
-	u, err := s.store.Users().Get(ctx, id)
-	if err != nil {
-		return err
-	}
-	if u.Role == domain.RoleAdmin {
-		if err := s.requireAnotherAdmin(ctx); err != nil {
-			return err
-		}
-	}
-	return s.store.Users().Delete(ctx, id)
+	return lastAdmin(s.store.Users().Delete(ctx, id))
 }
 
-// requireAnotherAdmin confere que sobra alguém administrando.
-func (s *Service) requireAnotherAdmin(ctx context.Context) error {
-	n, err := s.store.Users().CountByRole(ctx, domain.RoleAdmin)
-	if err != nil {
-		return err
-	}
-	if n <= 1 {
+// lastAdmin traduz a recusa do store para o erro deste pacote.
+func lastAdmin(err error) error {
+	if errors.Is(err, store.ErrLastFullAdmin) {
 		return ErrLastAdmin
 	}
-	return nil
+	return err
 }

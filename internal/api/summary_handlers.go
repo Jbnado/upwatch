@@ -25,19 +25,27 @@ const maxBuckets = 500
 // instantaneamente", e afirmar isso sobre o que não se mediu é a forma
 // mais silenciosa de uma ferramenta de vigilância mentir.
 type summaryResponse struct {
-	MonitorID     int64      `json:"monitor_id"`
-	Status        string     `json:"status"`
-	Source        string     `json:"source"`
-	UptimePercent *float64   `json:"uptime_percent"`
-	LatencyP50MS  *float64   `json:"latency_p50_ms"`
-	LatencyP95MS  *float64   `json:"latency_p95_ms"`
-	LatencyP99MS  *float64   `json:"latency_p99_ms"`
-	LastCheckAt   *time.Time `json:"last_check_at"`
-	Up            int        `json:"up"`
-	Degraded      int        `json:"degraded"`
-	Down          int        `json:"down"`
-	Unknown       int        `json:"unknown"`
-	Series        []point    `json:"series"`
+	MonitorID int64 `json:"monitor_id"`
+	// Status é o estado confirmado do monitor, o mesmo do cartão de grupo
+	// e de "Problemas agora". Não é o da janela nem o da última batida:
+	// uma falha ainda não confirmada deixava o monitor fora do ar na lista
+	// e no ar no cartão.
+	Status string `json:"status"`
+	// LastCheckStatus é o resultado da última batida, sem confirmação — a
+	// informação de "acabou de falhar", à parte do estado. Nulo quando
+	// nunca houve batida.
+	LastCheckStatus *string    `json:"last_check_status"`
+	Source          string     `json:"source"`
+	UptimePercent   *float64   `json:"uptime_percent"`
+	LatencyP50MS    *float64   `json:"latency_p50_ms"`
+	LatencyP95MS    *float64   `json:"latency_p95_ms"`
+	LatencyP99MS    *float64   `json:"latency_p99_ms"`
+	LastCheckAt     *time.Time `json:"last_check_at"`
+	Up              int        `json:"up"`
+	Degraded        int        `json:"degraded"`
+	Down            int        `json:"down"`
+	Unknown         int        `json:"unknown"`
+	Series          []point    `json:"series"`
 }
 
 type point struct {
@@ -73,8 +81,10 @@ func (a *API) handleSummaries(w http.ResponseWriter, r *http.Request) {
 		buckets = maxBuckets
 	}
 
-	page, err := a.store.Monitors().List(r.Context(), store.MonitorFilter{
-		Page: store.PageFilter{Limit: store.MaxPageSize},
+	// Todas as páginas: a lista é o painel inteiro, e parar na primeira
+	// página do store sumia com monitores sem avisar que havia mais.
+	monitores, err := a.listAllMonitors(r.Context(), store.MonitorFilter{
+		Groups: viewerFrom(r).monitorSelection(),
 	})
 	if err != nil {
 		writeStoreError(w, err)
@@ -95,19 +105,26 @@ func (a *API) handleSummaries(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	estados, err := a.store.States().All(r.Context())
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
 
-	items := make([]summaryResponse, 0, len(page.Items))
-	for _, m := range page.Items {
+	items := make([]summaryResponse, 0, len(monitores))
+	for _, m := range monitores {
 		s, serie, err := a.summarise(r, m.ID, rng, fonte, buckets)
 		if err != nil {
 			writeStoreError(w, err)
 			return
 		}
+		s.Status = estados[m.ID].Status
+		resp := toSummaryResponse(s, serie)
 		if hb, ok := ultimas[m.ID]; ok {
-			quando := hb.Timestamp
-			s.LastCheckAt = &quando
+			quando, ultimo := hb.Timestamp, hb.Status.String()
+			resp.LastCheckAt, resp.LastCheckStatus = &quando, &ultimo
 		}
-		items = append(items, toSummaryResponse(s, serie))
+		items = append(items, resp)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -162,25 +179,12 @@ func seriesFromRollups(rng store.TimeRange, buckets int, rs []domain.Rollup) []s
 		hb := domain.Heartbeat{
 			MonitorID: r.MonitorID,
 			Timestamp: r.BucketStart,
-			Status:    rollupStatus(r),
+			Status:    summary.BucketStatus(r),
 			LatencyMS: int64(r.LatencyP50MS),
 		}
 		sinteticas = append(sinteticas, hb)
 	}
 	return summary.Series(rng.From, rng.To, buckets, sinteticas)
-}
-
-func rollupStatus(r domain.Rollup) domain.Status {
-	switch {
-	case r.Down > 0:
-		return domain.StatusDown
-	case r.Degraded > 0:
-		return domain.StatusDegraded
-	case r.Up > 0:
-		return domain.StatusUp
-	default:
-		return domain.StatusUnknown
-	}
 }
 
 func toSummaryResponse(s summary.Summary, serie []summary.Point) summaryResponse {

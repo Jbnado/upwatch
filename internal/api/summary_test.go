@@ -225,3 +225,49 @@ func TestSummariesEscolheACamadaPelaJanela(t *testing.T) {
 		}
 	}
 }
+
+// A lista e o cartão do grupo dizem o mesmo estado.
+//
+// A lista lia o estado da última batida, sem confirmação; o cartão e
+// "Problemas agora" liam o estado confirmado. Uma batida com falha ainda
+// não confirmada deixava o mesmo monitor fora do ar na lista e no ar no
+// cartão — e quem olha as duas telas não sabe em qual acreditar. O
+// estado exibido é o confirmado; a última batida vem à parte, como
+// informação.
+func TestSummariesShowTheConfirmedState(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+
+	g := s.criarGrupo(t, "RPA", nil)
+	id := s.createMonitor(t, monitorNoGrupo("bff", &g))
+	s.estado(t, id, domain.StatusUp, epoch.Add(-time.Hour))
+	if err := s.store.WriteHeartbeats(context.Background(), []domain.Heartbeat{{
+		MonitorID: id, Timestamp: epoch.Add(-time.Minute), Status: domain.StatusDown,
+		Message: "timeout", ProbeID: "local",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := s.do(t, http.MethodGet, "/api/v1/summaries", nil)
+	assertStatus(t, resp, http.StatusOK)
+	itens := decode[struct {
+		Items []struct {
+			MonitorID       int64  `json:"monitor_id"`
+			Status          string `json:"status"`
+			LastCheckStatus string `json:"last_check_status"`
+		} `json:"items"`
+	}](t, resp).Items
+	if len(itens) != 1 || itens[0].Status != "up" || itens[0].LastCheckStatus != "down" {
+		t.Fatalf("resumo = %+v, want status up (confirmado) e last_check_status down", itens)
+	}
+
+	resp = s.do(t, http.MethodGet, "/api/v1/groups/summary", nil)
+	assertStatus(t, resp, http.StatusOK)
+	for _, c := range decode[struct {
+		Items []resumoGrupo `json:"items"`
+	}](t, resp).Items {
+		if c.GroupID != nil && *c.GroupID == g && c.Status != itens[0].Status {
+			t.Errorf("cartão = %q, lista = %q", c.Status, itens[0].Status)
+		}
+	}
+}

@@ -20,7 +20,7 @@ type monitorRepo struct {
 const monitorColumns = `
 	id, name, type, target, interval_ms, timeout_ms,
 	confirmation_threshold, degraded_latency_ms, config, parent_id,
-	enabled, tags, created_at, updated_at, rearmed_at, push_token`
+	enabled, tags, created_at, updated_at, rearmed_at, push_token, group_id`
 
 // emptyConfig é o que grava quando o monitor não traz configuração. Nil ou
 // string vazia quebrariam o Unmarshal que o checker faz na leitura.
@@ -43,12 +43,21 @@ func (r *monitorRepo) Create(ctx context.Context, m *domain.Monitor) error {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	m.CreatedAt, m.UpdatedAt, m.RearmedAt = now, now, now
 
+	// INSERT ... SELECT com a existência do grupo na própria instrução.
+	// No SQLite group_id não tem chave estrangeira (ver a migração), e
+	// conferir antes, numa consulta separada, deixava o grupo ser apagado
+	// no meio: o monitor ficava órfão, invisível para todo escopo e fora
+	// de "Sem grupo". O SQLite serializa as escritas, então a condição e a
+	// gravação não se separam. No PostgreSQL a chave estrangeira segura a
+	// corrida que o instantâneo da condição não vê.
 	const q = `
 		INSERT INTO monitor (
 			name, type, target, interval_ms, timeout_ms,
 			confirmation_threshold, degraded_latency_ms, config, parent_id,
-			enabled, tags, created_at, updated_at, rearmed_at, push_token
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+			enabled, tags, created_at, updated_at, rearmed_at, push_token, group_id
+		)
+		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		WHERE ` + groupExists
 
 	id, err := r.db.insertID(ctx, q,
 		m.Name, m.Type.String(), m.Target,
@@ -56,8 +65,12 @@ func (r *monitorRepo) Create(ctx context.Context, m *domain.Monitor) error {
 		m.ConfirmationThreshold, m.DegradedLatency.Milliseconds(),
 		encodeConfig(m.Config), m.ParentID,
 		boolToInt(m.Enabled), tags, toMillis(now), toMillis(now), toMillis(now),
-		nullableToken(m.PushToken),
+		nullableToken(m.PushToken), m.GroupID,
+		m.GroupID, m.GroupID,
 	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("grupo %d: %w", *m.GroupID, store.ErrNotFound)
+	}
 	if err != nil {
 		return translateWriteErr(err)
 	}
@@ -97,6 +110,8 @@ func (r *monitorRepo) Update(ctx context.Context, m domain.Monitor) error {
 	intervalMS := m.Interval.Milliseconds()
 	enabled := boolToInt(m.Enabled)
 
+	// A mesma condição de Create: mover para um grupo apagado no meio do
+	// pedido não grava nada.
 	const q = `
 		UPDATE monitor SET
 			rearmed_at = CASE
@@ -105,8 +120,8 @@ func (r *monitorRepo) Update(ctx context.Context, m domain.Monitor) error {
 			END,
 			name = ?, type = ?, target = ?, interval_ms = ?, timeout_ms = ?,
 			confirmation_threshold = ?, degraded_latency_ms = ?, config = ?, parent_id = ?,
-			enabled = ?, tags = ?, updated_at = ?, push_token = ?
-		WHERE id = ?`
+			enabled = ?, tags = ?, updated_at = ?, push_token = ?, group_id = ?
+		WHERE id = ? AND ` + groupExists
 
 	res, err := r.db.ExecContext(ctx, q,
 		config, intervalMS, enabled, toMillis(now),
@@ -114,12 +129,13 @@ func (r *monitorRepo) Update(ctx context.Context, m domain.Monitor) error {
 		intervalMS, m.Timeout.Milliseconds(),
 		m.ConfirmationThreshold, m.DegradedLatency.Milliseconds(),
 		config, m.ParentID,
-		enabled, tags, toMillis(now), nullableToken(m.PushToken), m.ID,
+		enabled, tags, toMillis(now), nullableToken(m.PushToken), m.GroupID, m.ID,
+		m.GroupID, m.GroupID,
 	)
 	if err != nil {
 		return translateWriteErr(err)
 	}
-	return requireAffected(res, fmt.Sprintf("monitor %d", m.ID))
+	return requireAffected(res, fmt.Sprintf("monitor %d ou o grupo dele", m.ID))
 }
 
 // FindByPushToken devolve o monitor dono do token de push.
@@ -183,6 +199,10 @@ func (r *monitorRepo) List(ctx context.Context, f store.MonitorFilter) (store.Pa
 		conds = append(conds, `tags LIKE ? ESCAPE '\'`)
 		args = append(args, "%\""+escapeLike(f.Tag)+"\"%")
 	}
+	if cond, condArgs := groupCondition("group_id", f.Groups); cond != "" {
+		conds = append(conds, cond)
+		args = append(args, condArgs...)
+	}
 
 	// Pede um a mais que o limite para saber se há próxima página sem
 	// precisar de um COUNT separado.
@@ -236,12 +256,13 @@ func scanMonitor(sc scanner) (domain.Monitor, error) {
 		updatedMS  int64
 		rearmedMS  int64
 		pushToken  sql.NullString
+		groupID    sql.NullInt64
 	)
 
 	err := sc.Scan(
 		&m.ID, &m.Name, &typeName, &m.Target, &intervalMS, &timeoutMS,
 		&m.ConfirmationThreshold, &degradedMS, &configJSON, &parentID,
-		&enabled, &tagsJSON, &createdMS, &updatedMS, &rearmedMS, &pushToken,
+		&enabled, &tagsJSON, &createdMS, &updatedMS, &rearmedMS, &pushToken, &groupID,
 	)
 	if err != nil {
 		return domain.Monitor{}, err
@@ -265,6 +286,10 @@ func scanMonitor(sc scanner) (domain.Monitor, error) {
 	if parentID.Valid {
 		id := parentID.Int64
 		m.ParentID = &id
+	}
+	if groupID.Valid {
+		id := groupID.Int64
+		m.GroupID = &id
 	}
 	if m.Tags, err = decodeTags(tagsJSON); err != nil {
 		return domain.Monitor{}, fmt.Errorf("sqlstore: monitor %d: %w", m.ID, err)
@@ -307,8 +332,15 @@ func requireAffected(res sql.Result, subject string) error {
 	return nil
 }
 
+// groupExists é a condição de gravar um monitor: sem grupo, ou num grupo
+// que existe. Recebe o grupo duas vezes. O CAST é para o PostgreSQL, que
+// não deduz o tipo de um parâmetro que só aparece em "? IS NULL".
+const groupExists = `(CAST(? AS BIGINT) IS NULL OR EXISTS (SELECT 1 FROM monitor_group WHERE id = ?))`
+
 // translateWriteErr converte violação de unicidade do driver em
-// store.ErrConflict, mantendo o erro do banco fora das camadas de cima.
+// store.ErrConflict, e a da chave estrangeira — grupo ou monitor pai que
+// deixou de existir no meio do pedido — em store.ErrNotFound, mantendo o
+// erro do banco fora das camadas de cima.
 func translateWriteErr(err error) error {
 	if err == nil {
 		return nil
@@ -317,7 +349,17 @@ func translateWriteErr(err error) error {
 	if strings.Contains(msg, "unique constraint") || strings.Contains(msg, "duplicate key") {
 		return fmt.Errorf("%w: %s", store.ErrConflict, err)
 	}
+	if isForeignKeyViolation(err) {
+		return fmt.Errorf("grupo ou monitor pai: %w", store.ErrNotFound)
+	}
 	return fmt.Errorf("sqlstore: escrevendo monitor: %w", err)
+}
+
+// isForeignKeyViolation reconhece a recusa da chave estrangeira nos dois
+// bancos: "FOREIGN KEY constraint failed" no SQLite e "violates foreign
+// key constraint" no PostgreSQL.
+func isForeignKeyViolation(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "foreign key constraint")
 }
 
 // escapeLike neutraliza os curingas de um padrão de LIKE.

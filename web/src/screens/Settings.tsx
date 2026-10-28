@@ -5,6 +5,7 @@ import { Alert, Button, Field, Input, Loading, Nothing, TextLink } from "../comp
 import { ago, stamp } from "../lib/format";
 import { navigate } from "../lib/router";
 import { Channels } from "./Channels";
+import { Groups } from "./Groups";
 import { Users } from "./Users";
 
 /** Ajustes: credenciais de acesso programático e troca de senha. */
@@ -13,6 +14,9 @@ export function Settings({ onSignedOut, eu }: { onSignedOut: () => void; eu: Use
   // no servidor — esconder aqui só evita oferecer um botão que devolve
   // "sem permissão".
   const administra = eu.role === "admin";
+  // Canal e página pública afetam todos os grupos, e o servidor só deixa
+  // quem alcança todos alterá-los.
+  const administraTudo = administra && eu.scope.all_groups;
   return (
     <div className="mx-auto flex max-w-2xl flex-col gap-10 px-5 py-6">
       {/* Navegação e título formam um bloco. Soltos no ritmo de 40px que
@@ -25,8 +29,9 @@ export function Settings({ onSignedOut, eu }: { onSignedOut: () => void; eu: Use
         <h1 className="text-title font-semibold tracking-tight">Ajustes</h1>
       </div>
 
-      {administra && <PaginasPublicas />}
-      {administra && <Channels />}
+      {administraTudo && <PaginasPublicas />}
+      {administraTudo && <Channels />}
+      {administra && <Groups />}
       {administra && <Users eu={eu} />}
       {administra && <Tokens />}
       <Password onSignedOut={onSignedOut} />

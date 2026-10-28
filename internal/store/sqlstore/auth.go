@@ -16,21 +16,97 @@ import (
 
 type userRepo struct{ db *db }
 
-const userColumns = `id, username, role, password_hash, created_at, updated_at`
+const userColumns = `id, username, role, password_hash, created_at, updated_at, all_groups`
 
+// Create grava a conta e o escopo numa transação: uma conta gravada sem
+// as concessões apareceria, por um instante, com o escopo zero — que é
+// "todos os grupos".
 func (r *userRepo) Create(ctx context.Context, u *domain.User) error {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	u.CreatedAt, u.UpdatedAt = now, now
+	u.Scope = u.Scope.Normalize()
 
-	id, err := r.db.insertID(ctx, `
-		INSERT INTO app_user (username, role, password_hash, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?)`,
-		u.Username, u.Role.String(), u.PasswordHash, toMillis(now), toMillis(now))
-	if err != nil {
-		return translateAuthErr(err, "usuário")
+	return r.inTx(ctx, func(t *tx) error {
+		id, err := t.insertID(ctx, `
+			INSERT INTO app_user (username, role, password_hash, created_at, updated_at, all_groups)
+			VALUES (?, ?, ?, ?, ?, ?)`,
+			u.Username, u.Role.String(), u.PasswordHash, toMillis(now), toMillis(now),
+			boolToInt(!u.Scope.Restricted))
+		if err != nil {
+			return translateAuthErr(err, "usuário")
+		}
+		if err := writeUserGroups(ctx, t, id, u.Scope); err != nil {
+			return err
+		}
+		u.ID = id
+		return nil
+	})
+}
+
+// inTx roda fn numa transação da conexão do repositório.
+func (r *userRepo) inTx(ctx context.Context, fn func(*tx) error) error {
+	return r.db.inTx(ctx, fn)
+}
+
+// writeUserGroups substitui as concessões da conta.
+func writeUserGroups(ctx context.Context, t *tx, userID int64, s domain.Scope) error {
+	if _, err := t.ExecContext(ctx, `DELETE FROM user_group WHERE user_id = ?`, userID); err != nil {
+		return fmt.Errorf("sqlstore: limpando escopo da conta %d: %w", userID, err)
 	}
-	u.ID = id
+	if !s.Restricted {
+		return nil
+	}
+	for _, g := range s.GroupIDs {
+		if _, err := t.ExecContext(ctx,
+			`INSERT INTO user_group (user_id, group_id) VALUES (?, ?)`, userID, g); err != nil {
+			return fmt.Errorf("sqlstore: gravando escopo da conta %d: %w", userID, err)
+		}
+	}
 	return nil
+}
+
+// loadScopes completa o escopo das contas restritas.
+//
+// Uma consulta para a lista inteira, e não uma por conta.
+func (r *userRepo) loadScopes(ctx context.Context, users []domain.User) error {
+	restritas := map[int64]int{}
+	for i, u := range users {
+		if u.Scope.Restricted {
+			restritas[u.ID] = i
+		}
+	}
+	if len(restritas) == 0 {
+		return nil
+	}
+
+	rows, err := r.db.QueryContext(ctx, `SELECT user_id, group_id FROM user_group ORDER BY user_id, group_id`)
+	if err != nil {
+		return fmt.Errorf("sqlstore: lendo escopos: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var userID, groupID int64
+		if err := rows.Scan(&userID, &groupID); err != nil {
+			return fmt.Errorf("sqlstore: lendo escopo: %w", err)
+		}
+		if i, ok := restritas[userID]; ok {
+			users[i].Scope.GroupIDs = append(users[i].Scope.GroupIDs, groupID)
+		}
+	}
+	return rows.Err()
+}
+
+// loadScope completa o escopo de uma conta.
+func (r *userRepo) loadScope(ctx context.Context, u domain.User, err error) (domain.User, error) {
+	if err != nil || !u.Scope.Restricted {
+		return u, err
+	}
+	contas := []domain.User{u}
+	if err := r.loadScopes(ctx, contas); err != nil {
+		return domain.User{}, err
+	}
+	return contas[0], nil
 }
 
 func (r *userRepo) Get(ctx context.Context, id int64) (domain.User, error) {
@@ -40,7 +116,7 @@ func (r *userRepo) Get(ctx context.Context, id int64) (domain.User, error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.User{}, fmt.Errorf("usuário %d: %w", id, store.ErrNotFound)
 	}
-	return u, err
+	return r.loadScope(ctx, u, err)
 }
 
 func (r *userRepo) GetByUsername(ctx context.Context, username string) (domain.User, error) {
@@ -50,19 +126,97 @@ func (r *userRepo) GetByUsername(ctx context.Context, username string) (domain.U
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.User{}, fmt.Errorf("usuário %q: %w", username, store.ErrNotFound)
 	}
-	return u, err
+	return r.loadScope(ctx, u, err)
 }
 
-func (r *userRepo) Update(ctx context.Context, u domain.User) error {
+// SetPasswordHash grava só a coluna da senha.
+func (r *userRepo) SetPasswordHash(ctx context.Context, id int64, hash string) error {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE app_user SET password_hash = ?, updated_at = ? WHERE id = ?`, hash, toMillis(now), id)
+	if err != nil {
+		return fmt.Errorf("sqlstore: gravando senha da conta %d: %w", id, err)
+	}
+	return requireAffected(res, fmt.Sprintf("usuário %d", id))
+}
+
+// SetAccess grava papel e, quando informado, escopo, sem tocar na senha.
+func (r *userRepo) SetAccess(ctx context.Context, id int64, role domain.Role, scope *domain.Scope) error {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 
-	res, err := r.db.ExecContext(ctx, `
-		UPDATE app_user SET username = ?, role = ?, password_hash = ?, updated_at = ? WHERE id = ?`,
-		u.Username, u.Role.String(), u.PasswordHash, toMillis(now), u.ID)
+	return r.inTx(ctx, func(t *tx) error {
+		antes, err := lockFullAdmins(ctx, t)
+		if err != nil {
+			return err
+		}
+
+		var res sql.Result
+		if scope == nil {
+			res, err = t.ExecContext(ctx,
+				`UPDATE app_user SET role = ?, updated_at = ? WHERE id = ?`, role.String(), toMillis(now), id)
+		} else {
+			res, err = t.ExecContext(ctx,
+				`UPDATE app_user SET role = ?, all_groups = ?, updated_at = ? WHERE id = ?`,
+				role.String(), boolToInt(!scope.Normalize().Restricted), toMillis(now), id)
+		}
+		if err != nil {
+			return fmt.Errorf("sqlstore: gravando acesso da conta %d: %w", id, err)
+		}
+		if err := requireAffected(res, fmt.Sprintf("usuário %d", id)); err != nil {
+			return err
+		}
+		if scope != nil {
+			if err := writeUserGroups(ctx, t, id, scope.Normalize()); err != nil {
+				return err
+			}
+		}
+		return keepFullAdmin(ctx, t, antes)
+	})
+}
+
+// lockFullAdmins trava as contas que administram tudo até o fim da
+// transação e devolve quantas são.
+//
+// Um UPDATE que não muda nada, e não SELECT ... FOR UPDATE, porque vale
+// igual nos dois bancos: no PostgreSQL trava as linhas, e quem chega
+// depois espera e relê já com a mudança de quem chegou antes; no SQLite
+// pega a trava de escrita, que serializa as transações inteiras. Sem a
+// trava, no PostgreSQL dois rebaixamentos simultâneos contariam cada um
+// o outro ainda como administrador, e os dois gravariam.
+func lockFullAdmins(ctx context.Context, t *tx) (int64, error) {
+	res, err := t.ExecContext(ctx,
+		`UPDATE app_user SET updated_at = updated_at WHERE role = ? AND all_groups = 1`,
+		domain.RoleAdmin.String())
 	if err != nil {
-		return translateAuthErr(err, "usuário")
+		return 0, fmt.Errorf("sqlstore: travando administradores: %w", err)
 	}
-	return requireAffected(res, fmt.Sprintf("usuário %d", u.ID))
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("sqlstore: contando administradores: %w", err)
+	}
+	return n, nil
+}
+
+// keepFullAdmin recusa a escrita que levou de algum para nenhum
+// administrador de escopo total.
+//
+// "De algum para nenhum", e não "nenhum": antes do primeiro acesso não há
+// administrador, e mexer em outras contas não pode depender disso.
+func keepFullAdmin(ctx context.Context, t *tx, antes int64) error {
+	if antes == 0 {
+		return nil
+	}
+	var depois int64
+	err := t.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM app_user WHERE role = ? AND all_groups = 1`,
+		domain.RoleAdmin.String()).Scan(&depois)
+	if err != nil {
+		return fmt.Errorf("sqlstore: contando administradores: %w", err)
+	}
+	if depois == 0 {
+		return store.ErrLastFullAdmin
+	}
+	return nil
 }
 
 func (r *userRepo) Count(ctx context.Context) (int, error) {
@@ -79,10 +233,15 @@ func scanUser(sc scanner) (domain.User, error) {
 		roleName  string
 		createdMS int64
 		updatedMS int64
+		allGroups int64
 	)
-	if err := sc.Scan(&u.ID, &u.Username, &roleName, &u.PasswordHash, &createdMS, &updatedMS); err != nil {
+	if err := sc.Scan(&u.ID, &u.Username, &roleName, &u.PasswordHash, &createdMS, &updatedMS, &allGroups); err != nil {
 		return domain.User{}, err
 	}
+	// Só o valor 1 alcança tudo. Qualquer outra coisa vinda do banco é
+	// restrita: no caso em que não se sabe o que está gravado, negar é o
+	// desfecho seguro.
+	u.Scope.Restricted = allGroups != 1
 
 	// Papel desconhecido falha alto em vez de virar admin por omissão:
 	// no caso em que não se sabe o que está gravado, conceder acesso é o
@@ -113,18 +272,37 @@ func (r *userRepo) List(ctx context.Context) ([]domain.User, error) {
 		}
 		out = append(out, u)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Fecha antes da segunda consulta: com o pool pequeno do SQLite, manter
+	// o cursor aberto enquanto se pede outra conexão pode esperar à toa.
+	rows.Close()
+
+	if err := r.loadScopes(ctx, out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // Delete remove a conta. As sessões saem em cascata pelo schema, então
 // quem for removido perde o acesso na hora, e não no vencimento do
 // cookie.
 func (r *userRepo) Delete(ctx context.Context, id int64) error {
-	res, err := r.db.ExecContext(ctx, `DELETE FROM app_user WHERE id = ?`, id)
-	if err != nil {
-		return fmt.Errorf("sqlstore: apagando conta %d: %w", id, err)
-	}
-	return requireAffected(res, fmt.Sprintf("conta %d", id))
+	return r.inTx(ctx, func(t *tx) error {
+		antes, err := lockFullAdmins(ctx, t)
+		if err != nil {
+			return err
+		}
+		res, err := t.ExecContext(ctx, `DELETE FROM app_user WHERE id = ?`, id)
+		if err != nil {
+			return fmt.Errorf("sqlstore: apagando conta %d: %w", id, err)
+		}
+		if err := requireAffected(res, fmt.Sprintf("conta %d", id)); err != nil {
+			return err
+		}
+		return keepFullAdmin(ctx, t, antes)
+	})
 }
 
 // CountByRole conta as contas de um papel.

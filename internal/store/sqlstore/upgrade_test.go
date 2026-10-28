@@ -24,6 +24,12 @@ import (
 
 const sharedToken = "token-compartilhado-por-engano"
 
+// prePushSignalVersion é a última versão antes da 00005. O teste desce
+// até ela pelo número, e não um passo: com migrações depois da 00005, um
+// passo só desfaria a última, e o banco "antigo" já teria as colunas do
+// sinal.
+const prePushSignalVersion = 4
+
 // seedBeforePushSignal volta o schema para antes da 00005 e grava o que
 // uma instalação daquela versão teria: dois monitores push que, por
 // engano, compartilham o token, um HTTP, e o último sinal do primeiro.
@@ -32,8 +38,8 @@ const sharedToken = "token-compartilhado-por-engano"
 // depender da tradução de marcadores, que mora no store.
 func seedBeforePushSignal(t *testing.T, s *sqlstore.Store) (first, second int64) {
 	t.Helper()
-	if err := s.Rollback(); err != nil {
-		t.Fatalf("Rollback returned unexpected error: %v", err)
+	if err := s.RollbackTo(prePushSignalVersion); err != nil {
+		t.Fatalf("RollbackTo returned unexpected error: %v", err)
 	}
 
 	ctx := context.Background()

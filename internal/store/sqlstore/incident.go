@@ -161,6 +161,10 @@ func (r *incidentRepo) List(ctx context.Context, f store.IncidentFilter) (store.
 	if f.OnlyOpen {
 		conds = append(conds, "resolved_at IS NULL")
 	}
+	if cond, condArgs := groupCondition("group_id", f.Groups); cond != "" {
+		conds = append(conds, "monitor_id IN (SELECT id FROM monitor WHERE "+cond+")")
+		args = append(args, condArgs...)
+	}
 	args = append(args, f.Page.Limit+1)
 
 	q := `SELECT ` + incidentColumns + ` FROM incident WHERE ` +
@@ -283,6 +287,9 @@ func (r *channelRepo) Link(ctx context.Context, monitorID, channelID int64) erro
 		ON CONFLICT (monitor_id, channel_id) DO NOTHING`
 
 	if _, err := r.db.ExecContext(ctx, q, monitorID, channelID); err != nil {
+		if isForeignKeyViolation(err) {
+			return fmt.Errorf("canal %d ou monitor %d: %w", channelID, monitorID, store.ErrNotFound)
+		}
 		return fmt.Errorf("sqlstore: vinculando canal %d ao monitor %d: %w", channelID, monitorID, err)
 	}
 	return nil

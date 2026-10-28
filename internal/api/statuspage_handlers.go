@@ -106,9 +106,21 @@ func (a *API) handleGetStatusPage(w http.ResponseWriter, r *http.Request) {
 	if grupos == nil {
 		grupos = []domain.StatusPageGroup{}
 	}
-	if comps == nil {
-		comps = []domain.StatusPageComponent{}
+	visiveis, err := a.visibleMonitorIDs(r.Context(), viewerFrom(r))
+	if err != nil {
+		writeStoreError(w, err)
+		return
 	}
+	// A página é de todos, mas o componente que aponta para um monitor de
+	// fora do escopo não aparece: o id dele bastaria para confirmar que o
+	// monitor existe.
+	visivel := make([]domain.StatusPageComponent, 0, len(comps))
+	for _, c := range comps {
+		if visiveis == nil || visiveis[c.MonitorID] {
+			visivel = append(visivel, c)
+		}
+	}
+	comps = visivel
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"page": p, "groups": grupos, "components": comps,
@@ -317,6 +329,32 @@ func (a *API) handleRemoveComponent(w http.ResponseWriter, r *http.Request) {
 
 // ---------- relatos ----------
 
+// trimAnnouncements tira dos relatos os componentes fora do escopo.
+//
+// O relato em si é público — sai na página de estado —, mas a lista de
+// ids afetados confirmaria a existência de monitores que a conta não
+// alcança.
+func (a *API) trimAnnouncements(w http.ResponseWriter, r *http.Request, ans []domain.Announcement) bool {
+	visiveis, err := a.visibleMonitorIDs(r.Context(), viewerFrom(r))
+	if err != nil {
+		writeStoreError(w, err)
+		return false
+	}
+	if visiveis == nil {
+		return true
+	}
+	for i := range ans {
+		var dentro []int64
+		for _, id := range ans[i].Components {
+			if visiveis[id] {
+				dentro = append(dentro, id)
+			}
+		}
+		ans[i].Components = dentro
+	}
+	return true
+}
+
 type announcementRequest struct {
 	Title      string  `json:"title"`
 	Impact     string  `json:"impact"`
@@ -346,6 +384,9 @@ func (a *API) handleListAnnouncements(w http.ResponseWriter, r *http.Request) {
 	}
 	if page.Items == nil {
 		page.Items = []domain.Announcement{}
+	}
+	if !a.trimAnnouncements(w, r, page.Items) {
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": page.Items, "has_more": page.HasMore})
 }
@@ -408,8 +449,12 @@ func (a *API) handleGetAnnouncement(w http.ResponseWriter, r *http.Request) {
 	if updates == nil {
 		updates = []domain.AnnouncementUpdate{}
 	}
+	um := []domain.Announcement{an}
+	if !a.trimAnnouncements(w, r, um) {
+		return
+	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"announcement": an, "updates": updates})
+	writeJSON(w, http.StatusOK, map[string]any{"announcement": um[0], "updates": updates})
 }
 
 func (a *API) handleUpdateAnnouncement(w http.ResponseWriter, r *http.Request) {

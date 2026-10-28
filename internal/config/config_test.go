@@ -228,3 +228,47 @@ func TestBooleanFromEnvironment(t *testing.T) {
 		t.Error("SecureCookies = false, want the environment value to be applied")
 	}
 }
+
+// O token de métricas vem do ambiente, que é onde segredo de container
+// costuma morar. Sem ele, /metrics continua aberto como sempre foi.
+func TestMetricsTokenComesFromEnvironment(t *testing.T) {
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MetricsToken != "" {
+		t.Errorf("MetricsToken = %q sem configuração, want vazio", cfg.MetricsToken)
+	}
+
+	t.Setenv("UPWATCH_METRICS_TOKEN", "segredo-do-prometheus")
+	cfg, err = config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MetricsToken != "segredo-do-prometheus" {
+		t.Errorf("MetricsToken = %q", cfg.MetricsToken)
+	}
+}
+
+// A restrição de alvo interno vem ligada: o checker conecta a partir do
+// servidor, e quem instala sem ler a documentação não pode ganhar, de
+// brinde, uma sonda na própria rede para cada administrador de grupo.
+// Desligar é escolha explícita de quem opera.
+func TestRestrictPrivateTargetsIsOnByDefault(t *testing.T) {
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.RestrictPrivateTargets {
+		t.Error("RestrictPrivateTargets = false sem configuração, want true")
+	}
+
+	t.Setenv("UPWATCH_RESTRICT_PRIVATE_TARGETS", "false")
+	cfg, err = config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RestrictPrivateTargets {
+		t.Error("RestrictPrivateTargets = true com a variável em false")
+	}
+}

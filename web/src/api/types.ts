@@ -26,6 +26,8 @@ export type Monitor = {
   degraded_latency_ms: number;
   config?: Record<string, unknown>;
   parent_id?: number;
+  /** Grupo folha do monitor; null é "Sem grupo". */
+  group_id?: number | null;
   enabled: boolean;
   tags: string[];
   created_at: string;
@@ -45,6 +47,8 @@ export type MonitorInput = {
   config?: Record<string, unknown>;
   enabled?: boolean;
   tags?: string[];
+  /** O PUT sobrescreve: omitir move o monitor para "Sem grupo". */
+  group_id?: number | null;
 };
 
 /**
@@ -105,11 +109,33 @@ export type Rollup = {
 
 export type Role = "admin" | "viewer";
 
+/**
+ * Sobre quais grupos o papel vale. Conceder um sistema concede os
+ * ambientes dele. A barreira está no servidor; aqui é só o que mostrar.
+ */
+export type Scope = {
+  all_groups: boolean;
+  group_ids: number[];
+};
+
+/** Grupo de monitores: Sistema → Ambiente, dois níveis no máximo. */
+export type Group = {
+  id: number;
+  name: string;
+  slug: string;
+  parent_id: number | null;
+  /** Nome completo, como "RPA / prod". */
+  path: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export type User = {
   id: number;
   username: string;
   /** admin administra; viewer só lê. */
   role: Role;
+  scope: Scope;
   created_at: string;
   updated_at: string;
 };

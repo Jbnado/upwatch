@@ -142,6 +142,10 @@ type Monitor struct {
 	// não exigir migração depois.
 	ParentID *int64 `json:"parent_id,omitempty"`
 
+	// GroupID é o grupo folha do monitor. Nulo é "Sem grupo", que é onde
+	// toda instalação anterior aos grupos cai na migração.
+	GroupID *int64 `json:"group_id,omitempty"`
+
 	Enabled bool     `json:"enabled"`
 	Tags    []string `json:"tags,omitempty"`
 

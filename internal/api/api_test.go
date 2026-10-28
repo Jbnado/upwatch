@@ -47,6 +47,12 @@ type server struct {
 
 func newServer(t *testing.T) *server {
 	t.Helper()
+	return newServerWith(t, nil)
+}
+
+// newServerWith permite ajustar as opções da API antes de subir.
+func newServerWith(t *testing.T, ajuste func(*api.Options)) *server {
+	t.Helper()
 
 	st, err := sqlstore.OpenSQLite(filepath.Join(t.TempDir(), "upwatch.db"))
 	if err != nil {
@@ -66,12 +72,17 @@ func newServer(t *testing.T) *server {
 		t.Fatalf("NewRegistry returned unexpected error: %v", err)
 	}
 
-	handler := api.New(api.Options{
+	opts := api.Options{
 		Store:    st,
 		Auth:     authSvc,
 		Checkers: reg,
 		Clock:    fake,
-	})
+		Resolver: resolvedorDosTestes,
+	}
+	if ajuste != nil {
+		ajuste(&opts)
+	}
+	handler := api.New(opts)
 
 	ts := httptest.NewServer(handler)
 	t.Cleanup(ts.Close)
