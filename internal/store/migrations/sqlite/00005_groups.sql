@@ -73,6 +73,20 @@ CREATE TABLE state_transition (
 
 CREATE INDEX idx_state_transition_monitor ON state_transition (monitor_id, at);
 
+-- O histórico nasce com a mudança que levou ao estado atual quem já está
+-- fora do ar ou degradado, com o since do estado confirmado e a causa da
+-- queda em curso. Sem isso, a aba Eventos do monitor caído desde antes da
+-- atualização abria vazia, sem dizer desde quando — justamente a pergunta
+-- de quem abre o monitor durante a queda. O estado anterior não é
+-- conhecido, e fica "unknown" em vez de inventado.
+INSERT INTO state_transition (monitor_id, from_status, to_status, at, cause)
+SELECT s.monitor_id, 'unknown', s.status, s.since,
+       COALESCE((SELECT i.cause FROM incident i
+                 WHERE i.monitor_id = s.monitor_id AND i.resolved_at IS NULL
+                 ORDER BY i.started_at DESC LIMIT 1), '')
+FROM monitor_state s
+WHERE s.status IN ('down', 'degraded') AND s.since > 0;
+
 -- +goose Down
 DROP TABLE state_transition;
 DROP TABLE group_channel;

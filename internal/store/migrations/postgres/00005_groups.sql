@@ -46,6 +46,16 @@ CREATE TABLE state_transition (
 
 CREATE INDEX idx_state_transition_monitor ON state_transition (monitor_id, at);
 
+-- O mesmo semeio do SQLite, pela mesma razão: o monitor já fora do ar
+-- ganha a mudança que o levou até ali.
+INSERT INTO state_transition (monitor_id, from_status, to_status, at, cause)
+SELECT s.monitor_id, 'unknown', s.status, s.since,
+       COALESCE((SELECT i.cause FROM incident i
+                 WHERE i.monitor_id = s.monitor_id AND i.resolved_at IS NULL
+                 ORDER BY i.started_at DESC LIMIT 1), '')
+FROM monitor_state s
+WHERE s.status IN ('down', 'degraded') AND s.since > 0;
+
 -- +goose Down
 DROP TABLE state_transition;
 DROP TABLE group_channel;

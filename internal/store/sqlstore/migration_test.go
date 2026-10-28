@@ -37,6 +37,14 @@ func seedLegacy(t *testing.T, s *sqlstore.Store) {
 		`INSERT INTO monitor_channel (monitor_id, channel_id) VALUES (1, 1)`,
 		`INSERT INTO incident (monitor_id, started_at, resolved_at, cause)
 		 VALUES (1, 1000, 2000, 'connection refused')`,
+		`INSERT INTO monitor_state (monitor_id, status, candidate, consecutive, since)
+		 VALUES (1, 'up', 'up', 0, 2000)`,
+		// Um monitor fora do ar desde antes da atualização.
+		`INSERT INTO monitor (id, name, type, target, interval_ms, timeout_ms, created_at, updated_at)
+		 VALUES (2, 'fora', 'http', 'https://exemplo.com/fora', 60000, 10000, 1, 1)`,
+		`INSERT INTO monitor_state (monitor_id, status, candidate, consecutive, since)
+		 VALUES (2, 'down', 'down', 3, 5000)`,
+		`INSERT INTO incident (monitor_id, started_at, cause) VALUES (2, 5000, 'timeout')`,
 	} {
 		if _, err := s.DB().Exec(q); err != nil {
 			t.Fatalf("seeding the legacy schema: %v\n%s", err, q)
@@ -72,7 +80,7 @@ func checkLegacyKept(t *testing.T, s store.Store) {
 	}
 
 	incidentes, err := s.Incidents().List(ctx, store.IncidentFilter{})
-	if err != nil || len(incidentes.Items) != 1 {
+	if err != nil || len(incidentes.Items) != 2 {
 		t.Errorf("the incident history was lost: %v %+v", err, incidentes.Items)
 	}
 
@@ -81,6 +89,18 @@ func checkLegacyKept(t *testing.T, s store.Store) {
 	})
 	if err != nil || len(beats) != 1 || beats[0].Message != "connection refused" {
 		t.Errorf("the heartbeat history was lost: %v %+v", err, beats)
+	}
+
+	// O histórico de mudanças nasce com a migração. Sem semeá-lo, o
+	// monitor que já estava fora do ar abria a aba Eventos vazia — sem
+	// dizer desde quando —, justamente quando é isso que se procura.
+	mudancas, err := s.Transitions().List(ctx, store.TransitionFilter{MonitorID: 2})
+	if err != nil || len(mudancas) != 1 || mudancas[0].To.String() != "down" ||
+		!mudancas[0].At.Equal(time.UnixMilli(5000)) || mudancas[0].Cause != "timeout" {
+		t.Errorf("the monitor already down got no state change: %v %+v", err, mudancas)
+	}
+	if mudancas, _ := s.Transitions().List(ctx, store.TransitionFilter{MonitorID: 1}); len(mudancas) != 0 {
+		t.Errorf("the monitor that is up got a made-up state change: %+v", mudancas)
 	}
 }
 
