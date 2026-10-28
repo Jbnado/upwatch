@@ -246,6 +246,46 @@ O endereço do alvo nunca vira rótulo. Além de descrever a topologia
 interna, endereço em rótulo é cardinalidade alta — é assim que se derruba
 um Prometheus.
 
+## Push
+
+No monitor push quem bate é o serviço: um cron, um worker, um agente
+atrás de VPN. O sinal vai para `/api/v1/push/{token}`, por `GET` ou
+`POST`, sem sessão — o token no caminho é a credencial.
+
+```bash
+# Estou vivo (o mesmo que status=up)
+curl -fsS https://upwatch.exemplo.com/api/v1/push/SEU_TOKEN
+
+# Sei o que deu errado, e digo
+curl -fsS "https://upwatch.exemplo.com/api/v1/push/SEU_TOKEN?status=down&msg=fila+sem+worker"
+
+# Ou em JSON, com a duração medida pela própria tarefa
+curl -fsS -H "Content-Type: application/json"   -d '{"status":"degraded","msg":"fila com 5 mil itens","latency_ms":1840}'   https://upwatch.exemplo.com/api/v1/push/SEU_TOKEN
+```
+
+`status` aceita `up`, `down` e `degraded`. Um `down` não abre incidente na
+hora: passa pela confirmação de N falhas como qualquer outra verificação.
+`msg` é cortada em 200 caracteres, vai para o incidente e para o aviso, e
+nunca aparece na página pública.
+
+Por padrão o sinal é esperado a cada intervalo, mais a folga. Para rotinas
+de horário fixo, informe uma agenda cron de 5 campos e o fuso:
+
+```json
+{ "token": "...", "schedule": "2 9,18 * * *", "timezone": "America/Sao_Paulo", "grace_period_seconds": 600 }
+```
+
+Com agenda, o monitor só cai quando falta o sinal de uma execução prevista
+até o fim da folga — o intervalo de 15h entre 18:02 e 09:02 não vira
+alarme. O fuso é obrigatório porque rotinas são agendadas no horário local
+e o horário de verão desloca a execução. O detalhe do monitor mostra a
+próxima execução esperada.
+
+Um monitor que nunca recebeu sinal fica "aguardando" só durante a primeira
+janela depois de criado (com agenda, até a primeira execução prevista mais
+a folga). Depois disso cai: uma sonda que nunca subiu é justamente a falha
+que ninguém perceberia sozinho.
+
 ## Desenvolvimento
 
 ```bash
