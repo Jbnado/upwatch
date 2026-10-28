@@ -639,3 +639,33 @@ func TestMonitorParentOutsideTheScopeIsNotFound(t *testing.T) {
 	corpo["parent_id"] = c.dentro
 	assertStatus(t, adm.do(t, http.MethodPost, "/api/v1/monitors", corpo), http.StatusCreated)
 }
+
+// O nome de um grupo é único entre os irmãos, e os irmãos de um sistema
+// são todos os outros sistemas — inclusive os que a conta restrita não
+// enxerga. Renomear a Retaguarda para "SistemaSecreto" respondia 409, e o
+// conflito confirmava que o sistema escondido existe. Qualquer recusa
+// que dependa do nome serve de oráculo, então a decisão não olha o nome:
+// quem não enxerga todos os irmãos não renomeia o grupo, e a resposta é a
+// mesma para nome livre e ocupado.
+func TestScopedAdminCannotProbeHiddenSiblingNames(t *testing.T) {
+	c := novoCenarioEscopo(t)
+	adm := c.s.como(c.retAdmin)
+
+	for _, nome := range []string{"SistemaSecreto", "Nome que ninguém usa"} {
+		t.Run(nome, func(t *testing.T) {
+			assertStatus(t, adm.do(t, http.MethodPut, "/api/v1/groups/"+itoa(c.ret),
+				map[string]any{"name": nome}), http.StatusForbidden)
+		})
+	}
+
+	// Reenviar o grupo sem mudar nome nem slug não toca o espaço de nomes
+	// dos irmãos, e continua permitido.
+	assertStatus(t, adm.do(t, http.MethodPut, "/api/v1/groups/"+itoa(c.ret),
+		map[string]any{"name": "Retaguarda"}), http.StatusOK)
+
+	// Dentro do sistema, a conta enxerga todos os irmãos: renomear um
+	// ambiente continua permitido, e o conflito com um irmão visível não
+	// revela nada.
+	assertStatus(t, adm.do(t, http.MethodPut, "/api/v1/groups/"+itoa(c.retProd),
+		map[string]any{"name": "producao", "parent_id": c.ret}), http.StatusOK)
+}

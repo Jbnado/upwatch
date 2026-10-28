@@ -411,7 +411,19 @@ func (a *API) checkMonitorParent(ctx context.Context, v viewer, parentID *int64)
 // Grupo de topo é um sistema novo, fora de qualquer escopo restrito, e só
 // quem alcança tudo cria. Levar um ambiente para o topo também, porque o
 // tiraria do sistema pelo qual a conta o alcança.
+//
+// Renomear exige enxergar todos os irmãos. O nome é único entre eles, e
+// os irmãos de um sistema são os outros sistemas, inclusive os que a
+// conta não vê: o conflito ao renomear a Retaguarda para "SistemaSecreto"
+// confirmava que ele existe. Qualquer recusa que dependa do nome é
+// oráculo, então a decisão não olha o nome — só se a conta enxerga o
+// espaço onde ele vive. Dentro de um sistema concedido a conta vê todos
+// os ambientes, e ali renomear continua livre.
 func (v viewer) checkGroupPlacement(g domain.Group, anterior *domain.Group) error {
+	renomeia := anterior != nil && (g.Name != anterior.Name || g.Slug != anterior.Slug)
+	if renomeia && !v.seesSiblingsUnder(anterior.ParentID) {
+		return errScopeTooWide
+	}
 	if g.ParentID == nil {
 		viraTopo := anterior == nil || anterior.ParentID != nil
 		if viraTopo && !v.access.All() {
@@ -421,6 +433,15 @@ func (v viewer) checkGroupPlacement(g domain.Group, anterior *domain.Group) erro
 		return &domain.ValidationError{Field: "parent_id", Msg: "grupo pai não encontrado"}
 	}
 	return v.groups.CheckPlacement(g)
+}
+
+// seesSiblingsUnder informa se a conta enxerga todos os grupos sob o pai
+// dado (nulo é o topo).
+func (v viewer) seesSiblingsUnder(parentID *int64) bool {
+	if parentID == nil {
+		return v.access.All()
+	}
+	return v.access.Group(*parentID)
 }
 
 // checkGrant decide se a conta pode conceder o escopo a outra.
