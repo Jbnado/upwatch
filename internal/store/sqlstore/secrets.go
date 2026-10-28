@@ -319,6 +319,77 @@ func (s *Store) RotateSecretKey(ctx context.Context, newKey secretbox.Key) error
 	return nil
 }
 
+// ForgetSecrets apaga as credenciais cifradas e o sentinela da chave, sem
+// precisar dela, e devolve quantos valores apagou.
+//
+// É a saída para a chave perdida. O valor cifrado sem a chave é ruído, e
+// mantê-lo só impediria a partida; o resto do banco — monitores,
+// histórico, incidentes, páginas, contas — fica intacto. A próxima subida
+// encontra um banco sem nada cifrado, aceita uma chave nova, e cada
+// credencial é digitada de novo pela interface. O token do push esquecido
+// sai também da coluna da busca: o hash dele faria o /push aceitar um
+// token que a interface não mostra mais.
+func ForgetSecrets(driver, dsn string) (int, error) {
+	s, err := connect(driver, dsn)
+	if err != nil {
+		return 0, err
+	}
+	defer s.Close()
+	if err := s.migrate(); err != nil {
+		return 0, err
+	}
+
+	ctx := context.Background()
+	erased := 0
+	forget := func(t *tx, table string, rows []storedConfig, fieldsOf func(string) secretbox.Fields) error {
+		for _, r := range rows {
+			config, n, err := secretbox.ForgetSealed(json.RawMessage(r.config), fieldsOf(r.typ))
+			if err != nil {
+				return fmt.Errorf("sqlstore: %s %d: %w", table, r.id, err)
+			}
+			if n == 0 {
+				continue
+			}
+			erased += n
+			push := r.pushToken
+			if push.Valid {
+				typ, _ := domain.ParseMonitorType(r.typ)
+				if checker.PushTokenOf(domain.Monitor{Type: typ, Config: config}) == "" {
+					push = sql.NullString{}
+				}
+			}
+			q, args := `UPDATE `+table+` SET config = ? WHERE id = ?`, []any{string(config), r.id}
+			if table == monitorTable {
+				q, args = `UPDATE monitor SET config = ?, push_token = ? WHERE id = ?`, []any{string(config), push, r.id}
+			}
+			if _, err := t.ExecContext(ctx, q, args...); err != nil {
+				return fmt.Errorf("sqlstore: apagando as credenciais de %s %d: %w", table, r.id, err)
+			}
+		}
+		return nil
+	}
+
+	err = s.db.inTx(ctx, func(t *tx) error {
+		monitors, err := readConfigs(ctx, t, `SELECT id, type, config, push_token FROM monitor`, true)
+		if err != nil {
+			return err
+		}
+		if err := forget(t, monitorTable, monitors, monitorFields); err != nil {
+			return err
+		}
+		channels, err := readConfigs(ctx, t, `SELECT id, type, config FROM notification_channel`, false)
+		if err != nil {
+			return err
+		}
+		if err := forget(t, channelTable, channels, notifier.SecretFields); err != nil {
+			return err
+		}
+		_, err = t.ExecContext(ctx, `DELETE FROM secret_key_check`)
+		return err
+	})
+	return erased, err
+}
+
 // sealForWrite cifra a configuração a gravar no registro dado.
 func (d *db) sealForWrite(config string, fields secretbox.Fields, table string, id int64) (string, error) {
 	if fields.Empty() {

@@ -152,3 +152,28 @@ func TestOpenConfigRefusesSecretMovedAround(t *testing.T) {
 		t.Error("a header value opened under another header name")
 	}
 }
+
+// Sem a chave, o valor cifrado é ruído: esquecê-lo é trocá-lo por vazio,
+// que a interface mostra como "sem senha". O que não está cifrado — os
+// campos comuns e um segredo que ainda estava em texto puro — fica, porque
+// ainda vale.
+func TestForgetSealedErasesOnlyCipheredValues(t *testing.T) {
+	box := mustBox(t, mustKey(t))
+	sealed, _ := box.SealConfig(json.RawMessage(`{"method":"GET","basic_auth_pass":"x","headers":{"Authorization":"y"}}`), httpLike, "monitor", 1)
+	mixed := strings.Replace(string(sealed), `"method":"GET"`, `"method":"GET","Basic_Auth_Pass":"texto puro"`, 1)
+
+	got, n, err := secretbox.ForgetSealed(json.RawMessage(mixed), httpLike)
+	if err != nil {
+		t.Fatalf("ForgetSealed returned unexpected error: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("ForgetSealed erased %d values, want 2", n)
+	}
+	m := decode(t, got)
+	if m["basic_auth_pass"] != "" || m["headers"].(map[string]any)["Authorization"] != "" {
+		t.Errorf("ForgetSealed = %s, want the ciphered values emptied", got)
+	}
+	if m["method"] != "GET" || m["Basic_Auth_Pass"] != "texto puro" {
+		t.Errorf("ForgetSealed = %s, want what is not ciphered kept", got)
+	}
+}

@@ -49,9 +49,18 @@ func newKey(t *testing.T) secretbox.Key {
 	return k
 }
 
-// backend abre, e reabre, um mesmo banco com a chave dada.
+// backend é um banco que se abre e se reabre com a chave dada.
 type backend struct {
-	open func(t *testing.T, keys secretbox.Source) (*sqlstore.Store, error)
+	driver, dsn string
+}
+
+func (b backend) open(t *testing.T, keys secretbox.Source) (*sqlstore.Store, error) {
+	t.Helper()
+	s, err := sqlstore.Open(b.driver, b.dsn, keys)
+	if s != nil {
+		t.Cleanup(func() { _ = s.Close() })
+	}
+	return s, err
 }
 
 func (b backend) mustOpen(t *testing.T, keys secretbox.Source) *sqlstore.Store {
@@ -68,14 +77,7 @@ func (b backend) mustOpen(t *testing.T, keys secretbox.Source) *sqlstore.Store {
 // prová-la.
 func eachBackend(t *testing.T, run func(t *testing.T, b backend)) {
 	t.Run("sqlite", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "upwatch.db")
-		run(t, backend{open: func(t *testing.T, keys secretbox.Source) (*sqlstore.Store, error) {
-			s, err := sqlstore.OpenSQLite(path, keys)
-			if s != nil {
-				t.Cleanup(func() { _ = s.Close() })
-			}
-			return s, err
-		}})
+		run(t, backend{driver: "sqlite", dsn: filepath.Join(t.TempDir(), "upwatch.db")})
 	})
 	t.Run("postgres", func(t *testing.T) {
 		dsn := os.Getenv(postgresDSNEnv)
@@ -89,13 +91,7 @@ func eachBackend(t *testing.T, run func(t *testing.T, b backend)) {
 			t.Fatalf("creating the schema returned unexpected error: %v", err)
 		}
 		t.Cleanup(func() { _ = dropSchema(dsn, schema) })
-		run(t, backend{open: func(t *testing.T, keys secretbox.Source) (*sqlstore.Store, error) {
-			s, err := sqlstore.OpenPostgres(withSearchPath(dsn, schema), keys)
-			if s != nil {
-				t.Cleanup(func() { _ = s.Close() })
-			}
-			return s, err
-		}})
+		run(t, backend{driver: "postgres", dsn: withSearchPath(dsn, schema)})
 	})
 }
 
@@ -408,4 +404,61 @@ func TestRotateSecretKeyRefusesTheSameKey(t *testing.T) {
 	if err := s.RotateSecretKey(context.Background(), testKey); err == nil {
 		t.Error("rotating to the key in use was accepted")
 	}
+}
+
+// Chave perdida não tem volta: as credenciais cifradas com ela se foram.
+// O resto do banco não pode ir junto. Esquecer as credenciais apaga só os
+// valores cifrados e o sentinela; a instalação volta a subir com uma
+// chave nova, monitores e canais no lugar, e a credencial é digitada de
+// novo pela interface. O token do push sai da busca também: um hash sem
+// o token correspondente na configuração faria o /push aceitar um token
+// que a interface não mostra mais.
+func TestForgetSecretsRecoversFromALostKey(t *testing.T) {
+	eachBackend(t, func(t *testing.T, b backend) {
+		ctx := context.Background()
+		lost := b.mustOpen(t, keysOf(newKey(t)))
+		redis := createRedis(t, lost, "cache", "senha-perdida")
+		channel := createNtfy(t, lost, "token-perdido")
+		push := domain.Monitor{
+			Name: "cron", Type: domain.MonitorPush, Interval: 60e9, Timeout: 10e9, ConfirmationThreshold: 3,
+			Enabled: true, Config: json.RawMessage(`{"token":"token-do-push-perdido"}`), PushToken: "token-do-push-perdido",
+		}
+		if err := lost.Monitors().Create(ctx, &push); err != nil {
+			t.Fatalf("Create returned unexpected error: %v", err)
+		}
+		_ = lost.Close()
+
+		n, err := sqlstore.ForgetSecrets(b.driver, b.dsn)
+		if err != nil {
+			t.Fatalf("ForgetSecrets returned unexpected error: %v", err)
+		}
+		if n != 3 {
+			t.Errorf("ForgetSecrets erased %d values, want 3", n)
+		}
+
+		s := b.mustOpen(t, keysOf(newKey(t)))
+		got, err := s.Monitors().Get(ctx, redis.ID)
+		if err != nil {
+			t.Fatalf("Get returned unexpected error: %v", err)
+		}
+		if got.Name != "cache" || got.Target != "redis:6379" || strings.Contains(string(got.Config), "enc:") {
+			t.Errorf("monitor after forgetting = %+v (%s), want it kept without the password", got, got.Config)
+		}
+		gotChannel, err := s.Channels().Get(ctx, channel.ID)
+		if err != nil || !strings.Contains(string(gotChannel.Config), `"topic":"plantao"`) || strings.Contains(string(gotChannel.Config), "enc:") {
+			t.Errorf("channel after forgetting = (%s, %v), want it kept without the token", gotChannel.Config, err)
+		}
+		if _, err := s.Monitors().FindByPushToken(ctx, "token-do-push-perdido"); err == nil {
+			t.Error("the forgotten push token still finds its monitor")
+		}
+
+		// A credencial digitada de novo é cifrada com a chave nova.
+		got.Config = json.RawMessage(`{"password":"senha-nova"}`)
+		if err := s.Monitors().Update(ctx, got); err != nil {
+			t.Fatalf("Update returned unexpected error: %v", err)
+		}
+		if again, err := s.Monitors().Get(ctx, redis.ID); err != nil || !strings.Contains(string(again.Config), "senha-nova") {
+			t.Errorf("monitor after typing the password again = (%s, %v)", again.Config, err)
+		}
+	})
 }

@@ -171,3 +171,19 @@ func isObject(raw json.RawMessage) bool {
 	var top map[string]json.RawMessage
 	return json.Unmarshal(raw, &top) == nil
 }
+
+// ForgetSealed troca por vazio cada segredo cifrado da configuração e
+// conta quantos eram. É o que resta quando a chave se perdeu: sem ela, o
+// valor cifrado não volta, e mantê-lo só impediria a partida. O que está
+// em texto puro fica, porque ainda vale.
+func ForgetSealed(raw json.RawMessage, f Fields) (json.RawMessage, int, error) {
+	n := 0
+	out, err := walk(raw, f, func(_, v string) (string, bool, error) {
+		if !IsSealed(v) {
+			return v, false, nil
+		}
+		n++
+		return "", true, nil
+	})
+	return out, n, err
+}

@@ -51,10 +51,12 @@ func main() {
 }
 
 func run() error {
-	// Subcomando de manutenção, fora do fluxo do servidor.
-	if len(os.Args) > 1 && os.Args[1] == "rotate-secret-key" {
-		setupLogging()
-		return rotateSecretKey(os.Args[2:])
+	// Subcomandos de manutenção, fora do fluxo do servidor.
+	if len(os.Args) > 1 {
+		if cmd, ok := maintenance[os.Args[1]]; ok {
+			setupLogging()
+			return cmd(os.Args[2:])
+		}
 	}
 
 	configPath := flag.String("config", os.Getenv("UPWATCH_CONFIG"),
@@ -108,6 +110,13 @@ func run() error {
 	)
 
 	return app.run(ctx, cfg)
+}
+
+// maintenance são os subcomandos que mexem no banco com o servidor
+// parado.
+var maintenance = map[string]func([]string) error{
+	"rotate-secret-key": rotateSecretKey,
+	"forget-secrets":    forgetSecrets,
 }
 
 // application reúne as peças em execução.

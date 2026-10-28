@@ -228,3 +228,32 @@ func TestPostgresStartupWithoutKeyRefuses(t *testing.T) {
 		t.Errorf("error %q does not say how to generate a key", err)
 	}
 }
+
+// Chave perdida: o comando esquece as credenciais cifradas e a instalação
+// volta a subir, com uma chave nova, sem perder monitores. Apagar
+// credenciais não acontece por engano: sem --yes, nada muda.
+func TestForgetSecretsCommand(t *testing.T) {
+	cfg := sqliteConfig(t)
+	id := seedRedis(t, cfg.Database.DSN, generate(t))
+	t.Setenv("UPWATCH_DB_DSN", cfg.Database.DSN)
+
+	if err := forgetSecrets(nil); err == nil || !strings.Contains(err.Error(), "--yes") {
+		t.Fatalf("forget-secrets without --yes = %v, want a refusal naming --yes", err)
+	}
+	if _, err := openStore(cfg); !errors.Is(err, secretbox.ErrKeyMissing) {
+		t.Fatalf("the refused command changed the database: %v", err)
+	}
+
+	if err := forgetSecrets([]string{"--yes"}); err != nil {
+		t.Fatalf("forget-secrets --yes returned unexpected error: %v", err)
+	}
+	st, err := openStore(cfg)
+	if err != nil {
+		t.Fatalf("starting after forgetting returned unexpected error: %v", err)
+	}
+	defer st.Close()
+	m, err := st.Monitors().Get(context.Background(), id)
+	if err != nil || m.Name != "cache" || strings.Contains(string(m.Config), "enc:") {
+		t.Errorf("monitor after forgetting = (%+v, %v), want it kept without the password", m, err)
+	}
+}

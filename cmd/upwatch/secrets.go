@@ -164,3 +164,41 @@ func readKeyFile(path string) (secretbox.Key, error) {
 	}
 	return k, nil
 }
+
+// forgetSecrets é o comando `upwatch forget-secrets`: a saída para a
+// chave perdida. Apaga as credenciais cifradas e o sentinela; o resto do
+// banco fica, e cada credencial é digitada de novo pela interface depois
+// de subir com uma chave nova.
+//
+// Exige --yes: com a chave certa à mão, o comando só destruiria o que
+// ainda dava para ler.
+func forgetSecrets(args []string) error {
+	fs := flag.NewFlagSet("forget-secrets", flag.ContinueOnError)
+	configPath := fs.String("config", os.Getenv("UPWATCH_CONFIG"), "caminho do arquivo de configuração (opcional)")
+	yes := fs.Bool("yes", false, "confirma que a chave se perdeu e que as credenciais cifradas podem ser apagadas")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if !*yes {
+		return errors.New("forget-secrets: isto apaga todas as credenciais cifradas de monitores e canais, " +
+			"que precisarão ser digitadas de novo; rode só se a chave se perdeu, e confirme com --yes")
+	}
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return err
+	}
+	n, err := sqlstore.ForgetSecrets(cfg.Database.Driver, cfg.Database.DSN)
+	if err != nil {
+		return err
+	}
+	slog.Warn("credenciais cifradas apagadas; suba com a chave nova e digite-as de novo pela interface",
+		"valores_apagados", n)
+	if path := autoKeyPath(cfg); path != "" {
+		if _, err := os.Stat(path); err == nil {
+			slog.Warn("a chave gerada ao lado do banco ainda existe e não abre o que foi apagado; "+
+				"se ela não é a nova, apague-a para a próxima subida gerar outra", "arquivo", path)
+		}
+	}
+	return nil
+}

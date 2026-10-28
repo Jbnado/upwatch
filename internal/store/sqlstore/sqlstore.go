@@ -40,6 +40,19 @@ type Store struct {
 // deixaria as demais conexões do pool sem eles, e a cascata de chaves
 // estrangeiras silenciosamente desligada.
 func OpenSQLite(path string, keys secretbox.Source) (*Store, error) {
+	s, err := connectSQLite(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.start(keys); err != nil {
+		_ = s.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+// connectSQLite abre a conexão, sem migrar nem destravar as credenciais.
+func connectSQLite(path string) (*Store, error) {
 	params := url.Values{}
 	// Sem isto ON DELETE CASCADE não age e o histórico de um monitor
 	// apagado vira lixo órfão. SQLite chega com a checagem desligada.
@@ -63,12 +76,7 @@ func OpenSQLite(path string, keys secretbox.Source) (*Store, error) {
 		return nil, fmt.Errorf("sqlstore: abrindo %q: %w", path, err)
 	}
 
-	s := &Store{db: &db{sql: conn, dialect: migrations.SQLite}, dialect: migrations.SQLite}
-	if err := s.start(keys); err != nil {
-		_ = conn.Close()
-		return nil, err
-	}
-	return s, nil
+	return &Store{db: &db{sql: conn, dialect: migrations.SQLite}, dialect: migrations.SQLite}, nil
 }
 
 // OpenPostgres abre a conexão com PostgreSQL e aplica as migrations.
@@ -82,6 +90,20 @@ func OpenSQLite(path string, keys secretbox.Source) (*Store, error) {
 // resolve — marcador de parâmetro e descoberta do id gerado — vivem em
 // db.go, na borda, e não espalhadas pelos repositórios.
 func OpenPostgres(dsn string, keys secretbox.Source) (*Store, error) {
+	s, err := connectPostgres(dsn)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.start(keys); err != nil {
+		_ = s.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+// connectPostgres abre a conexão, sem migrar nem destravar as
+// credenciais.
+func connectPostgres(dsn string) (*Store, error) {
 	conn, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("sqlstore: abrindo postgres: %w", err)
@@ -105,12 +127,7 @@ func OpenPostgres(dsn string, keys secretbox.Source) (*Store, error) {
 		return nil, fmt.Errorf("sqlstore: conectando ao postgres: %w", err)
 	}
 
-	s := &Store{db: &db{sql: conn, dialect: migrations.Postgres}, dialect: migrations.Postgres}
-	if err := s.start(keys); err != nil {
-		_ = conn.Close()
-		return nil, err
-	}
-	return s, nil
+	return &Store{db: &db{sql: conn, dialect: migrations.Postgres}, dialect: migrations.Postgres}, nil
 }
 
 const (
@@ -132,8 +149,25 @@ func Open(driver, dsn string, keys secretbox.Source) (*Store, error) {
 	case string(migrations.Postgres):
 		return OpenPostgres(dsn, keys)
 	default:
-		return nil, fmt.Errorf("sqlstore: driver desconhecido %q; use sqlite ou postgres", driver)
+		return nil, unknownDriver(driver)
 	}
+}
+
+// connect abre a conexão do driver configurado, sem migrar nem destravar
+// as credenciais. Serve a quem precisa mexer no banco sem a chave.
+func connect(driver, dsn string) (*Store, error) {
+	switch driver {
+	case string(migrations.SQLite):
+		return connectSQLite(dsn)
+	case string(migrations.Postgres):
+		return connectPostgres(dsn)
+	default:
+		return nil, unknownDriver(driver)
+	}
+}
+
+func unknownDriver(driver string) error {
+	return fmt.Errorf("sqlstore: driver desconhecido %q; use sqlite ou postgres", driver)
 }
 
 // start migra o schema e destrava as credenciais. Nenhuma das duas
