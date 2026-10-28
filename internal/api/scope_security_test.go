@@ -28,7 +28,7 @@ import (
 
 // segredos são os textos que só existem fora do escopo. Qualquer um deles
 // numa resposta é vazamento.
-var segredos = []string{"segredo-rpa", "segredo-solto", "SistemaSecreto", "ambiente-secreto", "mensagem-secreta", "outro-total"}
+var segredos = []string{"segredo-rpa", "segredo-solto", "SistemaSecreto", "ambiente-secreto", "mensagem-secreta", "outro-total", "pager-diretoria"}
 
 // cenarioEscopo é a instalação de referência da issue: dois sistemas, e
 // contas restritas a um deles.
@@ -44,7 +44,10 @@ type cenarioEscopo struct {
 	foraAgrupado, foraSolto, dentro int64
 
 	contaTotal, contaRestrita int64
-	canal, pagina, relato     int64
+	pagina, relato            int64
+	// canal só avisa sobre o que está fora do escopo; canalDentro avisa
+	// sobre o grupo da Retaguarda.
+	canal, canalDentro int64
 }
 
 func (s *server) como(c *http.Cookie) *server {
@@ -106,10 +109,15 @@ func novoCenarioEscopo(t *testing.T) *cenarioEscopo {
 	c.dentro = s.createMonitor(t, monitorNoGrupo("bff", &c.retProd))
 
 	resp := s.do(t, http.MethodPost, "/api/v1/channels", map[string]any{
-		"name": "canal", "type": "webhook", "config": map[string]any{"url": "https://exemplo.com/hook"},
+		"name": "pager-diretoria", "type": "webhook", "config": map[string]any{"url": "https://exemplo.com/hook"},
 	})
 	assertStatus(t, resp, http.StatusCreated)
 	c.canal = decode[idResp](t, resp).ID
+	resp = s.do(t, http.MethodPost, "/api/v1/channels", map[string]any{
+		"name": "aviso-retaguarda", "type": "webhook", "config": map[string]any{"url": "https://exemplo.com/ret"},
+	})
+	assertStatus(t, resp, http.StatusCreated)
+	c.canalDentro = decode[idResp](t, resp).ID
 
 	// Histórico do que está fora: batidas, mudança de estado e incidente,
 	// para as listagens terem o que vazar.
@@ -142,6 +150,7 @@ func novoCenarioEscopo(t *testing.T) *cenarioEscopo {
 	for _, rota := range []string{
 		"/api/v1/monitors/" + itoa(c.foraAgrupado) + "/channels/" + itoa(c.canal),
 		"/api/v1/groups/" + itoa(c.rpa) + "/channels/" + itoa(c.canal),
+		"/api/v1/groups/" + itoa(c.retProd) + "/channels/" + itoa(c.canalDentro),
 	} {
 		assertStatus(t, s.do(t, http.MethodPut, rota, nil), http.StatusNoContent)
 	}
@@ -199,6 +208,9 @@ const (
 	porMonitor
 	// porGrupo tem um grupo no caminho. Fora do escopo responde 404.
 	porGrupo
+	// porCanal tem um canal no caminho. Canal que não avisa sobre nada do
+	// escopo responde 404: o nome e o destino dele dizem quem existe fora.
+	porCanal
 	// porConta tem uma conta no caminho. Conta com escopo maior que o de
 	// quem pede responde 404.
 	porConta
@@ -242,7 +254,7 @@ var rotas = map[string]classe{
 	"GET /api/v1/summaries":                                   listagem,
 	"GET /api/v1/monitors":                                    listagem,
 	"GET /api/v1/channels":                                    listagem,
-	"GET /api/v1/channels/{id}":                               listagem,
+	"GET /api/v1/channels/{id}":                               porCanal,
 	"GET /api/v1/incidents":                                   listagem,
 	"GET /api/v1/status-pages":                                listagem,
 	"GET /api/v1/status-pages/{id}":                           listagem,
@@ -378,6 +390,13 @@ func TestScopedAccountGets404OutsideItsScope(t *testing.T) {
 					})
 				}
 			}
+		case porCanal:
+			for conta, cookie := range map[string]*http.Cookie{"observador": c.retViewer, "admin": c.retAdmin} {
+				t.Run(chave+" "+conta, func(t *testing.T) {
+					resp := c.s.como(cookie).do(t, metodo, c.concreto(padrao, 0, 0), nil)
+					assertStatus(t, resp, http.StatusNotFound)
+				})
+			}
 		case porConta:
 			t.Run(chave, func(t *testing.T) {
 				// A conta de escopo total está fora do alcance de quem só
@@ -397,11 +416,15 @@ func TestScopedAccountReachesItsOwnScope(t *testing.T) {
 
 	for chave, cl := range rotas {
 		metodo, padrao := separar(chave)
-		if metodo != http.MethodGet || (cl != porMonitor && cl != porGrupo) {
+		if metodo != http.MethodGet || (cl != porMonitor && cl != porGrupo && cl != porCanal) {
 			continue
 		}
 		t.Run(chave, func(t *testing.T) {
-			resp := c.s.como(c.retViewer).do(t, metodo, c.concreto(padrao, c.dentro, c.retProd), nil)
+			caminho := c.concreto(padrao, c.dentro, c.retProd)
+			if cl == porCanal {
+				caminho = strings.ReplaceAll(padrao, "{id}", itoa(c.canalDentro))
+			}
+			resp := c.s.como(c.retViewer).do(t, metodo, caminho, nil)
 			assertStatus(t, resp, http.StatusOK)
 		})
 	}
@@ -486,13 +509,14 @@ func TestScopedListingsDoNotLeak(t *testing.T) {
 func TestScopedListingsStillShowTheScope(t *testing.T) {
 	c := novoCenarioEscopo(t)
 
-	for _, caminho := range []string{"/api/v1/monitors", "/api/v1/summaries", "/api/v1/problems", "/api/v1/groups/summary"} {
+	for _, caminho := range []string{"/api/v1/monitors", "/api/v1/summaries", "/api/v1/problems", "/api/v1/groups/summary", "/api/v1/channels"} {
 		t.Run(caminho, func(t *testing.T) {
 			resp := c.s.como(c.retViewer).do(t, http.MethodGet, caminho, nil)
 			assertStatus(t, resp, http.StatusOK)
 			corpo := readBody(t, resp)
 			if !strings.Contains(corpo, `"monitor_id":`+itoa(c.dentro)) &&
 				!strings.Contains(corpo, `"id":`+itoa(c.dentro)) &&
+				!strings.Contains(corpo, `"aviso-retaguarda"`) &&
 				!strings.Contains(corpo, `"group_id":`+itoa(c.retProd)) {
 				t.Fatalf("a listagem perdeu o que está no escopo: %s", corpo)
 			}

@@ -39,8 +39,10 @@ func (a *API) handleListChannelTypes(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": notifier.Types()})
 }
 
+// handleListChannels devolve os canais que a conta enxerga (ver
+// visibleChannels).
 func (a *API) handleListChannels(w http.ResponseWriter, r *http.Request) {
-	canais, err := a.store.Channels().List(r.Context())
+	canais, err := a.visibleChannels(r.Context(), viewerFrom(r))
 	if err != nil {
 		writeStoreError(w, err)
 		return

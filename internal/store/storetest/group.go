@@ -34,6 +34,7 @@ func groupCases() []conformanceCase {
 
 		{"ChannelGroupLinkRoundTrips", testChannelGroupLinkRoundTrips},
 		{"ChannelLinkToMissingReturnsNotFound", testChannelLinkToMissingReturnsNotFound},
+		{"ChannelListForSelectsByLinks", testChannelListForSelectsByLinks},
 		{"ChannelDestinationsIncludeGroupAndParent", testChannelDestinationsIncludeGroupAndParent},
 		{"ChannelDestinationsCoverFutureMonitors", testChannelDestinationsCoverFutureMonitors},
 		{"ChannelDestinationsSkipDisabled", testChannelDestinationsSkipDisabled},
@@ -477,6 +478,87 @@ func testChannelLinkToMissingReturnsNotFound(t *testing.T, newStore Factory) {
 			t.Errorf("%s: err = %v, want ErrNotFound", nome, err)
 		}
 	}
+}
+
+// ListFor devolve os canais que avisam sobre algo da seleção: vinculados
+// a um monitor dos grupos escolhidos, ou ao próprio grupo. É a listagem
+// de canais de quem tem escopo — o canal que só avisa sobre os outros diz,
+// pelo nome e pelo destino, quem existe fora.
+func testChannelListForSelectsByLinks(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	rpa := mustCreateGroup(t, s, "RPA", nil)
+	prod := mustCreateGroup(t, s, "prod", &rpa.ID)
+	ret := mustCreateGroup(t, s, "Retaguarda", nil)
+	noProd := mustCreateMonitorIn(t, s, "bff", &prod.ID)
+	naRet := mustCreateMonitorIn(t, s, "erp", &ret.ID)
+	solto := mustCreateMonitorIn(t, s, "solto", nil)
+
+	doMonitor := mustCreateChannel(t, s, "do-monitor")
+	doSistema := mustCreateChannel(t, s, "do-sistema")
+	daRet := mustCreateChannel(t, s, "da-ret")
+	doSolto := mustCreateChannel(t, s, "do-solto")
+	mustCreateChannel(t, s, "de-ninguem")
+	// Desligado continua listado: quem administra precisa vê-lo para
+	// religar.
+	desligado := mustCreateChannel(t, s, "desligado")
+	desligado.Enabled = false
+	if err := s.Channels().Update(ctx, desligado); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, l := range []struct{ monitor, canal int64 }{
+		{noProd, doMonitor.ID}, {noProd, desligado.ID}, {naRet, daRet.ID}, {solto, doSolto.ID},
+	} {
+		if err := s.Channels().Link(ctx, l.monitor, l.canal); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Channels().LinkGroup(ctx, rpa.ID, doSistema.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	nomes := func(sel store.GroupSelection) []string {
+		t.Helper()
+		canais, err := s.Channels().ListFor(ctx, sel)
+		if err != nil {
+			t.Fatalf("ListFor(%+v) returned unexpected error: %v", sel, err)
+		}
+		out := []string{}
+		for _, c := range canais {
+			out = append(out, c.Name)
+		}
+		return out
+	}
+
+	casos := []struct {
+		nome string
+		sel  store.GroupSelection
+		quer []string
+	}{
+		{"só o ambiente", store.GroupSelection{IDs: []int64{prod.ID}}, []string{"do-monitor", "desligado"}},
+		{"sistema e ambiente", store.GroupSelection{IDs: []int64{rpa.ID, prod.ID}}, []string{"do-monitor", "do-sistema", "desligado"}},
+		{"sem grupo", store.GroupSelection{Ungrouped: true}, []string{"do-solto"}},
+		{"seleção vazia", store.GroupSelection{}, []string{}},
+	}
+	for _, c := range casos {
+		if got := nomes(c.sel); !sameStrings(got, c.quer) {
+			t.Errorf("%s: ListFor = %v, want %v", c.nome, got, c.quer)
+		}
+	}
+}
+
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // Canal do grupo e canal do sistema valem para o monitor, junto do canal

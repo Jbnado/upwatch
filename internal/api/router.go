@@ -212,7 +212,7 @@ func (a *API) routes() http.Handler {
 
 			t.handle(http.MethodGet, "/channel-types", policyAccount, a.handleListChannelTypes)
 			t.handle(http.MethodGet, "/channels", policyFiltered, a.handleListChannels)
-			t.handle(http.MethodGet, "/channels/{id}", policyFiltered, a.handleGetChannel)
+			t.handle(http.MethodGet, "/channels/{id}", policyChannel, a.handleGetChannel)
 
 			t.handle(http.MethodGet, "/incidents", policyFiltered, a.handleListIncidents)
 

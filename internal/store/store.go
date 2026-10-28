@@ -243,6 +243,12 @@ type ChannelRepo interface {
 	Update(ctx context.Context, c domain.Channel) error
 	Delete(ctx context.Context, id int64) error
 	List(ctx context.Context) ([]domain.Channel, error)
+	// ListFor devolve, em ordem de id, os canais que avisam sobre algo da
+	// seleção: vinculados a um monitor dos grupos escolhidos ou ao próprio
+	// grupo. Inclui os desligados, como List. É a listagem de quem tem
+	// escopo: o canal que só avisa sobre os outros revela, pelo nome e pelo
+	// destino, o que existe fora.
+	ListFor(ctx context.Context, sel GroupSelection) ([]domain.Channel, error)
 
 	// Link e Unlink definem quais canais avisam sobre qual monitor. Link
 	// devolve ErrNotFound se o canal ou o monitor não existir.

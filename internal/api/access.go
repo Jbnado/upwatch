@@ -118,6 +118,9 @@ const (
 	// policyMonitorParam: {monitorID} é um monitor, que precisa estar no
 	// escopo.
 	policyMonitorParam
+	// policyChannel: {id} é um canal, que precisa avisar sobre algo do
+	// escopo.
+	policyChannel
 )
 
 // scopeGuard aplica a política declarada pela rota.
@@ -152,6 +155,9 @@ func (a *API) scopeGuard(next http.Handler) http.Handler {
 		}
 		if err == nil && p&policyUser != 0 {
 			err = a.guardUser(ctx, v, chi.URLParam(r, "id"))
+		}
+		if err == nil && p&policyChannel != 0 {
+			err = a.guardChannel(ctx, v, chi.URLParam(r, "id"))
 		}
 		if err == nil && p&policyMonitorParam != 0 {
 			ctx, err = a.guardMonitor(ctx, v, chi.URLParam(r, "monitorID"))
@@ -245,6 +251,36 @@ func guardGroup(v viewer, raw string) error {
 		return errOutOfScope
 	}
 	return nil
+}
+
+// guardChannel esconde o canal que não avisa sobre nada do escopo.
+func (a *API) guardChannel(ctx context.Context, v viewer, raw string) error {
+	id, ok := parseParam(raw)
+	if !ok || v.access.All() {
+		return nil
+	}
+	canais, err := a.visibleChannels(ctx, v)
+	if err != nil {
+		return err
+	}
+	for _, c := range canais {
+		if c.ID == id {
+			return nil
+		}
+	}
+	return errOutOfScope
+}
+
+// visibleChannels devolve os canais que a conta enxerga.
+//
+// Para quem tem escopo, só os vinculados a monitores ou grupos dele. O
+// canal é global, mas o nome e o destino de um canal que só avisa sobre
+// os outros dizem quem existe fora — "pager-diretoria" já é informação.
+func (a *API) visibleChannels(ctx context.Context, v viewer) ([]domain.Channel, error) {
+	if v.access.All() {
+		return a.store.Channels().List(ctx)
+	}
+	return a.store.Channels().ListFor(ctx, *v.monitorSelection())
 }
 
 // guardUser esconde a conta que enxerga mais que quem pede: alterá-la

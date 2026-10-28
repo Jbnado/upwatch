@@ -182,6 +182,32 @@ func (r *channelRepo) UnlinkGroup(ctx context.Context, groupID, channelID int64)
 	return nil
 }
 
+// ListFor devolve os canais vinculados a monitores dos grupos selecionados
+// ou aos próprios grupos.
+func (r *channelRepo) ListFor(ctx context.Context, sel store.GroupSelection) ([]domain.Channel, error) {
+	doMonitor, argsMonitor := groupCondition("m.group_id", &sel)
+	doGrupo, argsGrupo := groupCondition("gc.group_id", &sel)
+
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT `+channelColumns+`
+		FROM notification_channel
+		WHERE id IN (
+			SELECT mc.channel_id FROM monitor_channel mc
+			JOIN monitor m ON m.id = mc.monitor_id
+			WHERE `+doMonitor+`
+			UNION
+			SELECT gc.channel_id FROM group_channel gc
+			WHERE `+doGrupo+`
+		)
+		ORDER BY id`, append(argsMonitor, argsGrupo...)...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlstore: listando canais do escopo: %w", err)
+	}
+	defer rows.Close()
+
+	return collectChannels(rows)
+}
+
 // ForGroup devolve os canais habilitados vinculados direto ao grupo.
 func (r *channelRepo) ForGroup(ctx context.Context, groupID int64) ([]domain.Channel, error) {
 	rows, err := r.db.QueryContext(ctx, `
