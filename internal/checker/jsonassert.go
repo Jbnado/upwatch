@@ -43,10 +43,15 @@ var opSymbols = map[string]string{
 	opContains: "contém", opExists: "existe", opAbsent: "ausente",
 }
 
-// maxShownValue é quanto de um valor entra na causa. A causa vai para
-// chat e webhook de terceiros; um campo que traz o documento inteiro não
-// pode despejá-lo lá.
+// maxShownValue é quanto do valor esperado entra na causa. A causa vai
+// para chat e webhook de terceiros; um "contains" com um parágrafo
+// inteiro não pode despejá-lo lá.
 const maxShownValue = 80
+
+// maxEchoedExpected é até onde um texto esperado é curto o bastante para
+// a causa de eq e ne dizer só "diferente do esperado". Acima disso a
+// causa mostra o tamanho do encontrado, que ajuda a ver o que mudou.
+const maxEchoedExpected = 40
 
 // compiledAssertion é a asserção já interpretada, para o corpo de cada
 // verificação não repetir o trabalho do cadastro.
@@ -161,21 +166,27 @@ func (a compiledAssertion) evaluate(doc any) string {
 		return fmt.Sprintf("%s existe, esperado ausente", a.Path)
 	case opEq:
 		if typeName(found) != typeName(a.expected) {
-			return fmt.Sprintf("%s = %s (%s), %s (%s): tipos diferentes",
-				a.Path, show(found), typeName(found), a.expectation(), typeName(a.expected))
+			return fmt.Sprintf("%s = %s, %s (%s): tipos diferentes",
+				a.Path, describeTyped(found), a.expectation(), typeName(a.expected))
 		}
 		if jsonEqual(found, a.expected) {
 			return ""
+		}
+		if a.echoesExpected(found) {
+			return fmt.Sprintf("%s diferente do esperado, %s", a.Path, a.expectation())
 		}
 	case opNe:
 		if !jsonEqual(found, a.expected) {
 			return ""
 		}
+		if a.echoesExpected(found) {
+			return fmt.Sprintf("%s igual ao valor recusado, %s", a.Path, a.expectation())
+		}
 	case opLt, opLte, opGt, opGte:
 		n, isNum := found.(json.Number)
 		if !isNum {
-			return fmt.Sprintf("%s = %s (%s), %s: comparação só entre números",
-				a.Path, show(found), typeName(found), a.expectation())
+			return fmt.Sprintf("%s = %s, %s: comparação só entre números",
+				a.Path, describeTyped(found), a.expectation())
 		}
 		if holdsOrdering(a.Op, compareNumbers(n, a.expected.(json.Number))) {
 			return ""
@@ -183,14 +194,50 @@ func (a compiledAssertion) evaluate(doc any) string {
 	case opContains:
 		holds, applicable := contains(found, a.expected)
 		if !applicable {
-			return fmt.Sprintf("%s = %s (%s), %s: contains vale para texto ou lista",
-				a.Path, show(found), typeName(found), a.expectation())
+			return fmt.Sprintf("%s = %s, %s: contains vale para texto ou lista",
+				a.Path, describeTyped(found), a.expectation())
 		}
 		if holds {
 			return ""
 		}
 	}
-	return fmt.Sprintf("%s = %s, %s", a.Path, show(found), a.expectation())
+	return fmt.Sprintf("%s = %s, %s", a.Path, describe(found), a.expectation())
+}
+
+// echoesExpected diz se a causa de eq ou ne sobre um texto pode se
+// resumir a "diferente do esperado": o esperado curto já diz tudo, e o
+// encontrado — talvez um token — fica de fora.
+func (a compiledAssertion) echoesExpected(found any) bool {
+	_, foundText := found.(string)
+	want, wantText := a.expected.(string)
+	return foundText && wantText && utf8.RuneCountInString(want) <= maxEchoedExpected
+}
+
+// describe escreve o valor encontrado para a causa. A causa vai para chat
+// e webhook de terceiros, e o campo vigiado pode ser um token ou um
+// e-mail: texto aparece só como tamanho, e lista e objeto, que podem
+// conter texto, só como contagem. Número, booleano e null não carregam
+// segredo e são mostrados, porque "lag = 340" poupa abrir o endpoint.
+func describe(v any) string {
+	switch x := v.(type) {
+	case string:
+		return fmt.Sprintf("texto de %d caracteres", utf8.RuneCountInString(x))
+	case []any:
+		return fmt.Sprintf("lista de %d itens", len(x))
+	case map[string]any:
+		return fmt.Sprintf("objeto com %d chaves", len(x))
+	}
+	return show(v)
+}
+
+// describeTyped é describe com o tipo explícito, para causas em que o
+// tipo é o problema; texto, lista e objeto já o dizem na descrição.
+func describeTyped(v any) string {
+	switch v.(type) {
+	case string, []any, map[string]any:
+		return describe(v)
+	}
+	return fmt.Sprintf("%s (%s)", show(v), typeName(v))
 }
 
 // expectation escreve o lado esperado da causa: "esperado < 100".

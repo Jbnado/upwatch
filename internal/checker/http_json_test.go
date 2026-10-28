@@ -136,7 +136,13 @@ func TestHTTPJSONAssertionFailureNamesAssertionAndFoundValue(t *testing.T) {
 		want string
 	}{
 		{"numérica", assertion("$.queue_lag", "lt", 100), "$.queue_lag = 340, esperado < 100"},
-		{"igualdade", assertion("$.db", "eq", "down"), `$.db = "up", esperado = "down"`},
+		// Texto encontrado nunca é ecoado: ver o teste de vazamento abaixo.
+		{"igualdade de texto", assertion("$.db", "eq", "down"), `$.db diferente do esperado, esperado = "down"`},
+		{"diferença de texto", assertion("$.db", "ne", "up"), `$.db igual ao valor recusado, esperado ≠ "up"`},
+		{"contains em texto", assertion("$.status", "contains", "erro"), `$.status = texto de 2 caracteres, esperado contém "erro"`},
+		{"contains em lista", assertion("$.regions", "contains", "eu-west-1"), `$.regions = lista de 2 itens, esperado contém "eu-west-1"`},
+		{"booleano", assertion("$.ready", "eq", false), "$.ready = true, esperado = false"},
+		{"nulo", assertion("$.version", "ne", nil), "$.version = null, esperado ≠ null"},
 		{"ausente", assertion("$.cache", "exists"), "$.cache não existe"},
 		{"ausente com operador", assertion("$.cache", "eq", "up"), `$.cache não existe, esperado = "up"`},
 		{"presente com absent", assertion("$.queue_lag", "absent"), "$.queue_lag existe, esperado ausente"},
@@ -206,14 +212,13 @@ func TestHTTPJSONAssertionsAllMustHold(t *testing.T) {
 	}
 }
 
-// O valor encontrado vai para o aviso, que vai para chat e webhook de
-// terceiros. Uma asserção sobre um campo que traz o documento inteiro não
-// pode despejá-lo lá — nem estourar o limite de tamanho do destino.
-func TestHTTPJSONAssertionTruncatesFoundValue(t *testing.T) {
-	big := strings.Repeat("x", 10_000)
-	url := serveJSON(t, fmt.Sprintf(`{"dump":%q}`, big))
+// O valor esperado também vai para o aviso, e ele vem do cadastro sem
+// limite de tamanho. Um "contains" com um parágrafo inteiro não pode
+// despejá-lo no canal nem estourar o limite de tamanho do destino.
+func TestHTTPJSONAssertionTruncatesShownValue(t *testing.T) {
+	url := serveJSON(t, `{"dump":"curto"}`)
 
-	got := checkAssertions(t, url, assertion("$.dump", "eq", "curto"))
+	got := checkAssertions(t, url, assertion("$.dump", "contains", strings.Repeat("x", 10_000)))
 
 	if got.Status != domain.StatusDown {
 		t.Fatalf("Status = %v, want %v", got.Status, domain.StatusDown)
@@ -232,12 +237,45 @@ func TestHTTPJSONAssertionTruncationKeepsValidUTF8(t *testing.T) {
 	// Um caractere de um byte na frente desalinha os de dois bytes, para
 	// qualquer corte por byte cair no meio de um deles.
 	big := "a" + strings.Repeat("ç", 4_000)
-	url := serveJSON(t, fmt.Sprintf(`{"dump":%q}`, big))
+	url := serveJSON(t, `{"dump":"curto"}`)
 
-	got := checkAssertions(t, url, assertion("$.dump", "eq", "curto"))
+	got := checkAssertions(t, url, assertion("$.dump", "contains", big))
 
 	if !utf8.ValidString(got.Message) {
 		t.Errorf("Message is not valid UTF-8: %q", got.Message)
+	}
+}
+
+// A causa vai para chat e webhook de terceiros, e o campo vigiado pode
+// ser um token ou um e-mail. Texto encontrado aparece só como tipo e
+// tamanho, em qualquer operador e também dentro de listas e objetos;
+// números, booleanos e null não carregam segredo e continuam visíveis,
+// porque "lag = 340" é o que poupa abrir o endpoint de madrugada.
+func TestHTTPJSONAssertionCauseDoesNotLeakFoundText(t *testing.T) {
+	const secret = "s3cr3t-abc"
+	url := serveJSON(t, `{"token":"`+secret+`","user":{"email":"`+secret+`@x.io"},"tags":["`+secret+`"]}`)
+
+	for name, a := range map[string]map[string]any{
+		"eq curto":           assertion("$.token", "eq", "outro"),
+		"eq longo":           assertion("$.token", "eq", strings.Repeat("y", 200)),
+		"eq de outro tipo":   assertion("$.token", "eq", 1),
+		"contains em texto":  assertion("$.token", "contains", "zzz"),
+		"lt em texto":        assertion("$.token", "lt", 1),
+		"absent":             assertion("$.token", "absent"),
+		"eq em objeto":       assertion("$.user", "eq", map[string]any{"email": "a"}),
+		"contains em objeto": assertion("$.user", "contains", "a"),
+		"contains em lista":  assertion("$.tags", "contains", "a"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := checkAssertions(t, url, a)
+
+			if got.Status != domain.StatusDown {
+				t.Fatalf("Status = %v, want %v", got.Status, domain.StatusDown)
+			}
+			if strings.Contains(got.Message, secret) {
+				t.Errorf("Message = %q leaks the found text", got.Message)
+			}
+		})
 	}
 }
 

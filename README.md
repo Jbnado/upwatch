@@ -150,9 +150,13 @@ valer no corpo:
 ```
 
 Todas precisam passar. Quando uma falha, a causa no aviso diz qual e o que
-foi encontrado: `$.queue_lag = 340, esperado < 100`. O valor encontrado é
-cortado em 80 caracteres, para um campo que traz o documento inteiro não
-ser despejado no canal.
+foi encontrado: `$.queue_lag = 340, esperado < 100`. Como a causa vai
+para chat e webhook, texto encontrado — que pode ser um token ou um
+e-mail — aparece só como tamanho (`$.status = texto de 12 caracteres,
+esperado contém "ok"`), e lista e objeto só como contagem; em `eq` e `ne`
+contra um texto curto, a causa diz só `$.db diferente do esperado,
+esperado = "up"`. Números, booleanos e `null` são mostrados. O valor
+esperado é cortado em 80 caracteres.
 
 | Operador | Passa quando |
 |---|---|
