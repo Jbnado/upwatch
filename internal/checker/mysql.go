@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -53,6 +54,37 @@ func parseMySQLConfig(raw json.RawMessage) (MySQLConfig, error) {
 		return cfg, fmt.Errorf("checker: tls %q desconhecido; use false, true, skip-verify ou preferred", cfg.TLS)
 	}
 	return cfg, nil
+}
+
+// mysqlUnknownVariable é o erro de variável de sistema desconhecida.
+const mysqlUnknownVariable = 1193
+
+// limitStatementTime combina com o servidor o limite da consulta (ver
+// serverLimit). O go-sql-driver só fecha o socket no timeout, e o MySQL
+// segue executando a consulta de uma conexão que já não existe.
+//
+// O MySQL chama o limite de max_execution_time, em milissegundos, e o
+// MariaDB de max_statement_time, em segundos; cada um desconhece o do
+// outro. Um servidor antigo que não tenha nenhum dos dois fica sem limite,
+// em vez de sem monitor.
+func limitStatementTime(ctx context.Context, conn *sql.Conn, limit time.Duration) error {
+	if limit <= 0 {
+		return nil
+	}
+	_, err := conn.ExecContext(ctx, fmt.Sprintf("SET SESSION max_execution_time = %d", max(limit.Milliseconds(), 1)))
+	if !isMySQLError(err, mysqlUnknownVariable) {
+		return err
+	}
+	_, err = conn.ExecContext(ctx, fmt.Sprintf("SET SESSION max_statement_time = %.3f", limit.Seconds()))
+	if isMySQLError(err, mysqlUnknownVariable) {
+		return nil
+	}
+	return err
+}
+
+func isMySQLError(err error, number uint16) bool {
+	var me *mysql.MySQLError
+	return errors.As(err, &me) && me.Number == number
 }
 
 // Check abre a sessão, executa a consulta numa transação somente leitura
@@ -107,6 +139,11 @@ func (c *MySQL) Check(ctx context.Context, m domain.Monitor) Result {
 	}
 	defer conn.Close()
 
+	limit := serverLimit(ctx)
+	if err := limitStatementTime(ctx, conn, limit); err != nil {
+		return fail("sessão", err)
+	}
+
 	start := time.Now()
 	// Somente leitura mesmo que o usuário possa escrever, pela mesma razão
 	// do PostgreSQL: consulta de verificação não pode alterar dado.
@@ -127,6 +164,12 @@ func (c *MySQL) Check(ctx context.Context, m domain.Monitor) Result {
 		return fail("consulta", err)
 	}
 	rows.Close()
+
+	// SLEEP interrompido pelo limite devolve 1 em vez de erro; sem esta
+	// conferência, uma consulta que estourou o tempo passaria por verde.
+	if elapsed := time.Since(start); limit > 0 && elapsed >= limit {
+		return fail("consulta", context.DeadlineExceeded)
+	}
 
 	return Result{
 		Status:    domain.StatusUp,

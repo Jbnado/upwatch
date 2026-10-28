@@ -1,10 +1,12 @@
 package checker
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
 	"strings"
+	"time"
 )
 
 // MaxSQLQueryLength limita o tamanho da consulta de verificação. Consulta
@@ -48,6 +50,23 @@ func (c sqlConfig) query() string {
 		return defaultSQLQuery
 	}
 	return c.Query
+}
+
+// serverLimit é quanto a consulta pode durar no servidor: um décimo abaixo
+// do que resta do timeout do monitor.
+//
+// O timeout do lado do UpWatch só fecha o socket. Sem um limite combinado
+// com o próprio servidor, uma consulta lenta seguiria rodando lá depois de
+// a verificação desistir, e a cada intervalo o monitor somaria mais uma
+// sessão viva até esgotar as conexões do banco que ele devia vigiar. A
+// folga faz o servidor desistir primeiro e responder com o motivo.
+func serverLimit(ctx context.Context) time.Duration {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return 0
+	}
+	remaining := time.Until(deadline)
+	return max(remaining-remaining/10, time.Millisecond)
 }
 
 // splitTarget confere o formato host:porta do alvo.

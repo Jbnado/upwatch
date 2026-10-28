@@ -91,6 +91,29 @@ func (cfg PostgresConfig) connConfig(target string, timeout time.Duration) (*pgx
 	return cc, nil
 }
 
+// beginQuery abre a transação somente leitura e combina com o servidor o
+// limite de tempo dela (ver serverLimit).
+//
+// O pgx já manda o pedido de cancelamento quando a conexão cai no meio da
+// consulta, mas esse pedido chega por uma conexão nova, que um pooler ou
+// firewall no caminho pode não deixar passar. O limite dentro da sessão
+// não depende de nada disso: statement_timeout para a consulta, e
+// idle_in_transaction_session_timeout encerra a sessão se o UpWatch sumir
+// com a transação aberta.
+//
+// Vai em SET LOCAL, e não nos parâmetros de abertura da sessão: o
+// PgBouncer recusa a sessão que chega com parâmetro que ele não conhece, e
+// o SET LOCAL vale só dentro da transação, que é o que o modo transação
+// dele preserva. Tudo segue na mesma ida ao servidor do BEGIN.
+func beginQuery(limit time.Duration) string {
+	ms := max(limit.Milliseconds(), 1)
+	return fmt.Sprintf("BEGIN READ ONLY; "+
+		"SET LOCAL default_transaction_read_only = on; "+
+		"SET LOCAL statement_timeout = %d; "+
+		"SET LOCAL lock_timeout = %d; "+
+		"SET LOCAL idle_in_transaction_session_timeout = %d", ms, ms, ms)
+}
+
 // Check abre a sessão, executa a consulta numa transação somente leitura
 // e fecha tudo.
 func (c *Postgres) Check(ctx context.Context, m domain.Monitor) Result {
@@ -132,7 +155,7 @@ func (c *Postgres) Check(ctx context.Context, m domain.Monitor) Result {
 	// Somente leitura mesmo que o usuário tenha permissão de escrita: uma
 	// consulta de verificação que altera dado, repetida a cada minuto, é
 	// um estrago que ninguém percebe até ser tarde.
-	tx, err := conn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{BeginQuery: beginQuery(serverLimit(ctx))})
 	if err != nil {
 		return fail("transação", err)
 	}

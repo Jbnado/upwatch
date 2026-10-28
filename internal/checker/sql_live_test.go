@@ -4,11 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net"
 	"os"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5"
@@ -46,6 +49,28 @@ type liveSQL struct {
 	exec func(t *testing.T, stmt string)
 	// count lê o número de linhas da tabela de prova.
 	count func(t *testing.T) int
+	// running conta as sessões, fora a administrativa, executando um
+	// comando que contém marker.
+	running func(t *testing.T, marker string) int
+	// sleep é uma consulta que dorme os segundos pedidos e carrega marker
+	// no texto, para ser achada na lista de sessões.
+	sleep func(seconds int, marker string) string
+}
+
+// waitNoneRunning espera até não sobrar sessão executando marker, ou falha.
+func (l liveSQL) waitNoneRunning(t *testing.T, marker string, within time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for {
+		n := l.running(t, marker)
+		if n == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d session(s) still running %q on the server %v after the check returned", n, marker, within)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 func (l liveSQL) monitor(cfg map[string]any) domain.Monitor {
@@ -92,6 +117,18 @@ func livePostgres(t *testing.T) liveSQL {
 			}
 			return n
 		},
+		running: func(t *testing.T, marker string) int {
+			var n int
+			if err := conn.QueryRow(context.Background(),
+				"SELECT count(*) FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND state <> 'idle' AND query LIKE '%' || $1 || '%'",
+				marker).Scan(&n); err != nil {
+				t.Fatalf("reading pg_stat_activity: %v", err)
+			}
+			return n
+		},
+		sleep: func(seconds int, marker string) string {
+			return fmt.Sprintf("SELECT pg_sleep(%d), '%s'", seconds, marker)
+		},
 	}
 }
 
@@ -131,6 +168,19 @@ func liveMySQL(t *testing.T) liveSQL {
 				t.Fatalf("counting probe rows: %v", err)
 			}
 			return n
+		},
+		running: func(t *testing.T, marker string) int {
+			var n int
+			// SHOW PROCESSLIST em forma de tabela, para filtrar.
+			if err := db.QueryRow(
+				"SELECT count(*) FROM information_schema.processlist WHERE id <> CONNECTION_ID() AND command = 'Query' AND info LIKE CONCAT('%', ?, '%')",
+				marker).Scan(&n); err != nil {
+				t.Fatalf("reading the process list: %v", err)
+			}
+			return n
+		},
+		sleep: func(seconds int, marker string) string {
+			return fmt.Sprintf("SELECT SLEEP(%d), '%s'", seconds, marker)
 		},
 	}
 }
@@ -213,5 +263,77 @@ func TestSQLLiveWrongPasswordIsDownWithoutLeaking(t *testing.T) {
 		if strings.Contains(res.Message, wrong) || strings.Contains(res.Message, "senha-errada") {
 			t.Errorf("Message leaks the password: %q", res.Message)
 		}
+	})
+}
+
+// singleConnProxy repassa ao alvo só a primeira conexão e recusa as
+// seguintes. É o que acontece atrás de um pooler ou firewall que não
+// encaminha o pedido de cancelamento do PostgreSQL, que chega por uma
+// conexão nova: o cancelamento do lado do cliente some, e só o que foi
+// combinado com o servidor na própria sessão continua valendo.
+func singleConnProxy(t *testing.T, target string) string {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen returned unexpected error: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+
+	go func() {
+		first := true
+		for {
+			client, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			if !first {
+				client.Close()
+				continue
+			}
+			first = false
+			upstream, err := net.Dial("tcp", target)
+			if err != nil {
+				client.Close()
+				continue
+			}
+			go func() {
+				defer upstream.Close()
+				_, _ = io.Copy(upstream, client)
+			}()
+			go func() {
+				defer client.Close()
+				_, _ = io.Copy(client, upstream)
+			}()
+		}
+	}()
+	return ln.Addr().String()
+}
+
+// O timeout do monitor fecha o socket, mas não para a consulta no
+// servidor: um pg_sleep ou uma consulta pesada seguiria rodando, e a cada
+// intervalo o monitor somaria mais uma sessão viva até esgotar o limite de
+// conexões do banco que ele devia vigiar. Quando a verificação termina,
+// nada dela pode continuar executando lá — mesmo que o pedido de
+// cancelamento do cliente não chegue, por isso o proxy.
+func TestSQLLiveTimeoutLeavesNothingRunning(t *testing.T) {
+	eachLiveSQL(t, func(t *testing.T, l liveSQL) {
+		const marker = "upwatch-sleep-probe"
+		l.target = singleConnProxy(t, l.target)
+		cfg := map[string]any{"query": l.sleep(30, marker)}
+		if l.typ == domain.MonitorPostgres {
+			// O prefer abriria uma segunda conexão depois da recusa do
+			// TLS, e o proxy a recusaria.
+			cfg["sslmode"] = "disable"
+		}
+		m := l.monitor(cfg)
+		m.Timeout = 2 * time.Second
+
+		res := l.checker.Check(context.Background(), m)
+
+		if res.Status != domain.StatusDown {
+			t.Fatalf("Status = %v (%s), want down: the query sleeps past the timeout", res.Status, res.Message)
+		}
+		l.waitNoneRunning(t, marker, 2*time.Second)
 	})
 }
