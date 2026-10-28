@@ -3,6 +3,8 @@ import { api } from "../api/client";
 import { ApiError, type Group, type Role, type Scope, type User } from "../api/types";
 import { Alert, Button, Field, Input, Loading, Select } from "../components/ui";
 import { stamp } from "../lib/format";
+import { crumb } from "../lib/groups";
+import { covers, scopeLabel, toggleScopeGroup } from "../lib/scope";
 
 /**
  * Contas de acesso.
@@ -10,7 +12,8 @@ import { stamp } from "../lib/format";
  * Dois papéis, não uma matriz de permissões: a pergunta que um time faz
  * sobre uma conta é "essa pessoa pode mexer?". Uma lista de caixinhas
  * por recurso viraria configuração que ninguém revisa — e que, por isso,
- * acaba com todo mundo marcado.
+ * acaba com todo mundo marcado. O que varia é o alcance: todos os grupos
+ * ou uma lista deles.
  *
  * A tela só aparece para quem administra, mas isso é conveniência: a
  * barreira de verdade está no servidor, porque botão escondido não é
@@ -19,50 +22,19 @@ import { stamp } from "../lib/format";
 
 const PAPEIS: { value: Role; label: string; ajuda: string }[] = [
   { value: "admin", label: "Administrador", ajuda: "Cadastra alvos, canais, páginas e contas." },
-  { value: "viewer", label: "Observador", ajuda: "Vê tudo, não altera nada." },
+  { value: "viewer", label: "Observador", ajuda: "Vê o que o acesso permite, não altera nada." },
 ];
 
-/**
- * O escopo aqui é escolhido como "todos os grupos" ou um grupo só, o caso
- * comum. Vários grupos a API aceita, e a tela mostra a contagem sem
- * conseguir editá-la — a gestão completa vem com a tela de grupos.
- */
-const TODOS = "todos";
-const VARIOS = "varios";
-
-function escopoValor(s: Scope): string {
-  if (s.all_groups) return TODOS;
-  if (s.group_ids.length === 1) return String(s.group_ids[0]);
-  return VARIOS;
-}
-
-function escopoDe(valor: string): Scope {
-  if (valor === TODOS) return { all_groups: true, group_ids: [] };
-  return { all_groups: false, group_ids: [Number(valor)] };
-}
-
-function OpcoesEscopo({ grupos, atual }: { grupos: Group[]; atual?: Scope }) {
-  return (
-    <>
-      <option value={TODOS}>Todos os grupos</option>
-      {grupos.map((g) => (
-        <option key={g.id} value={g.id}>
-          {g.path}
-        </option>
-      ))}
-      {atual && escopoValor(atual) === VARIOS && (
-        <option value={VARIOS} disabled>
-          {atual.group_ids.length} grupos
-        </option>
-      )}
-    </>
-  );
+/** scopeOK diz se o escopo pode ir ao servidor: lista vazia é recusada. */
+function scopeOK(s: Scope) {
+  return s.all_groups || s.group_ids.length > 0;
 }
 
 export function Users({ eu }: { eu: User }) {
   const [contas, setContas] = useState<User[] | null>(null);
   const [grupos, setGrupos] = useState<Group[]>([]);
   const [erro, setErro] = useState<string | null>(null);
+  const [editando, setEditando] = useState<number | null>(null);
 
   const carregar = useCallback(async () => {
     const [{ items }, g] = await Promise.all([api.listUsers(), api.listGroups()]);
@@ -84,13 +56,14 @@ export function Users({ eu }: { eu: User }) {
     }
   }
 
-  async function trocarEscopo(u: User, valor: string) {
+  async function trocarEscopo(u: User, escopo: Scope) {
     setErro(null);
     try {
-      await api.setUserScope(u.id, u.role, escopoDe(valor));
+      await api.setUserScope(u.id, u.role, escopo);
+      setEditando(null);
       await carregar();
     } catch (e) {
-      setErro(e instanceof ApiError ? e.message : "Não foi possível trocar o escopo.");
+      setErro(e instanceof ApiError ? e.message : "Não foi possível trocar o acesso.");
     }
   }
 
@@ -115,62 +88,81 @@ export function Users({ eu }: { eu: User }) {
       <div className="flex flex-col gap-1.5">
         <h2 className="text-lead font-medium">Contas</h2>
         <p className="text-body text-ink-2">
-          Quem entra na interface. Observador vê tudo o que você vê, inclusive endereço de alvo e
-          causa de falha — é uma conta de dentro, não a página pública.
+          Quem entra na interface e o que enxerga. Observador vê os monitores do acesso dele,
+          inclusive endereço de alvo e causa de falha — é uma conta de dentro, não a página
+          pública.
         </p>
       </div>
 
       {erro && <Alert>{erro}</Alert>}
 
-      <NovaConta onCreated={carregar} onError={setErro} grupos={grupos} />
+      <NovaConta
+        onCreated={carregar}
+        onError={setErro}
+        grupos={grupos}
+        podeTodos={eu.scope.all_groups}
+      />
 
       {contas === null ? (
         <Loading what="contas" />
       ) : (
         <ul className="border-t border-line">
           {contas.map((u) => (
-            <li
-              key={u.id}
-              className="flex flex-wrap items-center justify-between gap-4 border-b border-line py-2.5"
-            >
-              <span className="flex min-w-0 flex-col">
-                <span className="flex items-baseline gap-2">
-                  <span className="truncate text-body font-medium">{u.username}</span>
-                  {u.id === eu.id && <span className="eyebrow">você</span>}
+            <li key={u.id} className="flex flex-col gap-3 border-b border-line py-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <span className="flex min-w-0 flex-col">
+                  <span className="flex items-baseline gap-2">
+                    <span className="truncate text-body font-medium">{u.username}</span>
+                    {u.id === eu.id && <span className="eyebrow">você</span>}
+                  </span>
+                  <span className="text-small text-ink-3">
+                    vê <span className="text-ink-2">{scopeLabel(u.scope, grupos)}</span>
+                    <span className="mx-1.5">·</span>
+                    criada em <span className="tabular">{stamp(u.created_at)}</span>
+                  </span>
                 </span>
-                <span className="text-small text-ink-3">
-                  criada em <span className="tabular">{stamp(u.created_at)}</span>
-                </span>
-              </span>
 
-              <span className="flex shrink-0 flex-wrap items-center gap-2">
-                <Select
-                  value={escopoValor(u.scope)}
-                  onChange={(e) => trocarEscopo(u, e.target.value)}
-                  className="w-[200px]"
-                  aria-label={`escopo de ${u.username}`}
-                >
-                  <OpcoesEscopo grupos={grupos} atual={u.scope} />
-                </Select>
-                {/* O papel se troca no lugar, sem tela de edição: é o
-                    único campo editável, e abrir uma tela para um campo
-                    só é um clique a mais sem nada em troca. */}
-                <Select
-                  value={u.role}
-                  onChange={(e) => trocarPapel(u, e.target.value as Role)}
-                  className="w-[168px]"
-                  aria-label={`papel de ${u.username}`}
-                >
-                  {PAPEIS.map((p) => (
-                    <option key={p.value} value={p.value}>
-                      {p.label}
-                    </option>
-                  ))}
-                </Select>
-                <Button size="sm" variant="danger" onClick={() => remover(u)}>
-                  Remover
-                </Button>
-              </span>
+                <span className="flex shrink-0 flex-wrap items-center gap-2">
+                  <Button
+                    size="sm"
+                    aria-expanded={editando === u.id}
+                    onClick={() => setEditando(editando === u.id ? null : u.id)}
+                  >
+                    Alterar acesso
+                  </Button>
+                  {/* O papel se troca no lugar, sem tela de edição: abrir
+                      uma tela para um campo só é um clique a mais sem nada
+                      em troca. */}
+                  {/* A largura vai no invólucro: o campo é w-full por
+                      padrão, e as duas larguras na mesma classe brigavam. */}
+                  <span className="w-[168px]">
+                    <Select
+                      value={u.role}
+                      onChange={(e) => trocarPapel(u, e.target.value as Role)}
+                      aria-label={`papel de ${u.username}`}
+                    >
+                      {PAPEIS.map((p) => (
+                        <option key={p.value} value={p.value}>
+                          {p.label}
+                        </option>
+                      ))}
+                    </Select>
+                  </span>
+                  <Button size="sm" variant="danger" onClick={() => remover(u)}>
+                    Remover
+                  </Button>
+                </span>
+              </div>
+
+              {editando === u.id && (
+                <EditarEscopo
+                  conta={u}
+                  grupos={grupos}
+                  podeTodos={eu.scope.all_groups}
+                  onSave={(escopo) => trocarEscopo(u, escopo)}
+                  onCancel={() => setEditando(null)}
+                />
+              )}
             </li>
           ))}
         </ul>
@@ -179,19 +171,160 @@ export function Users({ eu }: { eu: User }) {
   );
 }
 
+/**
+ * ScopePicker escolhe o que a conta enxerga: todos os grupos, ou uma
+ * lista. Marcar o sistema marca os ambientes dele, que aparecem marcados
+ * e travados — desmarcar um ambiente coberto pelo sistema não teria
+ * efeito, e uma caixa que não obedece ensina a desconfiar das outras.
+ */
+export function ScopePicker({
+  value,
+  onChange,
+  groups,
+  podeTodos,
+  name,
+}: {
+  value: Scope;
+  onChange: (s: Scope) => void;
+  groups: Group[];
+  /** Quem tem escopo não concede todos os grupos; o servidor recusaria. */
+  podeTodos: boolean;
+  /** Nome do grupo de rádios, único na tela. */
+  name: string;
+}) {
+  const sistemas = groups.filter((g) => g.parent_id === null);
+  const soltos = groups.filter(
+    (g) => g.parent_id !== null && !groups.some((s) => s.id === g.parent_id),
+  );
+
+  const marcar = (id: number) =>
+    onChange({ all_groups: false, group_ids: toggleScopeGroup(value.group_ids, id, groups) });
+
+  const caixa = (g: Group, recuo: boolean) => {
+    const peloSistema = !value.group_ids.includes(g.id) && covers(value.group_ids, g);
+    return (
+      <li key={g.id} className={recuo ? "pl-6" : ""}>
+        <label
+          className={[
+            "pressable flex items-center gap-2 rounded-sm px-1 py-1 text-body",
+            peloSistema
+              ? "cursor-not-allowed text-ink-3"
+              : "cursor-pointer hover:bg-sunken active:bg-pressed",
+          ].join(" ")}
+        >
+          <input
+            type="checkbox"
+            className="accent-ink"
+            checked={covers(value.group_ids, g)}
+            disabled={peloSistema}
+            onChange={() => marcar(g.id)}
+          />
+          <span>{recuo ? g.name : crumb(g.path)}</span>
+          {peloSistema && <span className="text-small">pelo sistema</span>}
+        </label>
+      </li>
+    );
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      {podeTodos && (
+        <div role="radiogroup" aria-label="alcance" className="flex flex-wrap gap-x-4 gap-y-1">
+          <label className="flex cursor-pointer items-center gap-2 text-body">
+            <input
+              type="radio"
+              name={name}
+              className="accent-ink"
+              checked={value.all_groups}
+              onChange={() => onChange({ all_groups: true, group_ids: [] })}
+            />
+            Todos os grupos
+          </label>
+          <label className="flex cursor-pointer items-center gap-2 text-body">
+            <input
+              type="radio"
+              name={name}
+              className="accent-ink"
+              checked={!value.all_groups}
+              onChange={() => onChange({ all_groups: false, group_ids: value.group_ids })}
+            />
+            Só os grupos escolhidos
+          </label>
+        </div>
+      )}
+
+      {!value.all_groups &&
+        (groups.length === 0 ? (
+          <p className="text-small text-ink-3">Nenhum grupo cadastrado ainda.</p>
+        ) : (
+          <ul className="-mx-1 flex flex-col">
+            {sistemas.flatMap((s) => [
+              caixa(s, false),
+              ...groups.filter((g) => g.parent_id === s.id).map((g) => caixa(g, true)),
+            ])}
+            {soltos.map((g) => caixa(g, false))}
+          </ul>
+        ))}
+
+      {!scopeOK(value) && groups.length > 0 && (
+        <span className="text-small text-ink-3">Escolha pelo menos um grupo.</span>
+      )}
+    </div>
+  );
+}
+
+function EditarEscopo({
+  conta,
+  grupos,
+  podeTodos,
+  onSave,
+  onCancel,
+}: {
+  conta: User;
+  grupos: Group[];
+  podeTodos: boolean;
+  onSave: (s: Scope) => void;
+  onCancel: () => void;
+}) {
+  const [escopo, setEscopo] = useState<Scope>(conta.scope);
+
+  return (
+    <div className="flex flex-col gap-3 rounded-sm border border-line-strong p-3">
+      <span className="eyebrow">o que {conta.username} enxerga</span>
+      <ScopePicker
+        value={escopo}
+        onChange={setEscopo}
+        groups={grupos}
+        podeTodos={podeTodos}
+        name={`escopo-${conta.id}`}
+      />
+      <span className="flex gap-2">
+        <Button variant="primary" disabled={!scopeOK(escopo)} onClick={() => onSave(escopo)}>
+          Salvar acesso
+        </Button>
+        <Button onClick={onCancel}>Cancelar</Button>
+      </span>
+    </div>
+  );
+}
+
 function NovaConta({
   onCreated,
   onError,
   grupos,
+  podeTodos,
 }: {
   onCreated: () => Promise<void>;
   onError: (msg: string) => void;
   grupos: Group[];
+  podeTodos: boolean;
 }) {
+  const inicial: Scope = { all_groups: podeTodos, group_ids: [] };
+
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [role, setRole] = useState<Role>("viewer");
-  const [escopo, setEscopo] = useState(TODOS);
+  const [escopo, setEscopo] = useState<Scope>(inicial);
   const [enviando, setEnviando] = useState(false);
   const [campoErro, setCampoErro] = useState<{ campo: string; msg: string } | null>(null);
 
@@ -201,11 +334,11 @@ function NovaConta({
     setCampoErro(null);
 
     try {
-      await api.createUser({ username, password, role, scope: escopoDe(escopo) });
+      await api.createUser({ username, password, role, scope: escopo });
       setUsername("");
       setPassword("");
       setRole("viewer");
-      setEscopo(TODOS);
+      setEscopo(inicial);
       await onCreated();
     } catch (e) {
       if (e instanceof ApiError && e.field) setCampoErro({ campo: e.field, msg: e.message });
@@ -256,17 +389,32 @@ function NovaConta({
         </Field>
       </div>
 
-      <Field
-        label="acesso"
-        hint="O que a conta enxerga. Dar acesso a um sistema dá acesso aos ambientes dele."
-        error={erroDe("scope")}
-      >
-        <Select value={escopo} onChange={(e) => setEscopo(e.target.value)}>
-          <OpcoesEscopo grupos={grupos} />
-        </Select>
-      </Field>
+      {/* fieldset e não Field: são várias caixas, e um label em volta de
+          todas faria um clique no texto marcar a primeira. */}
+      <fieldset className="flex flex-col gap-1.5">
+        <legend className="eyebrow mb-1.5">acesso</legend>
+        <ScopePicker
+          value={escopo}
+          onChange={setEscopo}
+          groups={grupos}
+          podeTodos={podeTodos}
+          name="escopo-nova-conta"
+        />
+        {erroDe("scope") ? (
+          <span className="text-small text-down">{erroDe("scope")}</span>
+        ) : (
+          <span className="text-small text-ink-3">
+            Dar acesso a um sistema dá acesso aos ambientes dele, inclusive os criados depois.
+          </span>
+        )}
+      </fieldset>
 
-      <Button type="submit" variant="primary" disabled={enviando} className="self-start">
+      <Button
+        type="submit"
+        variant="primary"
+        disabled={enviando || !scopeOK(escopo)}
+        className="self-start"
+      >
         {enviando ? "Criando" : "Criar conta"}
       </Button>
     </form>
