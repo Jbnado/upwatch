@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"text/template"
@@ -159,9 +160,25 @@ func humanDuration(d time.Duration) string {
 	}
 }
 
+// templateMonitor é o monitor como um modelo de mensagem o enxerga.
+//
+// Uma cópia mínima, e nunca o domain.Monitor: o modelo é escrito por quem
+// cadastra canal, e o monitor carrega em Config a senha do check HTTP e o
+// token do push. Com o monitor inteiro ao alcance, um webhook com
+// {{printf "%s" .Monitor.Config}} receberia esses segredos no próximo
+// aviso. Campo novo aqui é decisão de publicar aquele dado a quem cadastra
+// canal.
+type templateMonitor struct {
+	ID     int64
+	Name   string
+	Target string
+	Type   string
+	Tags   []string
+}
+
 // templateData é o que um modelo próprio enxerga.
 type templateData struct {
-	Monitor  domain.Monitor
+	Monitor  templateMonitor
 	Status   string
 	Message  string
 	Duration string
@@ -169,11 +186,34 @@ type templateData struct {
 	Text     string
 }
 
+func newTemplateData(n Notification, texto string) templateData {
+	return templateData{
+		Monitor: templateMonitor{
+			ID: n.Monitor.ID, Name: n.Monitor.Name, Target: n.Monitor.Target,
+			Type: n.Monitor.Type.String(), Tags: append([]string(nil), n.Monitor.Tags...),
+		},
+		Status: n.Status(), Message: n.Message,
+		Duration: humanDuration(n.Event.Duration), At: n.Event.At, Text: texto,
+	}
+}
+
+// exemploModelo é o evento com que o modelo é ensaiado no cadastro.
+var exemploModelo = templateData{
+	Monitor: templateMonitor{
+		ID: 1, Name: "api", Target: "https://api.exemplo.com", Type: "http", Tags: []string{"producao"},
+	},
+	Status: "down", Message: "status 502", Duration: "5 min",
+	At: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Text: "api está fora do ar: status 502",
+}
+
 // compileTemplate prepara o modelo do canal, se houver.
 //
 // A compilação acontece no cadastro para o erro aparecer ali, e não
 // durante o incidente — que é justamente quando a mensagem não pode
-// falhar.
+// falhar. O modelo também é ensaiado com um evento de exemplo: um campo
+// que não existe, como .Monitor.Config, só aparece na execução, e
+// descobri-lo no cadastro diz a quem escreveu que aquilo não está ao
+// alcance, em vez de o aviso cair calado no texto padrão.
 func compileTemplate(raw string) (*template.Template, error) {
 	if strings.TrimSpace(raw) == "" {
 		return nil, nil
@@ -181,6 +221,9 @@ func compileTemplate(raw string) (*template.Template, error) {
 
 	t, err := template.New("mensagem").Parse(raw)
 	if err != nil {
+		return nil, fmt.Errorf("notifier: modelo de mensagem inválido: %w", err)
+	}
+	if err := t.Execute(io.Discard, exemploModelo); err != nil {
 		return nil, fmt.Errorf("notifier: modelo de mensagem inválido: %w", err)
 	}
 	return t, nil
@@ -194,11 +237,7 @@ func renderWith(t *template.Template, n Notification) string {
 	}
 
 	var buf bytes.Buffer
-	err := t.Execute(&buf, templateData{
-		Monitor: n.Monitor, Status: n.Status(), Message: n.Message,
-		Duration: humanDuration(n.Event.Duration), At: n.Event.At, Text: padrao,
-	})
-	if err != nil {
+	if err := t.Execute(&buf, newTemplateData(n, padrao)); err != nil {
 		// Modelo que falha em execução não pode engolir o aviso: o texto
 		// padrão vai no lugar, porque avisar de forma feia é melhor que
 		// não avisar.

@@ -3,6 +3,7 @@ package notifier_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -344,4 +345,56 @@ func contem(lista []string, alvo string) bool {
 		}
 	}
 	return false
+}
+
+// O modelo de mensagem é escrito por quem cadastra canal, que não é
+// necessariamente quem cadastrou o monitor. Se o modelo enxergasse a
+// configuração do monitor, um webhook com {{printf "%s" .Monitor.Config}}
+// receberia no próximo aviso a senha do check HTTP e o token do push.
+// Recusar no cadastro é o melhor desfecho: o erro aparece na hora, e não
+// fica um canal que parece funcionar.
+func TestTemplateCannotReadMonitorConfig(t *testing.T) {
+	for _, tipo := range []string{"webhook", "discord", "slack"} {
+		t.Run(tipo, func(t *testing.T) {
+			cfg := `{"url":"http://exemplo.invalido","template":"{{printf \"%s\" .Monitor.Config}}"}`
+			if _, err := notifier.Build(tipo, json.RawMessage(cfg)); err == nil {
+				t.Fatalf("Build(%s) accepted a template that reads the monitor config", tipo)
+			}
+		})
+	}
+}
+
+// O cadastro só prova o caminho que o exemplo percorre; um ramo que só
+// executa num estado raro escapa dele. O que impede o vazamento é o modelo
+// não receber a configuração de jeito nenhum — este teste prova que,
+// mesmo escondido num ramo, o segredo não sai.
+func TestTemplateNeverEmitsMonitorSecrets(t *testing.T) {
+	const segredo = "s3gr3d0-do-monitor"
+	modelos := []string{
+		`{{if eq .Status \"down\"}}{{printf \"%s\" .Monitor.Config}}{{end}}`,
+		`{{if eq .Status \"down\"}}{{printf \"%v\" .Monitor}}{{end}}`,
+		`{{if eq .Status \"down\"}}{{printf \"%+v\" .}}{{end}}`,
+	}
+	for _, modelo := range modelos {
+		t.Run(modelo, func(t *testing.T) {
+			cap, url := newCapture(t)
+			w, err := notifier.NewWebhook(json.RawMessage(`{"url":"` + url + `","template":"` + modelo + `"}`))
+			if err != nil {
+				// Recusado no cadastro também protege.
+				return
+			}
+
+			n := outage()
+			n.Monitor.Config = json.RawMessage(`{"password":"` + segredo + `","push_token":"` + segredo + `"}`)
+			if err := send(t, w, n); err != nil {
+				t.Fatalf("Send returned unexpected error: %v", err)
+			}
+			// %v imprime json.RawMessage como lista de bytes; o segredo
+			// continua lá, só que em decimal.
+			emBytes := strings.Trim(fmt.Sprint([]byte(segredo)), "[]")
+			if corpo := cap.body(0); strings.Contains(corpo, segredo) || strings.Contains(corpo, emBytes) {
+				t.Errorf("the custom template leaked the monitor config: %s", corpo)
+			}
+		})
+	}
 }

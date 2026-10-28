@@ -205,6 +205,18 @@ descobrir o erro de digitação durante o incidente é descobrir tarde
 demais. Discord e Slack recusam `body_template` pelo mesmo motivo — o
 corpo deles é ditado pelo destino.
 
+### Modelo da frase
+
+Em webhook, Discord e Slack, `template` troca a frase padrão por um modelo
+[text/template](https://pkg.go.dev/text/template) do Go, como
+`"{{.Monitor.Name}} => {{.Status}}"`. O modelo enxerga `Monitor` (`ID`,
+`Name`, `Target`, `Type` e `Tags`), `Status`, `Message`, `Duration`, `At` e
+`Text`, a frase pronta. A configuração do monitor fica de fora: ela guarda
+a senha do check HTTP e o token do push, e quem cadastra canal não precisa
+deles para escrever uma frase. Um modelo que tenta ler campo que não está
+na lista, como `.Monitor.Config`, é recusado no cadastro. Os marcadores de
+`body_template` seguem a mesma regra.
+
 Os campos avançados também estão na interface, em Ajustes → Canais de
 aviso, atrás de "cabeçalhos e formato do corpo".
 

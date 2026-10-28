@@ -1559,8 +1559,11 @@ components:
             Modelo próprio da mensagem, compilado no cadastro para o
             erro aparecer aqui e não durante o incidente.
 
-            Campos disponíveis - Monitor, Status, Message, Duration,
-            At e Text.
+            Campos disponíveis - Monitor (com ID, Name, Target, Type e
+            Tags), Status, Message, Duration, At e Text. A configuração
+            do monitor nunca está ao alcance do modelo - ela guarda
+            senhas e tokens -, e um modelo que tenta ler campo
+            inexistente, como .Monitor.Config, é recusado no cadastro.
         body_template:
           description: |
             Forma do corpo inteiro, e não só da frase. Só no canal
