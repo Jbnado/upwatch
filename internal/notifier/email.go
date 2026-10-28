@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"log/slog"
 	"mime"
 	"mime/multipart"
 	"mime/quotedprintable"
@@ -137,10 +138,8 @@ func (e *email) Send(ctx context.Context, n Notification) error {
 	if err := c.Mail(e.from.Address); err != nil {
 		return fmt.Errorf("notifier: o servidor SMTP recusou o remetente %s: %w", e.from.Address, err)
 	}
-	for _, rcpt := range e.to {
-		if err := c.Rcpt(rcpt.Address); err != nil {
-			return fmt.Errorf("notifier: o servidor SMTP recusou o destinatário %s: %w", rcpt.Address, err)
-		}
+	if err := e.recipients(c); err != nil {
+		return err
 	}
 
 	w, err := c.Data()
@@ -158,6 +157,50 @@ func (e *email) Send(ctx context.Context, n Notification) error {
 	// falha aqui não pode virar retentativa e e-mail duplicado.
 	_ = c.Quit()
 	return nil
+}
+
+// recipients informa os destinatários ao servidor.
+//
+// Um endereço recusado — a pessoa saiu da empresa, a lista foi apagada —
+// não pode calar o alerta para o resto do plantão: basta um aceito para a
+// mensagem seguir, e os recusados vão para o log. Só falha quando ninguém
+// foi aceito; aí o erro devolvido é permanente se todas as recusas foram
+// 5xx, e transitório se alguma pediu para tentar depois.
+func (e *email) recipients(c *smtp.Client) error {
+	aceitos := 0
+	var permanente, transitoria error
+
+	for _, rcpt := range e.to {
+		err := c.Rcpt(rcpt.Address)
+		if err == nil {
+			aceitos++
+			continue
+		}
+
+		recusa := fmt.Errorf("notifier: o servidor SMTP recusou o destinatário %s: %w", rcpt.Address, err)
+		var proto *textproto.Error
+		if !errors.As(err, &proto) {
+			// Não foi recusa do servidor, e sim a conversa que caiu: não há
+			// como seguir para os outros destinatários.
+			return recusa
+		}
+		slog.Warn("destinatario recusado pelo servidor SMTP; o aviso segue para os demais",
+			"destinatario", rcpt.Address, "erro", err)
+		if IsPermanent(err) {
+			permanente = recusa
+		} else {
+			transitoria = recusa
+		}
+	}
+
+	switch {
+	case aceitos > 0:
+		return nil
+	case transitoria != nil:
+		return transitoria
+	default:
+		return permanente
+	}
 }
 
 // connect abre a conversa SMTP já cifrada e autenticada.
@@ -282,10 +325,10 @@ func explainTLS(addr string, err error) error {
 func explainAuth(err error) error {
 	var proto *textproto.Error
 	if errors.As(err, &proto) && proto.Code == 535 {
-		return fmt.Errorf("notifier: falha na autenticação SMTP: o servidor recusou o usuário e senha (%d %s)",
-			proto.Code, proto.Msg)
+		return Permanent(fmt.Errorf("notifier: falha na autenticação SMTP: o servidor recusou o usuário e senha (%d %s)",
+			proto.Code, proto.Msg))
 	}
-	return fmt.Errorf("notifier: falha na autenticação SMTP: %v", err)
+	return fmt.Errorf("notifier: falha na autenticação SMTP: %w", err)
 }
 
 // ---------- mensagem ----------

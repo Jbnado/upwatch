@@ -89,8 +89,8 @@ func (n *ntfy) Send(ctx context.Context, note Notification) error {
 
 	var recusa *statusError
 	if errors.As(err, &recusa) && (recusa.Code == http.StatusUnauthorized || recusa.Code == http.StatusForbidden) {
-		return fmt.Errorf("notifier: o ntfy recusou publicar no tópico (%d); confira o token "+
-			"e se ele tem permissão de escrita", recusa.Code)
+		return Permanent(fmt.Errorf("notifier: o ntfy recusou publicar no tópico (%d); confira o token "+
+			"e se ele tem permissão de escrita", recusa.Code))
 	}
 	return err
 }

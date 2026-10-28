@@ -398,3 +398,73 @@ func TestTemplateNeverEmitsMonitorSecrets(t *testing.T) {
 		})
 	}
 }
+
+// Recusa que repetir não muda — URL apagada, token revogado, corpo que o
+// destino não aceita — precisa parar na primeira tentativa: repetir só
+// suja o log e prende um trabalhador da fila enquanto outros incidentes
+// esperam. Erro do servidor e limite de taxa, ao contrário, passam.
+func TestHTTPRefusalsArePermanentOnlyWhenRetryCannotHelp(t *testing.T) {
+	casos := map[int]bool{
+		http.StatusBadRequest:            true,
+		http.StatusUnauthorized:          true,
+		http.StatusForbidden:             true,
+		http.StatusNotFound:              true,
+		http.StatusRequestEntityTooLarge: true,
+		http.StatusUnprocessableEntity:   true,
+		http.StatusTooManyRequests:       false,
+		http.StatusInternalServerError:   false,
+		http.StatusBadGateway:            false,
+		http.StatusServiceUnavailable:    false,
+	}
+	for _, tipo := range []string{"webhook", "discord", "slack", "ntfy"} {
+		for codigo, permanente := range casos {
+			t.Run(fmt.Sprintf("%s/%d", tipo, codigo), func(t *testing.T) {
+				cap, url := newCapture(t)
+				cap.status.Store(int32(codigo))
+
+				cfg := `{"url":"` + url + `"}`
+				if tipo == "ntfy" {
+					cfg = `{"server":"` + url + `","topic":"t"}`
+				}
+				n, err := notifier.Build(tipo, json.RawMessage(cfg))
+				if err != nil {
+					t.Fatalf("Build returned unexpected error: %v", err)
+				}
+
+				err = send(t, n, outage())
+				if err == nil {
+					t.Fatalf("Send returned nil error for %d, want an error", codigo)
+				}
+				if got := notifier.IsPermanent(err); got != permanente {
+					t.Errorf("IsPermanent(%v) = %v, want %v", err, got, permanente)
+				}
+			})
+		}
+	}
+}
+
+// Destino que não responde é falha de rede, a mais momentânea de todas.
+func TestNetworkFailureIsTransient(t *testing.T) {
+	url := closedURL(t)
+	w, err := notifier.NewWebhook(json.RawMessage(`{"url":"` + url + `/x"}`))
+	if err != nil {
+		t.Fatalf("NewWebhook returned unexpected error: %v", err)
+	}
+
+	err = send(t, w, outage())
+	if err == nil {
+		t.Fatal("Send to a closed port returned nil error, want an error")
+	}
+	if notifier.IsPermanent(err) {
+		t.Errorf("IsPermanent(%v) = true, want a network failure to be retried", err)
+	}
+}
+
+// closedURL devolve o endereço de uma porta que acabou de ser fechada.
+func closedURL(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.NotFoundHandler())
+	url := srv.URL
+	srv.Close()
+	return url
+}

@@ -48,6 +48,12 @@ durante a queda é descobrir tarde. O webhook genérico aceita cabeçalhos
 próprios e deixa você escolher a forma do corpo — veja
 [Webhook](#webhook).
 
+Uma entrega que falha é repetida até quatro vezes, com espera crescente,
+quando a falha pode passar: erro de rede, timeout, HTTP 429 ou 5xx, SMTP
+4xx. Quando o destino diz que aquela entrega nunca vai passar — HTTP 400,
+401, 403, 404, 413 ou 422, SMTP 5xx, inclusive a senha recusada (535) —, o
+aviso é dado como não entregue na primeira, e o motivo vai para o log.
+
 **Agrupa por etiqueta.** Homolog e produção lado a lado sem virar uma
 lista única de quarenta linhas: etiquete os alvos e o painel oferece
 agrupar por qualquer uma delas. As etiquetas são normalizadas na entrada
@@ -250,6 +256,10 @@ e uma regra de caixa de entrada reconhecer o alerta. O corpo vai em texto
 e em HTML, com a causa, o alvo, o horário e, na volta, quanto tempo a
 queda durou. Nome e causa são escapados no HTML: o que o alvo devolve
 não vira marcação no e-mail.
+
+Um destinatário recusado pelo servidor — a pessoa saiu da empresa, a
+lista foi apagada — não cala o aviso para os outros: basta um endereço
+aceito para a mensagem seguir, e os recusados aparecem no log.
 
 O botão de teste diz por extenso o que deu errado — usuário e senha
 recusados, certificado não confiável, porta que esperava outro modo de

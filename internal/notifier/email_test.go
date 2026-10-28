@@ -303,3 +303,75 @@ func TestEmailRejectsInvalidConfigUpFront(t *testing.T) {
 		})
 	}
 }
+
+// Um endereço recusado — a pessoa saiu da empresa, a lista foi apagada —
+// não pode calar o alerta para o resto do plantão. Abortar no primeiro
+// RCPT recusado fazia exatamente isso.
+func TestEmailDeliversToAcceptedRecipientsWhenOneIsRefused(t *testing.T) {
+	srv := smtptest.NewServer(t, smtptest.Options{
+		Mode: smtptest.StartTLS, RejectRecipients: []string{"plantao@exemplo.com"},
+	})
+	e := newEmail(t, emailConfig(srv, "starttls", ""), srv.RootCAs)
+
+	if err := send(t, e, outage()); err != nil {
+		t.Fatalf("Send returned %v, want the accepted recipient to get the alert", err)
+	}
+	msgs := srv.Messages()
+	if len(msgs) != 1 {
+		t.Fatalf("the server received %d messages, want 1", len(msgs))
+	}
+	if got := strings.Join(msgs[0].To, ","); got != "infra@exemplo.com" {
+		t.Errorf("envelope recipients = %q, want only the accepted one", got)
+	}
+}
+
+// Todos recusados é erro, e permanente: o servidor disse com 5xx que a
+// caixa não existe, e repetir quatro vezes só suja o log e atrasa a fila.
+func TestEmailAllRecipientsRefusedIsPermanent(t *testing.T) {
+	srv := smtptest.NewServer(t, smtptest.Options{
+		Mode:             smtptest.StartTLS,
+		RejectRecipients: []string{"plantao@exemplo.com", "infra@exemplo.com"},
+	})
+	e := newEmail(t, emailConfig(srv, "starttls", ""), srv.RootCAs)
+
+	err := send(t, e, outage())
+	if err == nil {
+		t.Fatal("Send with every recipient refused returned nil error, want an error")
+	}
+	if !notifier.IsPermanent(err) {
+		t.Errorf("IsPermanent(%v) = false, want a 550 on every recipient to be permanent", err)
+	}
+	if len(srv.Messages()) != 0 {
+		t.Error("a message was accepted with no recipient")
+	}
+}
+
+// Senha errada não melhora com a espera. Repetir só gasta tentativas — e
+// em servidor com bloqueio por tentativas, trava a conta.
+func TestEmailAuthenticationFailureIsPermanent(t *testing.T) {
+	srv := smtptest.NewServer(t, smtptest.Options{
+		Mode: smtptest.StartTLS, Username: "upwatch", Password: "certa",
+	})
+	e := newEmail(t, emailConfig(srv, "starttls", `,"username":"upwatch","password":"errada"`), srv.RootCAs)
+
+	if err := send(t, e, outage()); !notifier.IsPermanent(err) {
+		t.Errorf("IsPermanent(%v) = false, want a 535 to be permanent", err)
+	}
+}
+
+// Servidor fora do ar é o caso clássico de falha momentânea: tratá-lo
+// como permanente perderia o aviso por causa de um reinício do relé.
+func TestEmailConnectionFailureIsTransient(t *testing.T) {
+	srv := smtptest.NewServer(t, smtptest.Options{Mode: smtptest.Plain})
+	cfg := emailConfig(srv, "none", "")
+	srv.Close()
+	e := newEmail(t, cfg, nil)
+
+	err := send(t, e, outage())
+	if err == nil {
+		t.Fatal("Send to a closed server returned nil error, want an error")
+	}
+	if notifier.IsPermanent(err) {
+		t.Errorf("IsPermanent(%v) = true, want a refused connection to be retried", err)
+	}
+}

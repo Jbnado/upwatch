@@ -41,6 +41,9 @@ type Options struct {
 	Password string
 	// AuthMechanisms é o que o servidor anuncia. Vazio vale "PLAIN LOGIN".
 	AuthMechanisms string
+	// RejectRecipients são endereços que o RCPT recusa com 550, como faz
+	// um servidor diante de caixa inexistente.
+	RejectRecipients []string
 }
 
 // Message é uma mensagem aceita pelo servidor.
@@ -221,7 +224,12 @@ func (s *Server) session(conn net.Conn) {
 			reply("250 ok")
 
 		case "RCPT":
-			atual.To = append(atual.To, endereco(resto))
+			destino := endereco(resto)
+			if s.recusa(destino) {
+				reply("550 5.1.1 caixa inexistente")
+				continue
+			}
+			atual.To = append(atual.To, destino)
 			reply("250 ok")
 
 		case "DATA":
@@ -254,6 +262,15 @@ func (s *Server) session(conn net.Conn) {
 			reply("500 comando desconhecido " + strconv.Quote(verbo))
 		}
 	}
+}
+
+func (s *Server) recusa(destino string) bool {
+	for _, r := range s.opts.RejectRecipients {
+		if strings.EqualFold(r, destino) {
+			return true
+		}
+	}
+	return false
 }
 
 func readLine(r *bufio.Reader) (string, error) {

@@ -18,7 +18,9 @@ type channel struct {
 
 	calls   atomic.Int32
 	failFor atomic.Int32 // quantas entregas ainda vão falhar
-	hold    chan struct{}
+	// permanent faz toda entrega falhar com erro que repetir não muda.
+	permanent atomic.Bool
+	hold      chan struct{}
 
 	mu       sync.Mutex
 	received []notifier.Notification
@@ -37,6 +39,9 @@ func (c *channel) Send(ctx context.Context, n notifier.Notification) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		}
+	}
+	if c.permanent.Load() {
+		return notifier.Permanent(errors.New("destino recusou: 404"))
 	}
 	if c.failFor.Load() > 0 {
 		c.failFor.Add(-1)
@@ -238,5 +243,25 @@ func TestEnqueueWithoutChannelsIsANoop(t *testing.T) {
 
 	if d.Dropped() != 0 {
 		t.Errorf("Dropped() = %d, want the empty enqueue to be ignored", d.Dropped())
+	}
+}
+
+// Recusa permanente — destino apagado, token revogado — não melhora com a
+// espera. Repetir prenderia um trabalhador da fila por quase meio minuto
+// de esperas crescentes enquanto outros incidentes aguardam, e encheria o
+// log com o mesmo erro.
+func TestDispatcherDoesNotRetryPermanentFailure(t *testing.T) {
+	c := newChannel("apagado")
+	c.permanent.Store(true)
+
+	d, _ := runDispatcher(t, notifier.DispatcherOptions{
+		Clock: clock.Real(), MaxAttempts: 4, RetryDelay: time.Millisecond,
+	})
+	d.Enqueue(outage(), []notifier.Notifier{c})
+
+	await(t, "the delivery to be given up", func() bool { return d.Dropped() == 1 })
+	time.Sleep(50 * time.Millisecond)
+	if got := c.calls.Load(); got != 1 {
+		t.Errorf("attempted %d times, want a permanent refusal to stop at the first", got)
 	}
 }

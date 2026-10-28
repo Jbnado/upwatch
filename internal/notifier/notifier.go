@@ -9,9 +9,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/textproto"
 	"strings"
 	"text/template"
 	"time"
@@ -246,6 +248,47 @@ func renderWith(t *template.Template, n Notification) string {
 	return buf.String()
 }
 
+// ---------- erro permanente ----------
+
+// permanente é o erro que sabe dizer se repetir adianta.
+//
+// Uma interface, e não uma lista de tipos no despachante: quem entende o
+// protocolo é o canal, e é ele que diz se a recusa é definitiva.
+type permanente interface{ Permanent() bool }
+
+// permanentError marca um erro como definitivo.
+type permanentError struct{ err error }
+
+func (e *permanentError) Error() string   { return e.err.Error() }
+func (e *permanentError) Unwrap() error   { return e.err }
+func (e *permanentError) Permanent() bool { return true }
+
+// Permanent marca o erro como definitivo: a fila não repete a entrega.
+func Permanent(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &permanentError{err: err}
+}
+
+// IsPermanent informa se repetir a entrega não pode mudar o resultado.
+//
+// Na dúvida, não é: perder um aviso por desistir cedo demais é pior que
+// repetir uma recusa. Timeout e erro de rede caem aqui como transitórios.
+// Resposta 5xx do SMTP é permanente pelo próprio protocolo (RFC 5321,
+// 4.2.1) — o 4xx é o que o servidor usa para pedir que se tente de novo.
+func IsPermanent(err error) bool {
+	var p permanente
+	if errors.As(err, &p) {
+		return p.Permanent()
+	}
+	var smtp *textproto.Error
+	if errors.As(err, &smtp) {
+		return smtp.Code >= 500 && smtp.Code < 600
+	}
+	return false
+}
+
 // ---------- transporte HTTP ----------
 
 // post entrega o corpo em JSON e trata a resposta.
@@ -263,6 +306,22 @@ type statusError struct{ Code int }
 
 func (e *statusError) Error() string {
 	return fmt.Sprintf("notifier: o canal respondeu %d", e.Code)
+}
+
+// Permanent diz se repetir a entrega pode dar outro resultado.
+//
+// Só os códigos em que o destino disse, sem ambiguidade, que aquela
+// requisição nunca vai passar: corpo malformado (400), credencial recusada
+// (401, 403), destino apagado (404), corpo grande demais (413) ou
+// recusado pelo conteúdo (422). 429 e 5xx ficam de fora: limite de taxa e
+// servidor sobrecarregado são exatamente o que a espera resolve.
+func (e *statusError) Permanent() bool {
+	switch e.Code {
+	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden,
+		http.StatusNotFound, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
+		return true
+	}
+	return false
 }
 
 // postRaw entrega um corpo já pronto e trata a resposta.
