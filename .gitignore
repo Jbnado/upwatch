@@ -1,6 +1,8 @@
 # Binaries
 /upwatch
 /upwatch.exe
+/upwatch-probe
+/upwatch-probe.exe
 /dist/
 *.exe
 *.test
