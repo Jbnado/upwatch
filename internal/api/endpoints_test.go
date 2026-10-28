@@ -458,15 +458,15 @@ func TestPushRecordsTheSignal(t *testing.T) {
 	resp := s.do(t, http.MethodPost, "/api/v1/push/"+token, nil)
 	assertStatus(t, resp, http.StatusOK)
 
-	at, ok, err := s.store.LastPush(context.Background(), id)
+	sig, ok, err := s.store.LastPush(context.Background(), id)
 	if err != nil {
 		t.Fatalf("LastPush returned unexpected error: %v", err)
 	}
 	if !ok {
 		t.Fatal("no push was recorded")
 	}
-	if !at.Equal(epoch) {
-		t.Errorf("push recorded at %v, want %v", at, epoch)
+	if !sig.At.Equal(epoch) {
+		t.Errorf("push recorded at %v, want %v", sig.At, epoch)
 	}
 }
 

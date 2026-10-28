@@ -43,6 +43,11 @@ tags:
     description: Sessões, senha e tokens
   - name: monitors
     description: Cadastro de alvos monitorados
+  - name: groups
+    description: |
+      Grupos de monitores (Sistema → Ambiente) e o que a tela inicial lê
+      deles. Toda rota autenticada respeita o escopo da conta&#58; monitor
+      ou grupo fora dele responde 404, como se não existisse.
   - name: data
     description: Histórico, agregados e exportação
   - name: push
@@ -82,9 +87,23 @@ paths:
       security: []
       summary: Exposição para Prometheus
       description: |
-        Formato de texto do Prometheus, sem credencial — o coletor raspa
-        sem sessão, e exigir uma obrigaria cada instalação a inventar um
-        token só para isso.
+        Formato de texto do Prometheus, fora da sessão — o coletor raspa
+        sem ela.
+
+        Com `UPWATCH_METRICS_TOKEN` definido, exige
+        `Authorization&#58; Bearer <token>` e responde 401 sem ele. Sem a
+        variável, a exposição fica aberta, como sempre foi&#58; serve à rede
+        local, mas numa instalação exposta na internet publica o nome de
+        todos os monitores, e com eles a topologia interna.
+
+        Sem token e com alguma conta de acesso restrito a grupos, responde
+        403 com a orientação de definir o token&#58; a exposição aberta seria
+        o atalho dessa conta para ver os nomes que o escopo esconde.
+
+        Monitor dentro de um grupo leva também o rótulo `group` com o
+        caminho ("RPA / prod")&#58; o nome só é único dentro do grupo, e sem
+        o rótulo o "bff" de produção e o de homologação seriam a mesma
+        série.
 
         O que sai são contagens, estados e nomes de monitor. O endereço do
         alvo nunca vira rótulo&#58; além de descrever a topologia interna,
@@ -110,6 +129,16 @@ paths:
           content:
             text/plain:
               schema: { type: string }
+        "401":
+          description: Token de métricas ausente ou errado (só quando configurado)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Sem token configurado, e há conta com acesso restrito a grupos
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/v1/openapi.yaml:
     get:
@@ -316,6 +345,9 @@ paths:
         Só administrador. A lista de contas é material de reconhecimento&#58;
         nomes de usuário válidos são metade do trabalho de quem tenta
         entrar.
+
+        Administrador com escopo vê só as contas cujo escopo ele poderia
+        conceder.
       responses:
         "200":
           description: Contas cadastradas
@@ -347,6 +379,13 @@ paths:
                 username: { type: string, maxLength: 64 }
                 password: { type: string, minLength: 12, maxLength: 72 }
                 role: { type: string, enum: [admin, viewer] }
+                scope:
+                  $ref: "#/components/schemas/Scope"
+                  description: |
+                    Ausente é todos os grupos. Quem tem escopo não concede
+                    mais do que tem&#58; pedir todos os grupos devolve 403, e
+                    citar grupo fora do próprio escopo devolve 400 como
+                    grupo inexistente.
       responses:
         "201":
           description: Conta criada
@@ -361,15 +400,18 @@ paths:
   /api/v1/users/{id}:
     put:
       tags: [auth]
-      summary: Troca o papel de uma conta
+      summary: Troca o papel e o escopo de uma conta
       description: |
-        Só o papel. Nome de usuário e senha não se editam por aqui&#58;
+        Só papel e escopo. Nome de usuário e senha não se editam por aqui&#58;
         trocar a senha de outra pessoa sem ela saber é poder que uma
         ferramenta de monitoramento não precisa ter, e renomear conta
         quebra o rastro de quem fez o quê.
 
-        Rebaixar o último administrador devolve 409 — a instalação
-        ficaria sem ninguém capaz de criar outro.
+        Rebaixar ou restringir o último administrador com acesso a todos
+        os grupos devolve 409 — a instalação ficaria sem ninguém capaz de
+        criar grupo de topo, canal ou página pública.
+
+        Conta com escopo maior que o de quem pede responde 404.
       parameters:
         - $ref: "#/components/parameters/PathID"
       requestBody:
@@ -381,6 +423,9 @@ paths:
               required: [role]
               properties:
                 role: { type: string, enum: [admin, viewer] }
+                scope:
+                  $ref: "#/components/schemas/Scope"
+                  description: Ausente mantém o escopo atual.
       responses:
         "200":
           description: Papel atualizado
@@ -421,8 +466,16 @@ paths:
     get:
       tags: [monitors]
       summary: Lista monitores
-      description: Paginação por keyset; as páginas seguem estáveis sob escrita concorrente.
+      description: |
+        Paginação por keyset; as páginas seguem estáveis sob escrita
+        concorrente. Só traz monitores do escopo da conta.
       parameters:
+        - name: group_id
+          in: query
+          schema: { type: integer, format: int64 }
+          description: |
+            Restringe ao grupo e aos ambientes dele. Grupo fora do escopo
+            devolve lista vazia, como um grupo sem nada.
         - name: limit
           in: query
           schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
@@ -452,6 +505,15 @@ paths:
     post:
       tags: [monitors]
       summary: Cadastra um monitor
+      description: |
+        Para conta com acesso restrito a grupos, com
+        `UPWATCH_RESTRICT_PRIVATE_TARGETS` ligado (o padrão), o destino que
+        resolver para loopback, rede privada, enlace local (metadado da
+        nuvem) ou espaço compartilhado de provedor é recusado com 400, e o
+        nome que não resolve também. Na edição, o destino que não mudou não
+        é conferido de novo.
+
+        `parent_id` de fora do escopo responde 404, como o inexistente.
       requestBody:
         required: true
         content:
@@ -464,8 +526,9 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Monitor" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
         "409":
-          description: Já existe monitor com esse nome
+          description: Já existe monitor com esse nome no mesmo grupo
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -485,6 +548,7 @@ paths:
     put:
       tags: [monitors]
       summary: Sobrescreve um monitor
+      description: As mesmas regras de alvo interno e de `parent_id` do cadastro.
       parameters: [{ $ref: "#/components/parameters/PathID" }]
       requestBody:
         required: true
@@ -532,6 +596,10 @@ paths:
 
         Uma requisicao cobre todos os monitores: uma por monitor degradava
         justamente na instalacao grande, onde a lista importa mais.
+
+        `status` e o estado confirmado do monitor, o mesmo do cartao de
+        grupo e de "Problemas agora" - nao o da janela nem o da ultima
+        batida. A ultima batida vem em `last_check_status`.
       parameters:
         - $ref: "#/components/parameters/From"
         - $ref: "#/components/parameters/To"
@@ -643,6 +711,29 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
 
   /api/v1/push/{token}:
+    get:
+      tags: [push]
+      summary: Registra o sinal de um monitor push
+      description: |
+        Mesmo efeito do POST. Existe porque muito agendador e muito
+        healthcheck só sabem fazer `curl URL`, e o push é justamente
+        para eles.
+
+        Sem parâmetros o sinal significa `up`, como sempre significou.
+      security: []
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+        - $ref: "#/components/parameters/PushStatus"
+        - $ref: "#/components/parameters/PushMsg"
+        - $ref: "#/components/parameters/PushLatency"
+      responses:
+        "200": { $ref: "#/components/responses/PushAccepted" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/PushTooManyRequests" }
     post:
       tags: [push]
       summary: Registra o sinal de um monitor push
@@ -650,23 +741,53 @@ paths:
         O segredo viaja no caminho porque quem reporta é um cron ou um
         worker, que não tem sessão de interface nem deve precisar de uma.
 
-        Token inválido e monitor inexistente devolvem a mesma resposta.
+        Token inválido e monitor inexistente devolvem a mesma resposta, e
+        o token é conferido antes dos parâmetros. Cada token pertence a um
+        monitor só: o cadastro recusa o repetido.
+
+        Status, causa e latência são opcionais e podem vir na query string
+        ou num corpo JSON (só com `Content-Type: application/json`; outro
+        corpo é ignorado, como sempre foi). Quando o mesmo campo vem nos
+        dois, vale a query string. Campos desconhecidos no corpo são
+        tolerados.
+
+        Um `down` explícito não abre incidente na hora: cada sinal conta
+        como uma observação na confirmação de N falhas, e as verificações
+        seguintes, até chegar outro sinal, só repetem o que ele disse sem
+        contar de novo. Com N=2 são precisos dois sinais de queda; um
+        `down` seguido de silêncio cai pela regra do silêncio. A causa vai
+        para o incidente e para o aviso, e nunca para a página pública.
       security: []
       parameters:
         - name: token
           in: path
           required: true
           schema: { type: string }
+        - $ref: "#/components/parameters/PushStatus"
+        - $ref: "#/components/parameters/PushMsg"
+        - $ref: "#/components/parameters/PushLatency"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Até 16 KiB; acima disso, 413.
+              properties:
+                status: { type: string, enum: [up, down, degraded], default: up }
+                msg:
+                  type: string
+                  description: Causa curta. Cortada em 200 caracteres.
+                latency_ms:
+                  type: integer
+                  minimum: 0
+                  maximum: 86400000
+                  description: Duração medida pelo próprio serviço, até um dia
       responses:
-        "200":
-          description: Sinal registrado
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status: { type: string, example: ok }
+        "200": { $ref: "#/components/responses/PushAccepted" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/PushTooManyRequests" }
 
   /api/v1/channel-types:
     get:
@@ -685,15 +806,20 @@ paths:
                 properties:
                   items:
                     type: array
-                    items: { type: string, enum: [webhook, discord, slack] }
+                    items: { type: string, enum: [webhook, discord, slack, email, ntfy] }
 
   /api/v1/channels:
     get:
       tags: [alerts]
       summary: Lista os destinos de aviso
       description: |
-        A configuração nunca é devolvida: ela contém a URL do webhook, que
-        é a credencial de quem pode publicar no canal.
+        A configuração nunca é devolvida: ela contém a URL do webhook, a
+        senha do SMTP ou o token do ntfy - credenciais de quem pode
+        publicar no canal.
+
+        Para conta com acesso restrito a grupos, só os canais vinculados a
+        monitores ou grupos do escopo dela&#58; o nome e o destino de um
+        canal que só avisa sobre os outros já dizem quem existe fora.
       responses:
         "200":
           description: Canais cadastrados
@@ -712,6 +838,9 @@ paths:
         A configuração é validada montando o notificador de verdade.
         Descobrir que a URL está errada só durante um incidente seria
         descobrir tarde demais.
+
+        Canal é recurso de todos os grupos&#58; criar, alterar, apagar,
+        testar e vincular exigem escopo total (403 para os demais).
       requestBody:
         required: true
         content:
@@ -734,6 +863,7 @@ paths:
     get:
       tags: [alerts]
       summary: Devolve um canal
+      description: Canal que não avisa sobre nada do escopo da conta responde 404.
       parameters: [{ $ref: "#/components/parameters/PathID" }]
       responses:
         "200":
@@ -817,22 +947,288 @@ paths:
     put:
       tags: [alerts]
       summary: Vincula um canal ao monitor
-      description: Idempotente — vincular duas vezes não é erro.
+      description: |
+        Idempotente — vincular duas vezes não é erro. Exige escopo total&#58;
+        o canal é de todos os grupos, e pendurá-lo no próprio monitor é
+        mexer no aviso dos outros. Canal inexistente é 404.
       parameters:
         - $ref: "#/components/parameters/PathID"
         - $ref: "#/components/parameters/PathChannelID"
       responses:
         "204": { description: Vínculo criado }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "403":
+          description: A conta não alcança todos os grupos
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/NotFound" }
     delete:
       tags: [alerts]
       summary: Desvincula um canal do monitor
+      description: Exige escopo total, como vincular. Canal inexistente é 404.
       parameters:
         - $ref: "#/components/parameters/PathID"
         - $ref: "#/components/parameters/PathChannelID"
       responses:
         "204": { description: Vínculo removido }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "403":
+          description: A conta não alcança todos os grupos
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/monitors/{id}/events:
+    get:
+      tags: [data]
+      summary: Linha do tempo de falhas e mudanças de estado
+      description: |
+        Mudanças confirmadas de estado (`state`) e batidas com falha
+        (`failure`), cada uma com a causa, da mais recente para trás.
+
+        Paginação para trás&#58; passe o `next_cursor` da página anterior em
+        `cursor`. O cursor é composto (instante, tipo, chave), então
+        eventos do mesmo instante continuam na página seguinte em vez de se
+        perderem, e a página nunca passa do `limit`. `has_more` só é
+        verdadeiro quando há de fato mais eventos.
+
+        As falhas vêm das batidas cruas e somem com a poda (7 dias por
+        padrão); as mudanças de estado ficam.
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+        - name: cursor
+          in: query
+          schema: { type: string }
+          description: O `next_cursor` da página anterior. Opaco.
+        - name: before
+          in: query
+          schema: { type: string, format: date-time }
+          description: |
+            Começa dos eventos anteriores a este instante (exclusivo).
+            Ignorado quando há `cursor`.
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - name: type
+          in: query
+          schema: { type: string, enum: [state, failure] }
+      responses:
+        "200":
+          description: Página de eventos
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/MonitorEvent" }
+                  has_more: { type: boolean }
+                  next_cursor:
+                    type: string
+                    description: Só quando `has_more`; passe em `cursor`.
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/groups:
+    get:
+      tags: [groups]
+      summary: Lista os grupos do escopo
+      description: Em ordem de caminho ("RPA / hml" antes de "RPA / prod").
+      responses:
+        "200":
+          description: Grupos
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/MonitorGroup" }
+    post:
+      tags: [groups]
+      summary: Cria um grupo
+      description: |
+        Dois níveis no máximo (Sistema → Ambiente). Grupo de topo só quem
+        alcança todos os grupos cria (403 para os demais); ambiente, quem
+        alcança o sistema. Criar ambiente num grupo que já tem monitores
+        devolve 409&#58; os monitores ficariam num grupo que não é mais
+        folha.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MonitorGroupInput" }
+      responses:
+        "201":
+          description: Grupo criado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MonitorGroup" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: Nome ou slug repetido entre irmãos, ou pai com monitores
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/groups/summary:
+    get:
+      tags: [groups]
+      summary: Um cartão por grupo, com o pior estado
+      description: |
+        Para a tela inicial. O sistema soma os ambientes dele. "Sem grupo"
+        (`group_id` nulo) aparece só para quem alcança tudo e só quando
+        tem monitor. Monitor pausado conta em `paused` e fica fora do pior
+        estado. Grupo sem monitor nenhum sai com `status` "empty".
+      responses:
+        "200":
+          description: Cartões
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/GroupSummary" }
+
+  /api/v1/groups/{id}:
+    get:
+      tags: [groups]
+      summary: Devolve um grupo
+      parameters: [{ $ref: "#/components/parameters/PathID" }]
+      responses:
+        "200":
+          description: O grupo
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MonitorGroup" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [groups]
+      summary: Renomeia ou move um grupo
+      description: |
+        Renomear (nome ou slug) exige enxergar todos os irmãos do grupo&#58;
+        para um sistema, escopo total. A recusa é 403 seja o nome livre ou
+        ocupado, para o conflito com um sistema fora do escopo não revelar
+        que ele existe. Dentro de um sistema concedido, renomear um
+        ambiente é livre.
+      parameters: [{ $ref: "#/components/parameters/PathID" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MonitorGroupInput" }
+      responses:
+        "200":
+          description: Grupo atualizado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MonitorGroup" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Nome ou slug repetido entre irmãos, ou pai com monitores
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      tags: [groups]
+      summary: Apaga um grupo vazio
+      description: |
+        Grupo com monitores ou ambientes devolve 409&#58; apagar perderia o
+        vínculo deles em silêncio. Vínculos de canal e concessões de escopo
+        saem junto.
+      parameters: [{ $ref: "#/components/parameters/PathID" }]
+      responses:
+        "204": { description: Grupo apagado }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: O grupo ainda tem monitores ou ambientes
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/groups/{id}/channels:
+    get:
+      tags: [alerts]
+      summary: Canais vinculados ao grupo
+      description: |
+        Só os habilitados. Valem para todos os monitores do grupo e, num
+        sistema, para os dos ambientes dele — inclusive os criados depois.
+      parameters: [{ $ref: "#/components/parameters/PathID" }]
+      responses:
+        "200":
+          description: Canais
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Channel" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/groups/{id}/channels/{channelID}:
+    put:
+      tags: [alerts]
+      summary: Vincula um canal ao grupo
+      description: |
+        Idempotente. Convive com o vínculo por monitor; cada canal avisa uma
+        vez só. Exige escopo total, como vincular a monitor.
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+        - $ref: "#/components/parameters/PathChannelID"
+      responses:
+        "204": { description: Vínculo criado }
+        "403":
+          description: A conta não alcança todos os grupos
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [alerts]
+      summary: Desvincula um canal do grupo
+      description: Exige escopo total. Canal inexistente é 404.
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+        - $ref: "#/components/parameters/PathChannelID"
+      responses:
+        "204": { description: Vínculo removido }
+        "403":
+          description: A conta não alcança todos os grupos
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/problems:
+    get:
+      tags: [groups]
+      summary: Problemas agora
+      description: |
+        Monitores ativos fora do ar, degradados e sem medição, nessa
+        ordem; dentro de cada estado, o mais antigo primeiro. Cada linha
+        traz o grupo, desde quando e a última causa.
+      responses:
+        "200":
+          description: Problemas
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Problem" }
 
   /api/v1/incidents:
     get:
@@ -1328,6 +1724,16 @@ paths:
 
         Tipos emitidos: `monitor.created`, `monitor.updated`,
         `monitor.deleted`.
+
+        Só chegam eventos de monitores do escopo. O escopo resolvido serve
+        aos eventos seguintes por até 5 s, então uma concessão retirada
+        vale no fluxo aberto em segundos. Monitor que sai do escopo (movido
+        para grupo de fora) chega como `monitor.deleted`, sem revelar para
+        onde foi.
+
+        A credencial é reconferida a cada 60 s&#58; sessão encerrada, token
+        revogado ou conta apagada encerram o fluxo, e a reconexão do
+        navegador recebe 401.
       responses:
         "200":
           description: Fluxo aberto
@@ -1347,6 +1753,26 @@ components:
       scheme: bearer
 
   parameters:
+    PushStatus:
+      name: status
+      in: query
+      description: |
+        Estado informado pelo próprio serviço. Ausente vale `up`.
+        `unknown` é recusado: é o que o UpWatch diz quando não sabe.
+      schema: { type: string, enum: [up, down, degraded], default: up }
+    PushMsg:
+      name: msg
+      in: query
+      description: |
+        Causa curta, que vai para o incidente e para o aviso. Cortada em
+        200 caracteres; caracteres de controle viram espaço. Nunca aparece
+        na página pública.
+      schema: { type: string, maxLength: 200 }
+    PushLatency:
+      name: latency_ms
+      in: query
+      description: Duração medida pelo próprio serviço, em milissegundos inteiros, até um dia.
+      schema: { type: integer, minimum: 0, maximum: 86400000 }
     PathID:
       name: id
       in: path
@@ -1388,10 +1814,32 @@ components:
     Forbidden:
       description: |
         A conta está autenticada, mas não tem permissão. Devolvido a um
-        observador em qualquer rota de escrita.
+        observador em qualquer rota de escrita, e a quem tem escopo ao
+        alterar canal, página pública ou relato, criar grupo de topo ou
+        conceder mais do que tem. Monitor ou grupo fora do escopo nunca dá
+        403, e sim 404, para não confirmar que existe.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    PushTooManyRequests:
+      description: |
+        Requisições demais da mesma origem. O limite é por endereço da
+        conexão; atrás de proxy reverso, todos dividem o do proxy.
+      headers:
+        Retry-After:
+          schema: { type: integer }
+          description: Segundos até a próxima tentativa valer
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    PushAccepted:
+      description: Sinal registrado
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              status: { type: string, example: ok }
     BadRequest:
       description: Requisição inválida
       content:
@@ -1442,6 +1890,7 @@ components:
             `admin` administra; `viewer` só lê. A separação é por verbo&#58;
             tudo que altera o estado exige administrador, tudo que só lê
             aceita observador.
+        scope: { $ref: "#/components/schemas/Scope" }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
@@ -1464,10 +1913,13 @@ components:
         name: { type: string }
         type:
           type: string
-          enum: [http, tcp, icmp, dns, tls, push]
+          enum: [http, tcp, icmp, dns, tls, push, redis, postgres, mysql]
         target:
           type: string
-          description: URL, host&#58;porta ou nome, conforme o tipo. Vazio para push.
+          description: |
+            URL, host:porta ou nome, conforme o tipo. Vazio para push.
+            Para redis, postgres e mysql é host:porta; a credencial vai
+            em config, nunca no endereço.
         interval_seconds:
           type: integer
           minimum: 5
@@ -1489,13 +1941,116 @@ components:
           type: object
           description: |
             Configuração específica do tipo, validada no cadastro pelo
-            checker correspondente.
+            checker correspondente e gravada na grafia canônica dos campos.
+            Para push, ver PushConfig; para http, ver HTTPConfig. Para os
+            tipos de protocolo, ver RedisConfig, PostgresConfig e
+            MySQLConfig: a senha é aceita na escrita e nunca devolvida;
+            numa edição, omiti-la mantém a guardada, desde que o endereço
+            não mude e o TLS não fique mais fraco. No tipo http vale o
+            mesmo para basic_auth_pass (a leitura traz
+            basic_auth_pass_set), e os cabeçalhos de credencial
+            (Authorization, Cookie e nomes com auth, token, key, secret,
+            password, session ou credential) voltam com o valor "***";
+            reenviar "***" mantém o valor guardado.
           additionalProperties: true
         parent_id: { type: integer, format: int64 }
+        group_id:
+          type: integer
+          format: int64
+          nullable: true
+          description: |
+            Grupo folha do monitor; nulo é "Sem grupo", que só quem
+            alcança todos os grupos usa. O PUT sobrescreve&#58; omitir move
+            para "Sem grupo".
         enabled: { type: boolean, default: true }
         tags:
           type: array
           items: { type: string }
+
+    HTTPConfig:
+      type: object
+      description: Campo `config` de um monitor do tipo `http`.
+      properties:
+        method:
+          type: string
+          enum: [GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS]
+          default: GET
+        headers:
+          type: object
+          additionalProperties: { type: string }
+          description: |
+            Cabeçalhos de credencial (Authorization, Cookie e nomes com auth,
+            token, key, secret, password, session ou credential) voltam com
+            o valor "***"; reenviar "***" mantém o valor guardado.
+        body: { type: string }
+        expect_status:
+          type: array
+          items: { type: integer, minimum: 100, maximum: 599 }
+          description: Códigos aceitos. Vazio aceita qualquer 2xx.
+        body_contains: { type: string }
+        body_not_contains: { type: string }
+        body_regex:
+          type: string
+          description: Expressão regular (sintaxe RE2), validada no cadastro
+        json_assertions:
+          type: array
+          items: { $ref: "#/components/schemas/JSONAssertion" }
+          description: |
+            Condições sobre o corpo interpretado como JSON. Todas precisam
+            valer. Corpo que não é JSON, ou maior que o limite de leitura de
+            1 MiB, derruba o monitor com a causa explicada.
+        follow_redirects: { type: boolean, default: true }
+        skip_tls_verify: { type: boolean, default: false }
+        basic_auth_user: { type: string }
+        basic_auth_pass:
+          type: string
+          writeOnly: true
+          description: |
+            Nunca devolvida; a leitura traz basic_auth_pass_set. Omiti-la
+            na edição mantém a guardada, desde que o endereço não mude e a
+            verificação do certificado continue ligada.
+        basic_auth_pass_set:
+          type: boolean
+          readOnly: true
+          description: Existe senha de basic auth guardada.
+
+    JSONAssertion:
+      type: object
+      required: [path, op]
+      description: |
+        Uma condição sobre um valor do corpo JSON. Asserção inválida é
+        recusada no cadastro com 400.
+      properties:
+        path:
+          type: string
+          maxLength: 512
+          description: |
+            Subconjunto de JSONPath: `$`, `$.chave`, `$.lista[0].chave` e
+            `$["chave com espaço"]`. Sem filtros, wildcards nem fatias —
+            cada caminho aponta para no máximo um valor.
+          example: $.queue_lag
+        op:
+          type: string
+          enum: [eq, ne, lt, lte, gt, gte, contains, exists, absent]
+          description: |
+            `eq` e `ne` comparam valor e tipo (`"100"` não é igual a `100`;
+            números comparam pelo valor, `340` é igual a `340.0`).
+            `lt`, `lte`, `gt` e `gte` só entre números. `contains` procura
+            um trecho num texto ou um elemento numa lista. `exists` passa
+            se o caminho existir, mesmo com valor null; `absent` passa se
+            ele não existir. Caminho ausente é diferente de qualquer valor:
+            `ne` passa e `eq` com null reprova.
+        value:
+          description: |
+            Qualquer valor JSON. Obrigatório para todos os operadores menos
+            `exists` e `absent`, que o recusam; número para `lt`, `lte`,
+            `gt` e `gte`. Números no valor precisam caber exatos num
+            float64 (sobreviver a ida e volta pela menor grafia), ter até
+            100 caracteres e expoente entre -10000 e 10000.
+      example:
+        path: $.queue_lag
+        op: lt
+        value: 100
 
     Monitor:
       allOf:
@@ -1505,16 +2060,252 @@ components:
             id: { type: integer, format: int64 }
             created_at: { type: string, format: date-time }
             updated_at: { type: string, format: date-time }
+            next_expected_push:
+              type: string
+              format: date-time
+              description: |
+                Próxima execução prevista de um push com agenda. Vem no
+                detalhe, na criação e na edição, nunca na listagem; ausente
+                sem agenda.
+
+    PushConfig:
+      type: object
+      description: |
+        Configuração de um monitor push. Sem `schedule`, o sinal é esperado
+        a cada `interval_seconds` mais a folga. Com `schedule`, o monitor só
+        cai quando falta o sinal de uma execução prevista até a folga
+        terminar. Um monitor que nunca recebeu sinal fica desconhecido
+        durante a primeira janela depois da criação (com agenda, até a
+        primeira execução prevista mais a folga) e cai depois dela.
+      required: [token]
+      properties:
+        token:
+          type: string
+          minLength: 16
+          description: |
+            Credencial do endpoint, única entre os monitores. Só o
+            administrador a recebe de volta; para o observador e no fluxo de
+            eventos ela sai como `***`.
+        grace_period_seconds:
+          type: integer
+          minimum: 0
+          description: |
+            Folga além do intervalo ou da execução prevista. Zero usa o
+            próprio intervalo; com `schedule`, no mínimo 5 minutos, porque o
+            intervalo ali é só o ritmo da verificação e nada diz quanto a
+            rotina leva.
+        schedule:
+          type: string
+          example: "2 9,18 * * *"
+          description: Expressão cron de 5 campos (minuto hora dia mês dia-da-semana).
+        timezone:
+          type: string
+          example: America/Sao_Paulo
+          description: Fuso IANA da agenda. Obrigatório com `schedule`.
+
+    RedisConfig:
+      type: object
+      description: |
+        Configuração do monitor redis. Envia PING e avalia as asserções.
+        Recomenda-se um usuário de ACL só com os comandos usados
+        (+ping +info e os das asserções).
+      properties:
+        username: { type: string, description: Usuário de ACL (Redis 6+) }
+        password:
+          type: string
+          writeOnly: true
+          description: Nunca devolvida; a leitura traz password_set.
+        password_set:
+          type: boolean
+          readOnly: true
+          description: Existe senha guardada.
+        db: { type: integer, minimum: 0 }
+        tls: { type: boolean }
+        skip_tls_verify: { type: boolean }
+        max_used_memory_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Acusa queda quando used_memory passa disto. Zero desliga.
+        assertions:
+          type: array
+          maxItems: 10
+          items: { $ref: "#/components/schemas/RedisAssertion" }
+
+    RedisAssertion:
+      type: object
+      description: |
+        Condição numérica sobre um comando de leitura. Só a lista fechada
+        de comandos é aceita; o monitor não executa comando arbitrário.
+        Exemplo: SCARD rq:workers:default gte 1.
+      required: [command, op, value]
+      properties:
+        command:
+          type: string
+          enum: [SCARD, LLEN, GET, EXISTS, HGET, ZCARD, DBSIZE, INFO]
+        key: { type: string, description: Obrigatória exceto em DBSIZE e INFO }
+        field: { type: string, description: Campo do HGET ou do INFO }
+        section: { type: string, description: Seção do INFO (memory, clients...) }
+        op: { type: string, enum: [eq, ne, lt, lte, gt, gte] }
+        value: { type: number }
+
+    PostgresConfig:
+      type: object
+      description: |
+        Configuração do monitor postgres. Abre sessão e executa a consulta
+        numa transação somente leitura; a latência é a duração da consulta.
+        Recomenda-se um usuário somente leitura e sem acesso a dados.
+      required: [username]
+      properties:
+        username: { type: string }
+        password:
+          type: string
+          writeOnly: true
+          description: Nunca devolvida; a leitura traz password_set.
+        password_set: { type: boolean, readOnly: true }
+        database: { type: string }
+        sslmode:
+          type: string
+          enum: [disable, allow, prefer, require, verify-ca, verify-full]
+          default: prefer
+        query: { type: string, maxLength: 4096, default: SELECT 1 }
+
+    MySQLConfig:
+      type: object
+      description: |
+        Configuração do monitor mysql (MySQL ou MariaDB). Mesmo
+        comportamento do postgres.
+      required: [username]
+      properties:
+        username: { type: string }
+        password:
+          type: string
+          writeOnly: true
+          description: Nunca devolvida; a leitura traz password_set.
+        password_set: { type: boolean, readOnly: true }
+        database: { type: string }
+        tls:
+          type: string
+          enum: ["false", "true", skip-verify, preferred]
+          default: "false"
+        query: { type: string, maxLength: 4096, default: SELECT 1 }
+
+    Scope:
+      type: object
+      description: |
+        Sobre quais grupos o papel vale. Conceder um sistema concede os
+        ambientes dele, inclusive os criados depois.
+      properties:
+        all_groups:
+          type: boolean
+          description: Verdadeiro alcança tudo, inclusive monitores sem grupo.
+        group_ids:
+          type: array
+          items: { type: integer, format: int64 }
+          description: Grupos concedidos quando `all_groups` é falso. Pelo menos um.
+
+    MonitorGroupInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, maxLength: 60 }
+        slug:
+          type: string
+          description: Vazio é derivado do nome. Único entre irmãos.
+        parent_id:
+          type: integer
+          format: int64
+          description: Sistema do ambiente; ausente é grupo de topo.
+
+    MonitorGroup:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string }
+        slug: { type: string }
+        parent_id: { type: integer, format: int64, nullable: true }
+        path:
+          type: string
+          description: Nome completo, como "RPA / prod".
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    GroupSummary:
+      type: object
+      properties:
+        group_id:
+          type: integer
+          format: int64
+          nullable: true
+          description: Nulo é "Sem grupo".
+        parent_id: { type: integer, format: int64, nullable: true }
+        name: { type: string }
+        path: { type: string }
+        status:
+          type: string
+          enum: [up, degraded, down, unknown, empty]
+          description: |
+            Pior estado entre os ativos, na ordem down, degraded, unknown,
+            up. "empty" é o grupo sem monitor nenhum&#58; não há o que medir,
+            o que é diferente de "unknown" (monitor que deveria responder e
+            não está sendo medido).
+        total: { type: integer }
+        up: { type: integer }
+        degraded: { type: integer }
+        down: { type: integer }
+        unknown: { type: integer }
+        paused: { type: integer }
+        problems:
+          type: integer
+          description: down + degraded + unknown
+
+    Problem:
+      type: object
+      properties:
+        monitor_id: { type: integer, format: int64 }
+        name: { type: string }
+        type: { type: string }
+        group_id: { type: integer, format: int64, nullable: true }
+        group_path:
+          type: string
+          description: Vazio é "Sem grupo".
+        status: { type: string, enum: [down, degraded, unknown] }
+        since:
+          type: string
+          format: date-time
+          description: Desde quando o estado vale; para monitor nunca medido, o cadastro.
+        cause:
+          type: string
+          description: Mensagem da última verificação com falha, ou a causa da queda em curso.
+        last_check_at: { type: string, format: date-time, nullable: true }
+
+    MonitorEvent:
+      type: object
+      properties:
+        type: { type: string, enum: [state, failure] }
+        at: { type: string, format: date-time }
+        status:
+          type: string
+          enum: [up, degraded, down, unknown]
+          description: Estado novo (state) ou resultado da batida (failure).
+        from:
+          type: string
+          description: Estado anterior; só em `state`.
+        message: { type: string }
+        latency_ms: { type: integer, description: Só em `failure`. }
+        probe_id: { type: string, description: Só em `failure`. }
+
 
     Channel:
       type: object
       description: |
         A configuração nunca aparece nesta representação: ela contém a URL
-        do webhook, que é a credencial de quem pode publicar no canal.
+        do webhook, a senha do SMTP ou o token do ntfy - credenciais de
+        quem pode publicar no canal.
       properties:
         id: { type: integer, format: int64 }
         name: { type: string }
-        type: { type: string, enum: [webhook, discord, slack] }
+        type: { type: string, enum: [webhook, discord, slack, email, ntfy] }
         enabled: { type: boolean }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
@@ -1524,52 +2315,141 @@ components:
       required: [name, type, config]
       properties:
         name: { type: string, maxLength: 80 }
-        type: { type: string, enum: [webhook, discord, slack] }
+        type: { type: string, enum: [webhook, discord, slack, email, ntfy] }
         enabled: { type: boolean, default: true }
         config:
+          description: |
+            A forma depende de type. webhook, discord e slack usam
+            WebhookChannelConfig; email usa EmailChannelConfig; ntfy usa
+            NtfyChannelConfig.
+
+            Senha, token e URL de webhook são credenciais e nunca voltam
+            nas leituras.
+          oneOf:
+            - $ref: "#/components/schemas/WebhookChannelConfig"
+            - $ref: "#/components/schemas/EmailChannelConfig"
+            - $ref: "#/components/schemas/NtfyChannelConfig"
+
+    WebhookChannelConfig:
+      type: object
+      description: Canais webhook, discord e slack.
+      required: [url]
+      properties:
+        url:
+          type: string
+          description: Destino da entrega
+        headers:
           type: object
-          required: [url]
-          properties:
-            url:
-              type: string
-              description: Destino da entrega
-            headers:
-              type: object
-              additionalProperties: { type: string }
-              description: Cabeçalhos extras, para destinos que exigem token próprio
-            template:
-              type: string
-              description: |
-                Modelo próprio da mensagem, compilado no cadastro para o
-                erro aparecer aqui e não durante o incidente.
+          additionalProperties: { type: string }
+          description: Cabeçalhos extras, para destinos que exigem token próprio
+        template:
+          type: string
+          description: |
+            Modelo próprio da mensagem, compilado no cadastro para o
+            erro aparecer aqui e não durante o incidente.
 
-                Campos disponíveis - Monitor, Status, Message, Duration,
-                At e Text.
-            body_template:
-              description: |
-                Forma do corpo inteiro, e não só da frase. Só no canal
-                webhook - discord e slack têm corpo ditado pelo destino e
-                recusam este campo no cadastro.
+            Campos disponíveis - Monitor (com ID, Name, Target, Type e
+            Tags), Status, Message, Duration, At e Text. A configuração
+            do monitor nunca está ao alcance do modelo - ela guarda
+            senhas e tokens -, e um modelo que tenta ler campo
+            inexistente, como .Monitor.Config, é recusado no cadastro.
+        body_template:
+          description: |
+            Forma do corpo inteiro, e não só da frase. Só no canal
+            webhook - discord e slack têm corpo ditado pelo destino e
+            recusam este campo no cadastro.
 
-                Qualquer objeto ou lista JSON. Em qualquer texto dentro
-                dele, os marcadores são substituídos - $monitor,
-                $monitor_id, $target, $status, $previous_status, $message,
-                $at, $duration_seconds e $text. Também vale ${nome}, e $$
-                escreve um cifrão literal.
+            Qualquer objeto ou lista JSON. Em qualquer texto dentro
+            dele, os marcadores são substituídos - $monitor,
+            $monitor_id, $target, $status, $previous_status, $message,
+            $at, $duration_seconds e $text. Também vale ${nome}, e $$
+            escreve um cifrão literal.
 
-                Sozinho, o marcador entrega o valor com o tipo dele, de
-                modo que $duration_seconds chega como número. Dentro de um
-                texto, compõe a frase.
+            Sozinho, o marcador entrega o valor com o tipo dele, de
+            modo que $duration_seconds chega como número. Dentro de um
+            texto, compõe a frase.
 
-                Sem este campo, o corpo é o envelope padrão com todos os
-                campos - quem já integrou contra ele não muda.
-              oneOf:
-                - type: object
-                - type: array
-              example:
-                event: $status
-                service: $monitor
-                outage_seconds: $duration_seconds
+            Sem este campo, o corpo é o envelope padrão com todos os
+            campos - quem já integrou contra ele não muda.
+          oneOf:
+            - type: object
+            - type: array
+          example:
+            event: $status
+            service: $monitor
+            outage_seconds: $duration_seconds
+
+    EmailChannelConfig:
+      type: object
+      description: |
+        Canal email, por SMTP. O assunto é sempre
+        "[UpWatch] <monitor>: <estado>" - fora do ar, no ar, degradado ou
+        sem medição - para agrupar no cliente de e-mail e casar com regra
+        de caixa de entrada; nome de monitor acima de 100 caracteres é
+        cortado com reticências. O corpo vai em texto e HTML, com causa,
+        horário e, na volta, quanto tempo durou a queda. Um destinatário
+        recusado pelo servidor não impede a entrega aos outros.
+
+        Endereço com espaço, < ou > na parte local é recusado, mesmo
+        entre aspas.
+      required: [host, from, to]
+      properties:
+        host: { type: string, example: smtp.exemplo.com }
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+          description: Vazia segue o modo - 587 em starttls, 465 em tls, 25 em none.
+        security:
+          type: string
+          enum: [starttls, tls, none]
+          default: starttls
+          description: |
+            starttls exige que o servidor ofereça STARTTLS - sem ele, a
+            entrega falha em vez de seguir em claro. tls é o TLS implícito
+            da porta 465. none só é aceito sem usuário e senha, para relé
+            local.
+        username: { type: string }
+        password:
+          type: string
+          writeOnly: true
+          description: Segredo. Nunca volta nas leituras.
+        from: { type: string, example: "UpWatch <alertas@exemplo.com>" }
+        to:
+          type: array
+          minItems: 1
+          items: { type: string, example: plantao@exemplo.com }
+
+    NtfyChannelConfig:
+      type: object
+      description: |
+        Canal ntfy, para alerta push no celular sem conta. A queda chega
+        com prioridade 5 e a volta e o degradado com 3; o título é
+        "<monitor>: <estado>". A mensagem é cortada em 4096 bytes, o
+        limite acima do qual o ntfy a entrega como anexo.
+      required: [topic]
+      properties:
+        server:
+          type: string
+          default: https://ntfy.sh
+          description: |
+            Servidor público ou próprio, http ou https. Só o endereço -
+            query, fragmento e usuário e senha na URL são recusados.
+        topic:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{1,64}$"
+          description: |
+            No servidor público (ntfy.sh), com ao menos 12 caracteres:
+            lá o tópico é a única credencial, e quem souber o nome lê os
+            alertas.
+        token:
+          type: string
+          writeOnly: true
+          description: |
+            Token de acesso, para servidor com controle de acesso. Vai
+            como Authorization Bearer, por isso exige https - salvo em
+            servidor no loopback (localhost, 127.0.0.1, ::1). Caractere de
+            controle é recusado. Segredo - nunca volta nas leituras.
 
     Incident:
       type: object
@@ -1596,7 +2476,19 @@ components:
         nulo significa que nao houve medicao, e zero e uma afirmacao.
       properties:
         monitor_id: { type: integer, format: int64 }
-        status: { type: string, enum: [up, down, degraded, unknown] }
+        status:
+          type: string
+          enum: [up, down, degraded, unknown]
+          description: |
+            Estado confirmado do monitor, o mesmo do cartao de grupo e de
+            "Problemas agora".
+        last_check_status:
+          type: string
+          enum: [up, down, degraded, unknown]
+          nullable: true
+          description: |
+            Resultado da ultima batida, sem confirmacao. Nulo quando nunca
+            houve batida.
         source:
           type: string
           enum: [raw, hourly, daily]

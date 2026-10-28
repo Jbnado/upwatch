@@ -23,10 +23,19 @@ type Heartbeat struct {
 
 	// Message descreve a causa quando o check falhou.
 	Message string `json:"message,omitempty"`
+
+	// Repeated marca a batida que só repete uma observação já contada,
+	// como o mesmo sinal de push relido até chegar o seguinte. Não vai
+	// para o banco: serve ao motor, que não a conta para a confirmação, e
+	// à gravação, que não guarda a latência dela.
+	Repeated bool `json:"-"`
 }
 
 // Normalize aplica as invariantes de gravação: probe default, timestamp em
-// UTC e latência zerada quando não houve resposta.
+// UTC e latência zerada quando não houve resposta ou quando a batida só
+// repete uma observação já contada — a latência dela seria a mesma
+// amostra outra vez, e os percentis contariam releituras em vez de
+// medições.
 //
 // Toda escrita passa por aqui para que o formato no banco seja o mesmo
 // independentemente de quem produziu a batida.
@@ -35,7 +44,7 @@ func (h Heartbeat) Normalize() Heartbeat {
 		h.ProbeID = DefaultProbeID
 	}
 	h.Timestamp = h.Timestamp.UTC()
-	if !h.Status.Responsive() {
+	if !h.Status.Responsive() || h.Repeated {
 		h.LatencyMS = 0
 	}
 	return h

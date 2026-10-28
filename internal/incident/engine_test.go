@@ -12,6 +12,7 @@ import (
 	"github.com/Jbnado/upwatch/internal/domain"
 	"github.com/Jbnado/upwatch/internal/incident"
 	"github.com/Jbnado/upwatch/internal/notifier"
+	"github.com/Jbnado/upwatch/internal/secretbox"
 	"github.com/Jbnado/upwatch/internal/store"
 	"github.com/Jbnado/upwatch/internal/store/sqlstore"
 )
@@ -68,7 +69,7 @@ type engineFixture struct {
 func newEngine(t *testing.T) *engineFixture {
 	t.Helper()
 
-	st, err := sqlstore.OpenSQLite(filepath.Join(t.TempDir(), "upwatch.db"))
+	st, err := sqlstore.OpenSQLite(filepath.Join(t.TempDir(), "upwatch.db"), secretbox.Ephemeral())
 	if err != nil {
 		t.Fatalf("OpenSQLite returned unexpected error: %v", err)
 	}
@@ -401,4 +402,51 @@ func repeatStatus(n int, status domain.Status) []domain.Status {
 		out[i] = status
 	}
 	return out
+}
+
+// observeRepeated alimenta o motor com batidas que repetem uma observação
+// já contada, como a releitura do mesmo sinal de push.
+func (f *engineFixture) observeRepeated(t *testing.T, at time.Time, status domain.Status, n int) {
+	t.Helper()
+	for i := range n {
+		hb := domain.Heartbeat{
+			MonitorID: f.monitor.ID, Timestamp: at.Add(time.Duration(i) * time.Second),
+			Status: status, Message: "fila sem worker", Repeated: true,
+		}
+		if err := f.engine.Submit(context.Background(), hb); err != nil {
+			t.Fatalf("Submit returned unexpected error: %v", err)
+		}
+	}
+}
+
+// A confirmação conta observações, não leituras. Um único "down" do push
+// relido a cada verificação abriria incidente sozinho se cada releitura
+// contasse como falha nova — e o limiar existe justamente para um soluço
+// do script não fazer isso.
+func TestEngineIgnoresRepeatedObservations(t *testing.T) {
+	f := newEngine(t)
+	f.linkChannel(t)
+	f.observe(t, domain.StatusDown)
+
+	f.observeRepeated(t, epoch.Add(time.Minute), domain.StatusDown, threshold+5)
+
+	if len(f.dispatch.all()) != 0 {
+		t.Errorf("dispatched %d notifications from re-reads of one failure, want none", len(f.dispatch.all()))
+	}
+	if got := f.engine.StateOf(f.monitor.ID); got.Consecutive != 1 {
+		t.Errorf("Consecutive = %d after re-reads, want the single real failure counted", got.Consecutive)
+	}
+}
+
+// A releitura também não zera a contagem: um "up" antigo relido entre
+// duas falhas de verdade não pode esconder que elas são seguidas.
+func TestEngineRepeatedObservationDoesNotResetThePendingCount(t *testing.T) {
+	f := newEngine(t)
+	f.observe(t, domain.StatusUp, domain.StatusDown)
+
+	f.observeRepeated(t, epoch.Add(5*time.Minute), domain.StatusUp, 3)
+
+	if got := f.engine.StateOf(f.monitor.ID); got.Candidate != domain.StatusDown || got.Consecutive != 1 {
+		t.Errorf("state = %+v, want the pending failure kept", got)
+	}
 }

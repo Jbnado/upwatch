@@ -26,6 +26,7 @@ type probe struct {
 
 	hold     chan struct{} // se não-nil, o check bloqueia até liberar
 	panicNow atomic.Bool
+	repeated atomic.Bool // o resultado repete uma observação já contada
 
 	mu       sync.Mutex
 	timeouts []time.Duration
@@ -63,7 +64,7 @@ func (p *probe) Check(ctx context.Context, m domain.Monitor) checker.Result {
 	if p.hold != nil {
 		<-p.hold
 	}
-	return checker.Result{Status: domain.StatusUp, LatencyMS: 12}
+	return checker.Result{Status: domain.StatusUp, LatencyMS: 12, Repeated: p.repeated.Load()}
 }
 
 // awaitCall espera uma verificação acontecer, falhando se travar.
@@ -563,5 +564,23 @@ func TestSchedulerNextRunReportsUnknownMonitor(t *testing.T) {
 
 	if _, ok := sch.NextRun(999); ok {
 		t.Error("NextRun of an unscheduled monitor reported ok, want false")
+	}
+}
+
+// O checker sabe quando o resultado só repete uma observação já contada —
+// o mesmo sinal de push relido. Se o agendador perdesse essa marca no
+// caminho, o motor contaria a releitura como falha nova, e um único "down"
+// abriria incidente sozinho.
+func TestSchedulerCarriesTheRepeatedMarkToTheHeartbeat(t *testing.T) {
+	p, sk := newProbe(), newSink()
+	p.repeated.Store(true)
+	sch, _ := newScheduler(t, p, sk, 1)
+	sch.Upsert(monitor(1, time.Minute))
+	start(t, sch)
+
+	awaitHeartbeat(t, sk)
+
+	if got := sk.all(); !got[0].Repeated {
+		t.Errorf("heartbeat = %+v, want it marked as a repeated observation", got[0])
 	}
 }

@@ -104,7 +104,7 @@ func writeStoreError(w http.ResponseWriter, err error) {
 		// Conflito, não erro de validação: o pedido está bem formado, o
 		// estado atual é que não permite atendê-lo.
 		writeError(w, http.StatusConflict, codeConflict,
-			"é preciso manter ao menos um administrador")
+			"é preciso manter ao menos um administrador com acesso a todos os grupos")
 	case errors.Is(err, auth.ErrTooManyAttempts):
 		writeError(w, http.StatusTooManyRequests, codeTooManyReqs,
 			"tentativas demais; aguarde antes de tentar novamente")

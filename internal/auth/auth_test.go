@@ -10,6 +10,7 @@ import (
 	"github.com/Jbnado/upwatch/internal/auth"
 	"github.com/Jbnado/upwatch/internal/clock"
 	"github.com/Jbnado/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/secretbox"
 	"github.com/Jbnado/upwatch/internal/store"
 	"github.com/Jbnado/upwatch/internal/store/sqlstore"
 )
@@ -27,7 +28,7 @@ type fixture struct {
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 
-	st, err := sqlstore.OpenSQLite(filepath.Join(t.TempDir(), "upwatch.db"))
+	st, err := sqlstore.OpenSQLite(filepath.Join(t.TempDir(), "upwatch.db"), secretbox.Ephemeral())
 	if err != nil {
 		t.Fatalf("OpenSQLite returned unexpected error: %v", err)
 	}

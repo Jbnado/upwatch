@@ -46,6 +46,8 @@ func RunConformance(t *testing.T, newStore Factory) {
 		{"UserCountByRoleSeparates", testUserCountByRoleSeparates},
 	}...)
 	cases = append(cases, statusPageCases()...)
+	cases = append(cases, groupCases()...)
+	cases = append(cases, secretCases()...)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) { tc.run(t, newStore) })
 	}
@@ -60,6 +62,9 @@ func monitoringCases() []conformanceCase {
 		{"MonitorGetMissingReturnsNotFound", testMonitorGetMissingReturnsNotFound},
 		{"MonitorDuplicateNameReturnsConflict", testMonitorDuplicateNameReturnsConflict},
 		{"MonitorUpdatePersistsChanges", testMonitorUpdatePersistsChanges},
+		{"MonitorRearmsOnConfigChangeOrReactivation", testMonitorRearmsOnConfigChangeOrReactivation},
+		{"MonitorFindByPushToken", testMonitorFindByPushToken},
+		{"MonitorPushTokenIsUnique", testMonitorPushTokenIsUnique},
 		{"MonitorUpdateMissingReturnsNotFound", testMonitorUpdateMissingReturnsNotFound},
 		{"MonitorDeleteRemovesIt", testMonitorDeleteRemovesIt},
 		{"MonitorDeleteMissingReturnsNotFound", testMonitorDeleteMissingReturnsNotFound},
@@ -102,6 +107,8 @@ func monitoringCases() []conformanceCase {
 
 		{"PushStateStartsEmpty", testPushStateStartsEmpty},
 		{"PushStateRoundTrips", testPushStateRoundTrips},
+		{"PushStateKeepsStatusMessageAndLatency", testPushStateKeepsStatusMessageAndLatency},
+		{"PushSignalIsEvaluatedOnce", testPushSignalIsEvaluatedOnce},
 		{"PushStateIsPerMonitor", testPushStateIsPerMonitor},
 		{"PushStateCascadesOnMonitorDelete", testPushStateCascadesOnMonitorDelete},
 		{"LatestHeartbeatsOnEmptyStore", testLatestHeartbeatsOnEmptyStore},
@@ -296,6 +303,162 @@ func testMonitorUpdatePersistsChanges(t *testing.T, newStore Factory) {
 	}
 	if got.Enabled {
 		t.Error("Enabled = true, want false")
+	}
+}
+
+// O push conta a espera do sinal a partir do último sinal ou da última
+// mudança que a recomeça — o que vier depois. Sem o instante da mudança,
+// trocar a agenda ou reativar um monitor parado o derrubaria na hora,
+// cobrando uma janela que ninguém estava vigiando. UpdatedAt não serve:
+// muda também ao renomear, e aí renomear adiaria um alarme legítimo.
+func testMonitorRearmsOnConfigChangeOrReactivation(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	id := mustCreateMonitor(t, s, "cron")
+
+	get := func() domain.Monitor {
+		t.Helper()
+		m, err := s.Monitors().Get(ctx, id)
+		if err != nil {
+			t.Fatalf("Get returned unexpected error: %v", err)
+		}
+		return m
+	}
+	update := func(m domain.Monitor) domain.Monitor {
+		t.Helper()
+		// O instante gravado tem resolução de milissegundo; sem a pausa,
+		// a mudança poderia cair no mesmo milissegundo da anterior e o
+		// teste não distinguiria "avançou" de "ficou".
+		time.Sleep(5 * time.Millisecond)
+		if err := s.Monitors().Update(ctx, m); err != nil {
+			t.Fatalf("Update returned unexpected error: %v", err)
+		}
+		return get()
+	}
+
+	created := get()
+	if !created.RearmedAt.Equal(created.CreatedAt) {
+		t.Fatalf("RearmedAt = %v, want the creation time %v", created.RearmedAt, created.CreatedAt)
+	}
+
+	renamed := created
+	renamed.Name = "cron renomeado"
+	renamed = update(renamed)
+	if !renamed.RearmedAt.Equal(created.RearmedAt) {
+		t.Errorf("rename moved RearmedAt to %v, want it kept", renamed.RearmedAt)
+	}
+
+	reconfigured := renamed
+	reconfigured.Config = json.RawMessage(`{"schedule":"0 9 * * *"}`)
+	reconfigured = update(reconfigured)
+	if !reconfigured.RearmedAt.Equal(reconfigured.UpdatedAt) {
+		t.Errorf("config change: RearmedAt = %v, want the update time %v",
+			reconfigured.RearmedAt, reconfigured.UpdatedAt)
+	}
+
+	retimed := reconfigured
+	retimed.Interval = 10 * time.Minute
+	retimed = update(retimed)
+	if !retimed.RearmedAt.Equal(retimed.UpdatedAt) {
+		t.Errorf("interval change: RearmedAt = %v, want the update time %v",
+			retimed.RearmedAt, retimed.UpdatedAt)
+	}
+
+	disabled := retimed
+	disabled.Enabled = false
+	disabled = update(disabled)
+	if !disabled.RearmedAt.Equal(retimed.RearmedAt) {
+		t.Errorf("disabling moved RearmedAt to %v, want it kept", disabled.RearmedAt)
+	}
+
+	enabled := disabled
+	enabled.Enabled = true
+	enabled = update(enabled)
+	if !enabled.RearmedAt.Equal(enabled.UpdatedAt) {
+		t.Errorf("reactivation: RearmedAt = %v, want the update time %v",
+			enabled.RearmedAt, enabled.UpdatedAt)
+	}
+}
+
+// pushMonitor é um monitor push com o token dado.
+func pushMonitor(name, token string) domain.Monitor {
+	m := newMonitor(name)
+	m.Type, m.Target = domain.MonitorPush, ""
+	m.Config = json.RawMessage(`{"token":"` + token + `"}`)
+	m.PushToken = token
+	return m
+}
+
+// O /push não tem login e é a superfície mais exposta da instalação. Achar
+// o dono do token percorrendo todos os monitores custava uma varredura por
+// requisição, e qualquer um podia provocá-la. A busca é pela coluna
+// indexada, e o token que não existe, ou vazio, não acha ninguém.
+func testMonitorFindByPushToken(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	mustCreateMonitor(t, s, "api sem token")
+
+	want := pushMonitor("cron noturno", "token-do-cron-noturno")
+	if err := s.Monitors().Create(ctx, &want); err != nil {
+		t.Fatalf("Create returned unexpected error: %v", err)
+	}
+
+	got, err := s.Monitors().FindByPushToken(ctx, "token-do-cron-noturno")
+	if err != nil {
+		t.Fatalf("FindByPushToken returned unexpected error: %v", err)
+	}
+	if got.ID != want.ID || got.PushToken != "token-do-cron-noturno" {
+		t.Errorf("FindByPushToken = %+v, want monitor %d", got, want.ID)
+	}
+
+	for _, token := range []string{"token-que-nao-existe", ""} {
+		if _, err := s.Monitors().FindByPushToken(ctx, token); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("FindByPushToken(%q) error = %v, want store.ErrNotFound", token, err)
+		}
+	}
+
+	// Trocar o token na edição troca o que o /push aceita: o antigo
+	// deixa de achar o monitor.
+	want.Config = json.RawMessage(`{"token":"token-novo-do-cron"}`)
+	want.PushToken = "token-novo-do-cron"
+	if err := s.Monitors().Update(ctx, want); err != nil {
+		t.Fatalf("Update returned unexpected error: %v", err)
+	}
+	if _, err := s.Monitors().FindByPushToken(ctx, "token-do-cron-noturno"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("old token still finds the monitor: %v", err)
+	}
+	if got, err := s.Monitors().FindByPushToken(ctx, "token-novo-do-cron"); err != nil || got.ID != want.ID {
+		t.Errorf("FindByPushToken(new) = (%d, %v), want monitor %d", got.ID, err, want.ID)
+	}
+}
+
+// Dois monitores com o mesmo token fariam o sinal de um cair no outro — e
+// o que ficasse sem sinal cairia por silêncio, com o serviço no ar. O
+// banco garante a unicidade; os monitores sem token não disputam nada.
+func testMonitorPushTokenIsUnique(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	mustCreateMonitor(t, s, "api um")
+	mustCreateMonitor(t, s, "api dois")
+
+	first := pushMonitor("cron A", "token-compartilhado")
+	if err := s.Monitors().Create(ctx, &first); err != nil {
+		t.Fatalf("Create returned unexpected error: %v", err)
+	}
+
+	dup := pushMonitor("cron B", "token-compartilhado")
+	if err := s.Monitors().Create(ctx, &dup); !errors.Is(err, store.ErrConflict) {
+		t.Errorf("Create with a taken token returned %v, want store.ErrConflict", err)
+	}
+
+	other := pushMonitor("cron C", "token-proprio-do-c")
+	if err := s.Monitors().Create(ctx, &other); err != nil {
+		t.Fatalf("Create returned unexpected error: %v", err)
+	}
+	other.Config = first.Config
+	other.PushToken = first.PushToken
+	if err := s.Monitors().Update(ctx, other); !errors.Is(err, store.ErrConflict) {
+		t.Errorf("Update to a taken token returned %v, want store.ErrConflict", err)
 	}
 }
 
@@ -1256,28 +1419,120 @@ func testPushStateRoundTrips(t *testing.T, newStore Factory) {
 	ctx := context.Background()
 	id := mustCreateMonitor(t, s, "cron noturno")
 
-	if err := s.RecordPush(ctx, id, epoch); err != nil {
+	if err := s.RecordPush(ctx, id, upSignal(epoch)); err != nil {
 		t.Fatalf("RecordPush returned unexpected error: %v", err)
 	}
 	got, ok, err := s.LastPush(ctx, id)
 	if err != nil {
 		t.Fatalf("LastPush returned unexpected error: %v", err)
 	}
-	if !ok || !got.Equal(epoch) {
-		t.Fatalf("LastPush = (%v, %v), want (%v, true)", got, ok, epoch)
+	if !ok || !got.At.Equal(epoch) {
+		t.Fatalf("LastPush = (%v, %v), want (%v, true)", got.At, ok, epoch)
 	}
 
 	later := epoch.Add(time.Hour)
-	if err := s.RecordPush(ctx, id, later); err != nil {
+	if err := s.RecordPush(ctx, id, upSignal(later)); err != nil {
 		t.Fatalf("second RecordPush returned unexpected error: %v", err)
 	}
 	got, _, err = s.LastPush(ctx, id)
 	if err != nil {
 		t.Fatalf("LastPush returned unexpected error: %v", err)
 	}
-	if !got.Equal(later) {
-		t.Errorf("LastPush = %v, want %v", got, later)
+	if !got.At.Equal(later) {
+		t.Errorf("LastPush = %v, want %v", got.At, later)
 	}
+}
+
+// O sinal carrega o que o serviço sabe sobre si. Se o banco guardasse só
+// o instante, a causa informada pelo script se perderia entre o endpoint e
+// o checker, e o aviso voltaria a dizer apenas "silêncio".
+func testPushStateKeepsStatusMessageAndLatency(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	id := mustCreateMonitor(t, s, "fila de pedidos")
+
+	want := domain.PushSignal{
+		At: epoch, Status: domain.StatusDown, Message: "fila sem worker", LatencyMS: 1234,
+	}
+	if err := s.RecordPush(ctx, id, want); err != nil {
+		t.Fatalf("RecordPush returned unexpected error: %v", err)
+	}
+
+	got, ok, err := s.LastPush(ctx, id)
+	if err != nil || !ok {
+		t.Fatalf("LastPush = (%+v, %v, %v), want the recorded signal", got, ok, err)
+	}
+	if got.Status != want.Status || got.Message != want.Message || got.LatencyMS != want.LatencyMS {
+		t.Errorf("LastPush = %+v, want %+v", got, want)
+	}
+
+	// O sinal seguinte substitui o anterior por inteiro: uma causa velha
+	// grudada num sinal saudável faria o operador procurar um problema que
+	// já passou.
+	if err := s.RecordPush(ctx, id, upSignal(epoch.Add(time.Minute))); err != nil {
+		t.Fatalf("second RecordPush returned unexpected error: %v", err)
+	}
+	got, _, err = s.LastPush(ctx, id)
+	if err != nil {
+		t.Fatalf("LastPush returned unexpected error: %v", err)
+	}
+	if got.Status != domain.StatusUp || got.Message != "" || got.LatencyMS != 0 {
+		t.Errorf("LastPush after a healthy signal = %+v, want the old cause gone", got)
+	}
+}
+
+// Cada sinal vira uma observação só. O checker marca o sinal como
+// contado; se o banco não distinguisse o sinal já contado do recém-chegado,
+// o mesmo "down" relido a cada verificação seria contado de novo, e um
+// único sinal abriria incidente sozinho.
+func testPushSignalIsEvaluatedOnce(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	id := mustCreateMonitor(t, s, "fila de pedidos")
+
+	if err := s.RecordPush(ctx, id, upSignal(epoch)); err != nil {
+		t.Fatalf("RecordPush returned unexpected error: %v", err)
+	}
+	first, _, err := s.LastPush(ctx, id)
+	if err != nil {
+		t.Fatalf("LastPush returned unexpected error: %v", err)
+	}
+	if first.Evaluated {
+		t.Fatalf("LastPush = %+v, want a fresh signal not yet evaluated", first)
+	}
+
+	if err := s.MarkPushEvaluated(ctx, id, first.ID); err != nil {
+		t.Fatalf("MarkPushEvaluated returned unexpected error: %v", err)
+	}
+	got, _, err := s.LastPush(ctx, id)
+	if err != nil {
+		t.Fatalf("LastPush returned unexpected error: %v", err)
+	}
+	if !got.Evaluated {
+		t.Errorf("LastPush = %+v, want the signal marked as evaluated", got)
+	}
+
+	// O sinal seguinte é inédito, mesmo chegando no mesmo milissegundo: a
+	// identidade é do sinal, não do instante.
+	if err := s.RecordPush(ctx, id, upSignal(epoch)); err != nil {
+		t.Fatalf("second RecordPush returned unexpected error: %v", err)
+	}
+	// Uma marca atrasada, do sinal anterior, não pode engolir o novo.
+	if err := s.MarkPushEvaluated(ctx, id, first.ID); err != nil {
+		t.Fatalf("late MarkPushEvaluated returned unexpected error: %v", err)
+	}
+	second, _, err := s.LastPush(ctx, id)
+	if err != nil {
+		t.Fatalf("LastPush returned unexpected error: %v", err)
+	}
+	if second.Evaluated || second.ID == first.ID {
+		t.Errorf("LastPush after a new signal = %+v, want a fresh signal with its own id", second)
+	}
+}
+
+// upSignal é o sinal sem parâmetros, como um cron que só diz "estou vivo".
+func upSignal(at time.Time) domain.PushSignal {
+	return domain.PushSignal{At: at, Status: domain.StatusUp}
 }
 
 func testPushStateIsPerMonitor(t *testing.T, newStore Factory) {
@@ -1286,7 +1541,7 @@ func testPushStateIsPerMonitor(t *testing.T, newStore Factory) {
 	first := mustCreateMonitor(t, s, "cron A")
 	second := mustCreateMonitor(t, s, "cron B")
 
-	if err := s.RecordPush(ctx, first, epoch); err != nil {
+	if err := s.RecordPush(ctx, first, upSignal(epoch)); err != nil {
 		t.Fatalf("RecordPush returned unexpected error: %v", err)
 	}
 
@@ -1300,7 +1555,7 @@ func testPushStateCascadesOnMonitorDelete(t *testing.T, newStore Factory) {
 	ctx := context.Background()
 	id := mustCreateMonitor(t, s, "cron noturno")
 
-	if err := s.RecordPush(ctx, id, epoch); err != nil {
+	if err := s.RecordPush(ctx, id, upSignal(epoch)); err != nil {
 		t.Fatalf("RecordPush returned unexpected error: %v", err)
 	}
 	if err := s.Monitors().Delete(ctx, id); err != nil {

@@ -3,11 +3,14 @@ package sqlstore_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Jbnado/upwatch/internal/domain"
 	"github.com/Jbnado/upwatch/internal/store"
 	"github.com/Jbnado/upwatch/internal/store/sqlstore"
 	"github.com/Jbnado/upwatch/internal/store/storetest"
@@ -91,7 +94,7 @@ func newPostgresStore(t *testing.T, dsn string) store.Store {
 		t.Fatalf("criando schema: %v", err)
 	}
 
-	s, err := sqlstore.OpenPostgres(withSearchPath(dsn, schema))
+	s, err := sqlstore.OpenPostgres(withSearchPath(dsn, schema), testKeys)
 	if err != nil {
 		t.Fatalf("OpenPostgres devolveu erro: %v", err)
 	}
@@ -137,4 +140,86 @@ func withSearchPath(dsn, schema string) string {
 		sep = "&"
 	}
 	return dsn + sep + "search_path=" + schema
+}
+
+// No PostgreSQL a chave estrangeira de monitor.group_id é quem segura a
+// corrida entre gravar monitor e apagar o grupo: a condição de cada
+// instrução lê um instantâneo, e o outro pedido pode estar no meio. A
+// recusa da chave precisa chegar como conflito ou "não existe", e não
+// como erro interno.
+func TestPostgresGroupDeleteRacingAMonitorInsertIsAConflict(t *testing.T) {
+	dsn := os.Getenv(postgresDSNEnv)
+	if dsn == "" {
+		t.Skipf("defina %s para rodar a conformidade contra PostgreSQL", postgresDSNEnv)
+	}
+	s := newPostgresStore(t, dsn).(*sqlstore.Store)
+	ctx := context.Background()
+
+	g := domain.Group{Name: "RPA", Slug: "rpa"}
+	if err := s.Groups().Create(ctx, &g); err != nil {
+		t.Fatal(err)
+	}
+
+	// Um monitor entra no grupo numa transação que ainda não terminou: o
+	// DELETE não o vê na condição e fica esperando a trava da chave.
+	tx, err := s.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO monitor (name, type, target, interval_ms, timeout_ms, confirmation_threshold,
+			degraded_latency_ms, config, enabled, tags, created_at, updated_at, group_id)
+		VALUES ('bff', 'http', 'https://exemplo.com', 60000, 10000, 3, 0, '{}', 1, '[]', 0, 0, $1)`, g.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	feito := make(chan error, 1)
+	go func() { feito <- s.Groups().Delete(ctx, g.ID) }()
+	time.Sleep(300 * time.Millisecond)
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := <-feito; !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("Delete racing an insert returned %v, want store.ErrConflict", err)
+	}
+}
+
+func TestPostgresMonitorInsertRacingAGroupDeleteIsNotFound(t *testing.T) {
+	dsn := os.Getenv(postgresDSNEnv)
+	if dsn == "" {
+		t.Skipf("defina %s para rodar a conformidade contra PostgreSQL", postgresDSNEnv)
+	}
+	s := newPostgresStore(t, dsn).(*sqlstore.Store)
+	ctx := context.Background()
+
+	g := domain.Group{Name: "RPA", Slug: "rpa"}
+	if err := s.Groups().Create(ctx, &g); err != nil {
+		t.Fatal(err)
+	}
+
+	// O grupo sai numa transação que ainda não terminou: o INSERT ainda o
+	// vê na condição e fica esperando a trava da chave.
+	tx, err := s.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM monitor_group WHERE id = $1`, g.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	feito := make(chan error, 1)
+	go func() {
+		m := domain.Monitor{Name: "bff", Type: domain.MonitorHTTP, Target: "https://exemplo.com",
+			Interval: time.Minute, Timeout: 10 * time.Second, ConfirmationThreshold: 3, Enabled: true, GroupID: &g.ID}
+		feito <- s.Monitors().Create(ctx, &m)
+	}()
+	time.Sleep(300 * time.Millisecond)
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := <-feito; !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Create racing a group delete returned %v, want store.ErrNotFound", err)
+	}
 }

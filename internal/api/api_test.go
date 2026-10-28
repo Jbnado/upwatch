@@ -19,6 +19,7 @@ import (
 	"github.com/Jbnado/upwatch/internal/checker"
 	"github.com/Jbnado/upwatch/internal/clock"
 	"github.com/Jbnado/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/secretbox"
 	"github.com/Jbnado/upwatch/internal/store/sqlstore"
 )
 
@@ -47,8 +48,14 @@ type server struct {
 
 func newServer(t *testing.T) *server {
 	t.Helper()
+	return newServerWith(t, nil)
+}
 
-	st, err := sqlstore.OpenSQLite(filepath.Join(t.TempDir(), "upwatch.db"))
+// newServerWith permite ajustar as opções da API antes de subir.
+func newServerWith(t *testing.T, ajuste func(*api.Options)) *server {
+	t.Helper()
+
+	st, err := sqlstore.OpenSQLite(filepath.Join(t.TempDir(), "upwatch.db"), secretbox.Ephemeral())
 	if err != nil {
 		t.Fatalf("OpenSQLite returned unexpected error: %v", err)
 	}
@@ -60,17 +67,23 @@ func newServer(t *testing.T) *server {
 	reg, err := checker.NewRegistry(
 		checker.NewHTTP(), checker.NewTCP(), checker.NewDNS(),
 		checker.NewTLS(), checker.NewICMP(), checker.NewPush(st, fake),
+		checker.NewRedis(), checker.NewPostgres(), checker.NewMySQL(),
 	)
 	if err != nil {
 		t.Fatalf("NewRegistry returned unexpected error: %v", err)
 	}
 
-	handler := api.New(api.Options{
+	opts := api.Options{
 		Store:    st,
 		Auth:     authSvc,
 		Checkers: reg,
 		Clock:    fake,
-	})
+		Resolver: resolvedorDosTestes,
+	}
+	if ajuste != nil {
+		ajuste(&opts)
+	}
+	handler := api.New(opts)
 
 	ts := httptest.NewServer(handler)
 	t.Cleanup(ts.Close)

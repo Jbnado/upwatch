@@ -32,7 +32,6 @@ import (
 	"github.com/Jbnado/upwatch/internal/sentinel"
 	"github.com/Jbnado/upwatch/internal/server"
 	"github.com/Jbnado/upwatch/internal/store"
-	"github.com/Jbnado/upwatch/internal/store/sqlstore"
 	"github.com/Jbnado/upwatch/internal/web"
 )
 
@@ -52,6 +51,14 @@ func main() {
 }
 
 func run() error {
+	// Subcomandos de manutenção, fora do fluxo do servidor.
+	if len(os.Args) > 1 {
+		if cmd, ok := maintenance[os.Args[1]]; ok {
+			setupLogging()
+			return cmd(os.Args[2:])
+		}
+	}
+
 	configPath := flag.String("config", os.Getenv("UPWATCH_CONFIG"),
 		"caminho do arquivo de configuração (opcional)")
 	showVersion := flag.Bool("version", false, "mostra a versão e sai")
@@ -105,6 +112,13 @@ func run() error {
 	return app.run(ctx, cfg)
 }
 
+// maintenance são os subcomandos que mexem no banco com o servidor
+// parado.
+var maintenance = map[string]func([]string) error{
+	"rotate-secret-key": rotateSecretKey,
+	"forget-secrets":    forgetSecrets,
+}
+
 // application reúne as peças em execução.
 type application struct {
 	store     store.Store
@@ -149,6 +163,9 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 		checker.NewDNS(),
 		checker.NewICMP(),
 		checker.NewPush(st, real),
+		checker.NewRedis(),
+		checker.NewPostgres(),
+		checker.NewMySQL(),
 	)
 	if err != nil {
 		return nil, err
@@ -180,6 +197,14 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 
 	authSvc := auth.New(st, auth.Options{Clock: real, SessionTTL: cfg.SessionTTL})
 
+	// Sem token e com conta restrita, /metrics recusa toda raspagem. Avisar
+	// no início poupa quem opera de descobrir pelo alerta de coleta parada.
+	if aviso, err := api.MetricsExposureWarning(context.Background(), st, cfg.MetricsToken); err != nil {
+		slog.Warn("não foi possível conferir a exposição de /metrics", "erro", err)
+	} else if aviso != "" {
+		slog.Warn(aviso)
+	}
+
 	apiHandler := api.New(api.Options{
 		Store:         st,
 		Auth:          authSvc,
@@ -191,6 +216,9 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 		Version:       version,
 		Counters:      counters,
 		SessionTTL:    cfg.SessionTTL,
+		MetricsToken:  cfg.MetricsToken,
+
+		AllowScopedPrivateTargets: !cfg.RestrictPrivateTargets,
 	})
 
 	return &application{
@@ -323,16 +351,6 @@ func (a *application) sweepSessions(ctx context.Context) {
 			}
 		}
 	}
-}
-
-// openStore abre o armazenamento configurado.
-//
-// A escolha do driver vive no sqlstore, ao lado das duas implementações,
-// e não aqui: um segundo lugar decidindo isso é um segundo lugar para
-// esquecer de atualizar — foi exatamente o que aconteceu quando o driver
-// PostgreSQL entrou e este switch continuou recusando-o.
-func openStore(cfg config.Config) (store.Store, error) {
-	return sqlstore.Open(cfg.Database.Driver, cfg.Database.DSN)
 }
 
 // setupLogging configura a saída estruturada.

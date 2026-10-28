@@ -6,15 +6,26 @@ import {
   Button,
   Checkbox,
   Field,
+  FormActions,
   InlineLink,
   Input,
   Loading,
+  NewItem,
   Nothing,
   Select,
   Textarea,
   TextLink,
 } from "../components/ui";
-import { montarConfig, type LinhaCabecalho } from "../lib/channel-config";
+import {
+  montarConfig,
+  montarConfigEmail,
+  montarConfigNtfy,
+  ntfyServidorPublico,
+  type EntradaEmail,
+  type EntradaNtfy,
+  type LinhaCabecalho,
+  type SegurancaSmtp,
+} from "../lib/channel-config";
 
 /**
  * Canais de aviso.
@@ -40,7 +51,37 @@ const TIPOS: Record<ChannelType, { label: string; ajuda: string; exemplo: string
     ajuda: "Recebe um JSON com os campos crus do evento, para integrar com o que você quiser.",
     exemplo: "https://seu-servico.exemplo/alertas",
   },
+  email: {
+    label: "E-mail",
+    ajuda: "Envia por SMTP, com assunto fixo: [UpWatch] monitor: estado.",
+    exemplo: "",
+  },
+  ntfy: {
+    label: "ntfy",
+    ajuda: "Alerta no celular pelo app do ntfy, sem conta. Assine o mesmo tópico no app.",
+    exemplo: "",
+  },
 };
+
+/** Tipos cujo destino é uma URL de webhook. */
+const POR_URL: ChannelType[] = ["discord", "slack", "webhook"];
+
+const EMAIL_VAZIO: EntradaEmail = {
+  host: "",
+  porta: "",
+  seguranca: "starttls",
+  usuario: "",
+  senha: "",
+  remetente: "",
+  destinatarios: "",
+};
+
+const NTFY_VAZIO: EntradaNtfy = { servidor: "", topico: "", token: "" };
+
+/** channelTypeLabel é o nome do tipo de canal como a interface o escreve. */
+export function channelTypeLabel(type: ChannelType): string {
+  return TIPOS[type]?.label ?? type;
+}
 
 export function Channels() {
   const [canais, setCanais] = useState<Channel[] | null>(null);
@@ -88,20 +129,12 @@ export function Channels() {
       <div className="flex flex-col gap-1.5">
         <h2 className="text-lead font-medium">Canais de aviso</h2>
         <p className="text-body text-ink-2">
-          Para onde o UpWatch manda o alerta quando um alvo cai. Vincule cada canal aos
-          monitores na tela do próprio monitor.
+          Para onde o UpWatch manda o alerta quando um alvo cai. Vincule cada canal a um grupo,
+          em Grupos, ou a um monitor, na aba Avisos dele.
         </p>
       </div>
 
       {erro && <Alert>{erro}</Alert>}
-
-      <NewChannel
-        onCreated={async () => {
-          setErro(null);
-          await carregar();
-        }}
-        onError={setErro}
-      />
 
       {canais === null ? (
         <Loading what="canais" />
@@ -146,6 +179,20 @@ export function Channels() {
           ))}
         </ul>
       )}
+
+      <NewItem label="Novo canal">
+        {(fechar) => (
+          <NewChannel
+            onCreated={async () => {
+              setErro(null);
+              fechar();
+              await carregar();
+            }}
+            onError={setErro}
+            onCancel={fechar}
+          />
+        )}
+      </NewItem>
     </section>
   );
 }
@@ -153,9 +200,11 @@ export function Channels() {
 function NewChannel({
   onCreated,
   onError,
+  onCancel,
 }: {
   onCreated: () => Promise<void>;
   onError: (msg: string) => void;
+  onCancel: () => void;
 }) {
   const [tipo, setTipo] = useState<ChannelType>("discord");
   const [nome, setNome] = useState("");
@@ -163,6 +212,8 @@ function NewChannel({
   const [cabecalhos, setCabecalhos] = useState<LinhaCabecalho[]>([{ nome: "", valor: "" }]);
   const [mapeamento, setMapeamento] = useState("");
   const [avancado, setAvancado] = useState(false);
+  const [email, setEmail] = useState<EntradaEmail>(EMAIL_VAZIO);
+  const [ntfy, setNtfy] = useState<EntradaNtfy>(NTFY_VAZIO);
   const [enviando, setEnviando] = useState(false);
   const [campoErro, setCampoErro] = useState<{ campo: string; msg: string } | null>(null);
 
@@ -173,7 +224,12 @@ function NewChannel({
     // A montagem recusa antes de enviar para o erro aparecer embaixo do
     // campo certo: o servidor responderia "config inválida", e a tela não
     // teria como saber se o problema é a URL ou o mapeamento.
-    const { config, erro } = montarConfig({ url, cabecalhos, mapeamento });
+    const { config, erro } =
+      tipo === "email"
+        ? montarConfigEmail(email)
+        : tipo === "ntfy"
+          ? montarConfigNtfy(ntfy)
+          : montarConfig({ url, cabecalhos, mapeamento });
     if (erro) {
       setCampoErro(erro);
       return;
@@ -187,6 +243,8 @@ function NewChannel({
       setUrl("");
       setCabecalhos([{ nome: "", valor: "" }]);
       setMapeamento("");
+      setEmail(EMAIL_VAZIO);
+      setNtfy(NTFY_VAZIO);
       await onCreated();
     } catch (e) {
       if (e instanceof ApiError && e.field) {
@@ -222,21 +280,32 @@ function NewChannel({
             value={nome}
             onChange={(e) => setNome(e.target.value)}
             placeholder="plantão de infra"
+            autoFocus
             required
           />
         </Field>
       </div>
 
-      <Field label="endereço do webhook" hint={info.ajuda} error={erroDe("config")}>
-        <Input
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          placeholder={info.exemplo}
-          className="tabular"
-          type="url"
-          required
-        />
-      </Field>
+      {POR_URL.includes(tipo) && (
+        <Field label="endereço do webhook" hint={info.ajuda} error={erroDe("config")}>
+          <Input
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder={info.exemplo}
+            className="tabular"
+            type="url"
+            required
+          />
+        </Field>
+      )}
+
+      {tipo === "email" && (
+        <CamposEmail valor={email} onChange={setEmail} ajuda={info.ajuda} erroDe={erroDe} />
+      )}
+
+      {tipo === "ntfy" && (
+        <CamposNtfy valor={ntfy} onChange={setNtfy} ajuda={info.ajuda} erroDe={erroDe} />
+      )}
 
       {/* Só o canal genérico. Discord e Slack têm corpo ditado pelo
           destino, e oferecer os campos ali seria oferecer um jeito de
@@ -253,10 +322,183 @@ function NewChannel({
         />
       )}
 
-      <Button type="submit" variant="primary" disabled={enviando} className="self-start">
-        {enviando ? "Salvando" : "Adicionar canal"}
-      </Button>
+      <FormActions
+        submit={enviando ? "Salvando" : "Adicionar canal"}
+        busy={enviando}
+        onCancel={onCancel}
+      />
     </form>
+  );
+}
+
+/** Porta que cada modo usa quando o campo fica em branco. */
+const PORTA_PADRAO: Record<SegurancaSmtp, string> = { starttls: "587", tls: "465", none: "25" };
+
+/**
+ * CamposEmail coleta o servidor SMTP e quem recebe.
+ *
+ * A senha é campo de senha e não volta do servidor: para trocá-la, o canal
+ * é recriado. Mostrar a senha salva exporia a credencial do e-mail
+ * corporativo a qualquer um com acesso de leitura.
+ */
+function CamposEmail({
+  valor,
+  onChange,
+  ajuda,
+  erroDe,
+}: {
+  valor: EntradaEmail;
+  onChange: (v: EntradaEmail) => void;
+  ajuda: string;
+  erroDe: (campo: string) => string | undefined;
+}) {
+  const muda = (campo: keyof EntradaEmail, v: string) => onChange({ ...valor, [campo]: v });
+
+  return (
+    <div className="flex flex-col gap-4">
+      <p className="text-small text-ink-3">{ajuda}</p>
+
+      <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_120px_160px]">
+        <Field label="servidor SMTP" error={erroDe("config")}>
+          <Input
+            value={valor.host}
+            onChange={(e) => muda("host", e.target.value)}
+            placeholder="smtp.exemplo.com"
+            className="tabular"
+            required
+          />
+        </Field>
+        <Field label="porta" error={erroDe("porta")}>
+          <Input
+            value={valor.porta}
+            onChange={(e) => muda("porta", e.target.value)}
+            placeholder={PORTA_PADRAO[valor.seguranca]}
+            inputMode="numeric"
+            className="tabular"
+          />
+        </Field>
+        <Field label="segurança">
+          <Select value={valor.seguranca} onChange={(e) => muda("seguranca", e.target.value)}>
+            <option value="starttls">STARTTLS</option>
+            <option value="tls">TLS implícito</option>
+            <option value="none">nenhuma</option>
+          </Select>
+        </Field>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field label="usuário" hint="Em branco para relé que não pede login.">
+          <Input
+            value={valor.usuario}
+            onChange={(e) => muda("usuario", e.target.value)}
+            autoComplete="off"
+          />
+        </Field>
+        <Field label="senha" hint="Guardada no servidor e nunca exibida de novo.">
+          <Input
+            value={valor.senha}
+            onChange={(e) => muda("senha", e.target.value)}
+            type="password"
+            autoComplete="new-password"
+          />
+        </Field>
+      </div>
+
+      <Field label="remetente">
+        <Input
+          value={valor.remetente}
+          onChange={(e) => muda("remetente", e.target.value)}
+          placeholder="UpWatch <alertas@exemplo.com>"
+          required
+        />
+      </Field>
+
+      <Field
+        label="destinatários"
+        hint="Separados por vírgula, ponto e vírgula ou um por linha."
+        error={erroDe("destinatarios")}
+      >
+        <Textarea
+          value={valor.destinatarios}
+          onChange={(e) => muda("destinatarios", e.target.value)}
+          placeholder="plantao@exemplo.com"
+          className="tabular text-small"
+        />
+      </Field>
+    </div>
+  );
+}
+
+/** CamposNtfy coleta servidor, tópico e o token opcional. */
+function CamposNtfy({
+  valor,
+  onChange,
+  ajuda,
+  erroDe,
+}: {
+  valor: EntradaNtfy;
+  onChange: (v: EntradaNtfy) => void;
+  ajuda: string;
+  erroDe: (campo: string) => string | undefined;
+}) {
+  const muda = (campo: keyof EntradaNtfy, v: string) => onChange({ ...valor, [campo]: v });
+
+  return (
+    <div className="flex flex-col gap-4">
+      <p className="text-small text-ink-3">{ajuda}</p>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        {/* No servidor público, quem souber o nome do tópico lê os
+            avisos. Dizer isso ao lado do campo evita "alertas" como
+            tópico de produção. */}
+        <Field
+          label="tópico"
+          hint="Quem souber o nome recebe: escolha um difícil de adivinhar."
+          error={erroDe("topico")}
+        >
+          <Input
+            value={valor.topico}
+            onChange={(e) => muda("topico", e.target.value)}
+            placeholder="upwatch-alertas-x7k2"
+            className="tabular"
+            required
+          />
+        </Field>
+        <Field label="servidor" hint="Em branco, o público." error={erroDe("config")}>
+          <Input
+            value={valor.servidor}
+            onChange={(e) => muda("servidor", e.target.value)}
+            placeholder="https://ntfy.sh"
+            className="tabular"
+            type="url"
+          />
+        </Field>
+      </div>
+
+      {/* O alerta diz o que caiu e por quê; no servidor público, isso é
+          legível por qualquer um que acerte o nome do tópico. Quem
+          cadastra precisa saber antes de escolher o nome, e não depois. */}
+      {ntfyServidorPublico(valor.servidor) && (
+        <p role="note" className="rounded-sm border-l-2 border-degraded px-3 py-2 text-small text-ink-2">
+          O servidor público é aberto: qualquer um que souber o tópico lê os alertas. Use um
+          tópico com ao menos 12 caracteres, difícil de adivinhar, ou um servidor próprio com
+          token.
+        </p>
+      )}
+
+      <Field
+        label="token"
+        hint="Só para servidor próprio com controle de acesso, por https. Nunca exibido de novo."
+      >
+        <Input
+          value={valor.token}
+          onChange={(e) => muda("token", e.target.value)}
+          type="password"
+          autoComplete="new-password"
+          placeholder="tk_…"
+        />
+      </Field>
+    </div>
   );
 }
 
@@ -410,10 +652,18 @@ function Avancado({
  * Vive na tela do monitor porque a pergunta é "quem quero que saiba quando
  * este alvo cair?" — não "quais canais existem?".
  */
-export function MonitorChannels({ monitorID }: { monitorID: number }) {
+export function MonitorChannels({
+  monitorID,
+  onChange,
+}: {
+  monitorID: number;
+  /** Avisado depois de cada vínculo, para quem mostra a lista resolvida. */
+  onChange?: () => void;
+}) {
   const [todos, setTodos] = useState<Channel[]>([]);
   const [vinculados, setVinculados] = useState<Set<number>>(new Set());
   const [carregando, setCarregando] = useState(true);
+  const [erro, setErro] = useState<string | null>(null);
 
   async function carregar() {
     const [lista, doMonitor] = await Promise.all([
@@ -442,12 +692,16 @@ export function MonitorChannels({ monitorID }: { monitorID: number }) {
       return proximo;
     });
 
+    setErro(null);
     try {
       if (ligado) await api.unlinkChannel(monitorID, canal.id);
       else await api.linkChannel(monitorID, canal.id);
-    } catch {
+      onChange?.();
+    } catch (e) {
       // Falhou: recarrega para a tela voltar a refletir o servidor em vez
-      // de mostrar um estado que não existe.
+      // de mostrar um estado que não existe, e diz por quê — a caixa que
+      // volta atrás sozinha pareceria um clique que não pegou.
+      setErro(e instanceof ApiError ? e.message : "Não foi possível mudar o vínculo.");
       await carregar();
     }
   }
@@ -458,7 +712,7 @@ export function MonitorChannels({ monitorID }: { monitorID: number }) {
     return (
       <p className="text-body text-ink-2">
         Nenhum canal cadastrado. Crie um em{" "}
-        <InlineLink to={{ name: "settings" }}>ajustes</InlineLink> para receber alerta quando este
+        <InlineLink to={{ name: "ajustes", section: "canais" }}>ajustes</InlineLink> para receber alerta quando este
         alvo cair.
       </p>
     );
@@ -468,16 +722,19 @@ export function MonitorChannels({ monitorID }: { monitorID: number }) {
   // preenchimento próprio para a área de clique cobrir o rótulo inteiro,
   // e sem isso a lista apareceria recuada em relação ao título da seção.
   return (
-    <ul className="-mx-1 flex flex-col">
-      {todos.map((canal) => (
-        <li key={canal.id}>
-          <Checkbox checked={vinculados.has(canal.id)} onChange={() => alternar(canal)}>
-            <span>{canal.name}</span>
-            <span className="eyebrow">{TIPOS[canal.type]?.label ?? canal.type}</span>
-            {!canal.enabled && <span className="text-small text-ink-3">desligado</span>}
-          </Checkbox>
-        </li>
-      ))}
-    </ul>
+    <>
+      {erro && <Alert>{erro}</Alert>}
+      <ul className="-mx-1 flex flex-col">
+        {todos.map((canal) => (
+          <li key={canal.id}>
+            <Checkbox checked={vinculados.has(canal.id)} onChange={() => alternar(canal)}>
+              <span>{canal.name}</span>
+              <span className="eyebrow">{TIPOS[canal.type]?.label ?? canal.type}</span>
+              {!canal.enabled && <span className="text-small text-ink-3">desligado</span>}
+            </Checkbox>
+          </li>
+        ))}
+      </ul>
+    </>
   );
 }

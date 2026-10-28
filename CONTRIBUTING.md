@@ -23,7 +23,26 @@ UPWATCH_TEST_POSTGRES_DSN='postgres://upwatch:upwatch@127.0.0.1:55432/upwatch?ss
   go test ./internal/store/...
 ```
 
+Os checkers de protocolo têm o mesmo esquema, com Redis e MySQL também:
+
+```bash
+docker run -d --rm --name redis -p 16379:6379 redis:7-alpine
+docker run -d --rm --name mysql -e MYSQL_ROOT_PASSWORD=root   -e MYSQL_USER=upwatch -e MYSQL_PASSWORD=upwatch -e MYSQL_DATABASE=upwatch   -p 53306:3306 mysql:8.4
+
+UPWATCH_TEST_REDIS_ADDR=127.0.0.1:16379 UPWATCH_TEST_POSTGRES_DSN='postgres://upwatch:upwatch@127.0.0.1:55432/upwatch?sslmode=disable' UPWATCH_TEST_MYSQL_DSN='upwatch:upwatch@tcp(127.0.0.1:53306)/upwatch'   go test ./internal/checker/...
+```
+
 Sem a variável o teste se anuncia como pulado, e não some em silêncio.
+
+### Segredos
+
+A CI varre o histórico do PR com o [gitleaks](https://github.com/gitleaks/gitleaks) e falha se achar algo que pareça credencial, inclusive URL com senha embutida (`postgres://usuario:senha@host`). Para conferir antes do push:
+
+```bash
+gitleaks git . --config .gitleaks.toml
+```
+
+Teste que precisa de um valor com cara de senha usa um valor fictício e o registra no allowlist do `.gitleaks.toml`, com o motivo. A exceção é sempre o valor exato, nunca um caminho inteiro.
 
 ## Como este projeto escreve testes
 

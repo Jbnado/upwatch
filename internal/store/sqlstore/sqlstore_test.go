@@ -23,7 +23,7 @@ func newStore(t *testing.T) store.Store {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "upwatch.db")
-	s, err := sqlstore.OpenSQLite(path)
+	s, err := sqlstore.OpenSQLite(path, testKeys)
 	if err != nil {
 		t.Fatalf("OpenSQLite returned unexpected error: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestOpenSQLiteAppliesMigrations(t *testing.T) {
 // versão — justamente o pior dia para descobrir.
 func TestMigrationsRollBackCleanly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rollback.db")
-	s, err := sqlstore.OpenSQLite(path)
+	s, err := sqlstore.OpenSQLite(path, testKeys)
 	if err != nil {
 		t.Fatalf("OpenSQLite returned unexpected error: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestWALJournalModeIsEnabled(t *testing.T) {
 // manual de VACUUM.
 func TestCompactReclaimsSpaceAfterPruning(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "compact.db")
-	s, err := sqlstore.OpenSQLite(path)
+	s, err := sqlstore.OpenSQLite(path, testKeys)
 	if err != nil {
 		t.Fatalf("OpenSQLite returned unexpected error: %v", err)
 	}
@@ -236,6 +236,36 @@ func TestHeartbeatRangeQueryUsesIndex(t *testing.T) {
 	}
 }
 
+// O /push não tem login: quem quiser pode mandar requisições sem parar.
+// Se achar o dono do token varresse a tabela de monitores, cada uma delas
+// custaria uma leitura completa, e o endpoint viraria alavanca para
+// derrubar o banco. O plano é verificado, não presumido.
+func TestPushTokenLookupUsesIndex(t *testing.T) {
+	s := newStore(t).(*sqlstore.Store)
+
+	rows, err := s.DB().QueryContext(context.Background(),
+		`EXPLAIN QUERY PLAN SELECT id FROM monitor WHERE push_token = ?`, "x")
+	if err != nil {
+		t.Fatalf("EXPLAIN QUERY PLAN returned unexpected error: %v", err)
+	}
+	defer rows.Close()
+
+	var plan strings.Builder
+	for rows.Next() {
+		var id, parent, notUsed int
+		var detail string
+		if err := rows.Scan(&id, &parent, &notUsed, &detail); err != nil {
+			t.Fatalf("scanning query plan returned unexpected error: %v", err)
+		}
+		plan.WriteString(detail)
+		plan.WriteString("\n")
+	}
+
+	if got := plan.String(); !strings.Contains(got, "idx_monitor_push_token") {
+		t.Errorf("plano de execução não usa idx_monitor_push_token:\n%s", got)
+	}
+}
+
 // Open precisa aceitar todo driver que o pacote implementa.
 //
 // Este teste existe por causa de um defeito real: o binário tinha um
@@ -253,7 +283,7 @@ func TestOpenAcceptsEveryImplementedDriver(t *testing.T) {
 
 	for driver, dsn := range casos {
 		t.Run(driver, func(t *testing.T) {
-			s, err := sqlstore.Open(driver, dsn)
+			s, err := sqlstore.Open(driver, dsn, testKeys)
 			if s != nil {
 				t.Cleanup(func() { _ = s.Close() })
 			}
@@ -268,7 +298,7 @@ func TestOpenAcceptsEveryImplementedDriver(t *testing.T) {
 }
 
 func TestOpenRefusesUnknownDriver(t *testing.T) {
-	_, err := sqlstore.Open("mysql", "qualquer-coisa")
+	_, err := sqlstore.Open("mysql", "qualquer-coisa", testKeys)
 
 	if err == nil {
 		t.Fatal("driver desconhecido foi aceito")

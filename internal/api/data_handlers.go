@@ -3,7 +3,10 @@ package api
 import (
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"mime"
 	"net/http"
 	"strconv"
 	"time"
@@ -254,7 +257,9 @@ func (a *API) exportJSON(w http.ResponseWriter, r *http.Request, id int64, rng s
 // handlePush recebe o sinal de um monitor push.
 //
 // O segredo viaja no caminho porque quem reporta é um cron ou um worker,
-// que não tem sessão de interface nem deve precisar de uma.
+// que não tem sessão de interface nem deve precisar de uma. Pelo mesmo
+// motivo aceita GET: muito agendador e muito healthcheck só sabem fazer
+// `curl URL`.
 func (a *API) handlePush(w http.ResponseWriter, r *http.Request) {
 	secret := chi.URLParam(r, "token")
 	if secret == "" {
@@ -262,6 +267,8 @@ func (a *API) handlePush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// O token é conferido antes dos parâmetros: validar primeiro deixaria
+	// quem não tem token sondar o contrato.
 	monitorID, ok := a.findPushMonitor(r, secret)
 	if !ok {
 		// Mesma resposta para token errado e monitor inexistente: separar
@@ -270,39 +277,103 @@ func (a *API) handlePush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := a.store.RecordPush(r.Context(), monitorID, a.clock.Now()); err != nil {
+	sig, err := readPushSignal(w, r)
+	var tooLarge *http.MaxBytesError
+	switch {
+	case errors.As(err, &tooLarge):
+		writeError(w, http.StatusRequestEntityTooLarge, codeInvalidRequest,
+			"corpo acima de %d bytes; o sinal cabe em poucas centenas", maxPushBodyBytes)
+		return
+	case err != nil:
+		writeStoreError(w, err)
+		return
+	}
+	sig.At = a.clock.Now()
+
+	if err := a.store.RecordPush(r.Context(), monitorID, sig); err != nil {
 		writeStoreError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// findPushMonitor localiza o monitor dono do segredo apresentado.
-func (a *API) findPushMonitor(r *http.Request, secret string) (int64, bool) {
-	filter := store.MonitorFilter{Page: store.PageFilter{Limit: store.MaxPageSize}}
+// maxPushBodyBytes é o teto do corpo do sinal.
+//
+// O sinal cabe em poucas centenas de bytes. O teto geral da API, de 1 MiB,
+// deixaria qualquer um sem login fazer o servidor ler e decodificar um
+// megabyte por requisição; 16 KiB sobra para o sinal e para os campos
+// extras que um agente mande junto.
+const maxPushBodyBytes = 16 << 10
 
-	for {
-		page, err := a.store.Monitors().List(r.Context(), filter)
-		if err != nil {
-			return 0, false
+// pushParams são os campos opcionais do sinal, como chegam no corpo.
+type pushParams struct {
+	Status    string      `json:"status"`
+	Msg       string      `json:"msg"`
+	LatencyMS json.Number `json:"latency_ms"`
+}
+
+// readPushSignal lê status, causa e latência da query string ou do corpo
+// JSON. Quando o mesmo campo vem nos dois, vale a query string.
+//
+// O corpo só é lido com Content-Type JSON: um cron que já fazia POST com
+// qualquer coisa no corpo não pode passar a ser recusado. Campos
+// desconhecidos são tolerados pelo mesmo motivo — um agente que mande a
+// própria versão junto não pode ter o sinal perdido por isso.
+func readPushSignal(w http.ResponseWriter, r *http.Request) (domain.PushSignal, error) {
+	var params pushParams
+	if isJSON(r.Header.Get("Content-Type")) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxPushBodyBytes)
+		dec := json.NewDecoder(r.Body)
+		dec.UseNumber()
+		err := dec.Decode(&params)
+		var tooLarge *http.MaxBytesError
+		switch {
+		case errors.As(err, &tooLarge):
+			return domain.PushSignal{}, err
+		case err != nil && !errors.Is(err, io.EOF):
+			return domain.PushSignal{}, &domain.ValidationError{Field: "body", Msg: "corpo JSON inválido"}
 		}
-		for _, m := range page.Items {
-			if m.Type != domain.MonitorPush {
-				continue
-			}
-			var cfg struct {
-				Token string `json:"token"`
-			}
-			if err := json.Unmarshal(m.Config, &cfg); err != nil {
-				continue
-			}
-			if cfg.Token != "" && subtleEqual(cfg.Token, secret) {
-				return m.ID, true
-			}
-		}
-		if !page.HasMore || len(page.Items) == 0 {
-			return 0, false
-		}
-		filter.Page.AfterID = page.Items[len(page.Items)-1].ID
 	}
+
+	q := r.URL.Query()
+	if q.Has("status") {
+		params.Status = q.Get("status")
+	}
+	if q.Has("msg") {
+		params.Msg = q.Get("msg")
+	}
+	if q.Has("latency_ms") {
+		params.LatencyMS = json.Number(q.Get("latency_ms"))
+	}
+
+	status, err := domain.ParsePushStatus(params.Status)
+	if err != nil {
+		return domain.PushSignal{}, err
+	}
+	latency, err := domain.ParsePushLatency(params.LatencyMS.String())
+	if err != nil {
+		return domain.PushSignal{}, err
+	}
+	return domain.PushSignal{
+		Status: status, Message: domain.CleanPushMessage(params.Msg), LatencyMS: latency,
+	}, nil
+}
+
+// isJSON informa se o tipo de conteúdo declarado é JSON.
+func isJSON(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	return err == nil && mediaType == "application/json"
+}
+
+// findPushMonitor localiza o monitor dono do segredo apresentado.
+//
+// A busca é pela coluna indexada do token: o endpoint não tem login, e
+// percorrer os monitores a cada requisição deixaria qualquer um provocar
+// uma varredura da tabela à vontade.
+func (a *API) findPushMonitor(r *http.Request, secret string) (int64, bool) {
+	m, err := a.store.Monitors().FindByPushToken(r.Context(), secret)
+	if err != nil || m.Type != domain.MonitorPush {
+		return 0, false
+	}
+	return m.ID, true
 }

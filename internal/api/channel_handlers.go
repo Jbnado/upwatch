@@ -39,8 +39,10 @@ func (a *API) handleListChannelTypes(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": notifier.Types()})
 }
 
+// handleListChannels devolve os canais que a conta enxerga (ver
+// visibleChannels).
 func (a *API) handleListChannels(w http.ResponseWriter, r *http.Request) {
-	canais, err := a.store.Channels().List(r.Context())
+	canais, err := a.visibleChannels(r.Context(), viewerFrom(r))
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -194,6 +196,9 @@ func (a *API) handleLinkChannel(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !a.channelExists(w, r, channelID) {
+		return
+	}
 
 	if err := a.store.Channels().Link(r.Context(), monitorID, channelID); err != nil {
 		writeStoreError(w, err)
@@ -209,6 +214,9 @@ func (a *API) handleUnlinkChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	channelID, ok := pathParamID(w, r, "channelID")
 	if !ok {
+		return
+	}
+	if !a.channelExists(w, r, channelID) {
 		return
 	}
 
@@ -244,6 +252,9 @@ func (a *API) handleListIncidents(w http.ResponseWriter, r *http.Request) {
 		},
 		MonitorID: queryInt64(r, "monitor_id", 0),
 		OnlyOpen:  r.URL.Query().Get("open") == "true",
+		// Pedir o monitor de fora pelo parâmetro devolve lista vazia, como
+		// um monitor sem quedas: nada confirma que ele existe.
+		Groups: viewerFrom(r).monitorSelection(),
 	}
 
 	page, err := a.store.Incidents().List(r.Context(), filter)
@@ -280,6 +291,19 @@ func validateChannel(w http.ResponseWriter, c domain.Channel) bool {
 	}
 	if _, err := notifier.Build(c.Type, c.Config); err != nil {
 		writeFieldError(w, "config", err.Error())
+		return false
+	}
+	return true
+}
+
+// channelExists responde 404 ao canal que não existe.
+//
+// Vincular um id errado criaria um vínculo que nunca avisa, e ninguém
+// perceberia até a queda; desvincular um id errado responderia "feito"
+// sobre nada.
+func (a *API) channelExists(w http.ResponseWriter, r *http.Request, id int64) bool {
+	if _, err := a.store.Channels().Get(r.Context(), id); err != nil {
+		writeStoreError(w, err)
 		return false
 	}
 	return true

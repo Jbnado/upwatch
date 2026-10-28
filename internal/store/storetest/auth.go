@@ -3,6 +3,8 @@ package storetest
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,7 +21,10 @@ func authCases() []conformanceCase {
 		{"UserDuplicateUsernameReturnsConflict", testUserDuplicateUsernameReturnsConflict},
 		{"UserGetByUsername", testUserGetByUsername},
 		{"UserGetByUsernameMissingReturnsNotFound", testUserGetByUsernameMissingReturnsNotFound},
-		{"UserUpdatePersistsChanges", testUserUpdatePersistsChanges},
+		{"UserSetPasswordHashTouchesOnlyThePassword", testUserSetPasswordHashTouchesOnlyThePassword},
+		{"UserSetAccessKeepsThePassword", testUserSetAccessKeepsThePassword},
+		{"UserSetAccessAndDeleteKeepAFullAdmin", testUserSetAccessAndDeleteKeepAFullAdmin},
+		{"UserConcurrentDemotionsKeepAFullAdmin", testUserConcurrentDemotionsKeepAFullAdmin},
 		{"UserCountReflectsPopulation", testUserCountReflectsPopulation},
 
 		{"SessionRoundTrips", testSessionRoundTrips},
@@ -135,27 +140,176 @@ func testUserGetByUsernameMissingReturnsNotFound(t *testing.T, newStore Factory)
 	}
 }
 
-func testUserUpdatePersistsChanges(t *testing.T, newStore Factory) {
+// Trocar a senha grava a senha e nada mais. Regravar a conta inteira
+// devolvia papel e escopo lidos antes da troca, e uma revogação feita no
+// meio sumia sem ninguém ver.
+func testUserSetPasswordHashTouchesOnlyThePassword(t *testing.T, newStore Factory) {
 	s := newStore(t)
 	ctx := context.Background()
-	u := mustCreateUser(t, s, "admin")
+	mustCreateUser(t, s, "admin")
+	g := mustCreateGroup(t, s, "RPA", nil)
 
-	if err := u.SetPassword("outra-senha-bem-longa"); err != nil {
-		t.Fatalf("SetPassword returned unexpected error: %v", err)
+	u := mustCreateUser(t, s, "bia")
+	restrito := domain.Scope{Restricted: true, GroupIDs: []int64{g.ID}}
+	if err := s.Users().SetAccess(ctx, u.ID, domain.RoleViewer, &restrito); err != nil {
+		t.Fatalf("SetAccess returned unexpected error: %v", err)
 	}
-	if err := s.Users().Update(ctx, u); err != nil {
-		t.Fatalf("Update returned unexpected error: %v", err)
+
+	novo := u
+	if err := novo.SetPassword("outra-senha-bem-longa"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Users().SetPasswordHash(ctx, u.ID, novo.PasswordHash); err != nil {
+		t.Fatalf("SetPasswordHash returned unexpected error: %v", err)
 	}
 
 	got, err := s.Users().Get(ctx, u.ID)
 	if err != nil {
 		t.Fatalf("Get returned unexpected error: %v", err)
 	}
-	if !got.CheckPassword("outra-senha-bem-longa") {
-		t.Error("the new password does not work after Update")
+	if !got.CheckPassword("outra-senha-bem-longa") || got.CheckPassword("uma-senha-bem-longa") {
+		t.Error("the password was not replaced")
 	}
-	if got.CheckPassword("uma-senha-bem-longa") {
-		t.Error("the old password still works after Update")
+	if got.Role != domain.RoleViewer || !got.Scope.Restricted || len(got.Scope.GroupIDs) != 1 {
+		t.Errorf("SetPasswordHash changed the access: role %v, scope %+v", got.Role, got.Scope)
+	}
+
+	if err := s.Users().SetPasswordHash(ctx, 9999, novo.PasswordHash); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("SetPasswordHash on a missing account returned %v, want ErrNotFound", err)
+	}
+}
+
+// Trocar papel e escopo grava papel e escopo e nada mais: regravar a
+// senha lida antes ressuscitaria a antiga, justamente a que a pessoa quis
+// abandonar.
+func testUserSetAccessKeepsThePassword(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	mustCreateUser(t, s, "admin")
+	a := mustCreateGroup(t, s, "A", nil)
+	b := mustCreateGroup(t, s, "B", nil)
+	u := mustCreateUser(t, s, "bia")
+
+	novo := u
+	if err := novo.SetPassword("outra-senha-bem-longa"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Users().SetPasswordHash(ctx, u.ID, novo.PasswordHash); err != nil {
+		t.Fatal(err)
+	}
+
+	escopo := domain.Scope{Restricted: true, GroupIDs: []int64{b.ID, a.ID}}
+	if err := s.Users().SetAccess(ctx, u.ID, domain.RoleViewer, &escopo); err != nil {
+		t.Fatalf("SetAccess returned unexpected error: %v", err)
+	}
+	got, _ := s.Users().Get(ctx, u.ID)
+	if !got.CheckPassword("outra-senha-bem-longa") {
+		t.Error("SetAccess changed the password")
+	}
+	if got.Role != domain.RoleViewer || len(got.Scope.GroupIDs) != 2 {
+		t.Errorf("after SetAccess: role %v, scope %+v", got.Role, got.Scope)
+	}
+
+	// Escopo nulo mantém o atual: trocar só o papel não pode alargar o
+	// alcance por omissão de um campo.
+	if err := s.Users().SetAccess(ctx, u.ID, domain.RoleAdmin, nil); err != nil {
+		t.Fatalf("SetAccess returned unexpected error: %v", err)
+	}
+	got, _ = s.Users().Get(ctx, u.ID)
+	if got.Role != domain.RoleAdmin || !got.Scope.Restricted || len(got.Scope.GroupIDs) != 2 {
+		t.Errorf("after a role-only change: role %v, scope %+v", got.Role, got.Scope)
+	}
+
+	if err := s.Users().SetAccess(ctx, 9999, domain.RoleViewer, nil); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("SetAccess on a missing account returned %v, want ErrNotFound", err)
+	}
+}
+
+// Rebaixar, restringir ou apagar o último administrador de escopo total é
+// recusado pelo próprio store, na mesma transação da escrita. Conferir
+// antes, fora dela, deixava dois pedidos simultâneos verem "sobra o
+// outro" e gravarem os dois.
+func testUserSetAccessAndDeleteKeepAFullAdmin(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	g := mustCreateGroup(t, s, "RPA", nil)
+	admin := mustCreateUser(t, s, "admin")
+	restrito := domain.Scope{Restricted: true, GroupIDs: []int64{g.ID}}
+
+	for nome, err := range map[string]error{
+		"rebaixar":   s.Users().SetAccess(ctx, admin.ID, domain.RoleViewer, nil),
+		"restringir": s.Users().SetAccess(ctx, admin.ID, domain.RoleAdmin, &restrito),
+		"apagar":     s.Users().Delete(ctx, admin.ID),
+	} {
+		if !errors.Is(err, store.ErrLastFullAdmin) {
+			t.Errorf("%s o último administrador: err = %v, want ErrLastFullAdmin", nome, err)
+		}
+	}
+	got, err := s.Users().Get(ctx, admin.ID)
+	if err != nil || got.Role != domain.RoleAdmin || got.Scope.Restricted {
+		t.Fatalf("a recusa deixou a conta alterada: %+v, %v", got, err)
+	}
+
+	// Com outro administrador de escopo total, pode.
+	mustCreateUser(t, s, "outro")
+	if err := s.Users().SetAccess(ctx, admin.ID, domain.RoleAdmin, &restrito); err != nil {
+		t.Fatalf("restringir com outro administrador ao lado: %v", err)
+	}
+	// Conta que não administra tudo sai à vontade.
+	if err := s.Users().Delete(ctx, admin.ID); err != nil {
+		t.Fatalf("apagar administrador restrito: %v", err)
+	}
+}
+
+// Vários administradores de escopo total saem ao mesmo tempo, uns
+// rebaixados e outros apagados. Sobra exatamente um.
+func testUserConcurrentDemotionsKeepAFullAdmin(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	const n = 6
+	var ids []int64
+	for i := 0; i < n; i++ {
+		ids = append(ids, mustCreateUser(t, s, fmt.Sprintf("admin-%d", i)).ID)
+	}
+
+	var wg sync.WaitGroup
+	erros := make([]error, n)
+	for i, id := range ids {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if i%2 == 0 {
+				erros[i] = s.Users().SetAccess(ctx, id, domain.RoleViewer, nil)
+			} else {
+				erros[i] = s.Users().Delete(ctx, id)
+			}
+		}()
+	}
+	wg.Wait()
+
+	recusas := 0
+	for _, err := range erros {
+		switch {
+		case err == nil:
+		case errors.Is(err, store.ErrLastFullAdmin):
+			recusas++
+		default:
+			t.Errorf("unexpected error: %v", err)
+		}
+	}
+	contas, err := s.Users().List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	totais := 0
+	for _, c := range contas {
+		if c.Role == domain.RoleAdmin && !c.Scope.Restricted {
+			totais++
+		}
+	}
+	if totais != 1 || recusas != 1 {
+		t.Errorf("sobraram %d administradores de escopo total e houve %d recusas; want 1 e 1", totais, recusas)
 	}
 }
 
@@ -527,6 +681,8 @@ func testUserDeleteRemovesSessions(t *testing.T, newStore Factory) {
 	s := newStore(t)
 	ctx := context.Background()
 
+	// Outro administrador fica: apagar o último de escopo total é recusado.
+	mustCreateUser(t, s, "fica")
 	u := mustCreateUser(t, s, "demitido")
 	sessao := domain.Session{
 		Hash: "hash-da-sessao", UserID: u.ID,

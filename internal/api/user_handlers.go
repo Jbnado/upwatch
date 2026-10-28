@@ -18,6 +18,10 @@ type userRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 	Role     string `json:"role"`
+	// Scope ausente é "todos os grupos", o que toda conta tinha antes de
+	// existir escopo. Quem tem escopo e omite recebe 403, em vez de a API
+	// adivinhar um escopo menor por ele.
+	Scope *domain.Scope `json:"scope,omitempty"`
 }
 
 func (a *API) handleListUsers(w http.ResponseWriter, r *http.Request) {
@@ -26,9 +30,16 @@ func (a *API) handleListUsers(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	if contas == nil {
-		contas = []domain.User{}
+	// Quem tem escopo vê só as contas que poderia ter criado: as de
+	// escopo maior não são da conta dele.
+	v := viewerFrom(r)
+	visiveis := []domain.User{}
+	for _, c := range contas {
+		if v.access.Grants(c.Scope) {
+			visiveis = append(visiveis, c)
+		}
 	}
+	contas = visiveis
 	// domain.User.MarshalJSON já omite o hash; a listagem mostra quem
 	// existe, não material para ataque offline.
 	writeJSON(w, http.StatusOK, map[string]any{"items": contas})
@@ -46,7 +57,16 @@ func (a *API) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	u, err := a.auth.CreateUser(r.Context(), req.Username, req.Password, role)
+	escopo := domain.Scope{}
+	if req.Scope != nil {
+		escopo = *req.Scope
+	}
+	if err := viewerFrom(r).checkGrant(escopo); err != nil {
+		writeScopeError(w, err)
+		return
+	}
+
+	u, err := a.auth.CreateUser(r.Context(), req.Username, req.Password, role, escopo)
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -56,11 +76,13 @@ func (a *API) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 
 type roleRequest struct {
 	Role string `json:"role"`
+	// Scope ausente mantém o escopo atual.
+	Scope *domain.Scope `json:"scope,omitempty"`
 }
 
-// handleUpdateUserRole troca o papel de uma conta.
+// handleUpdateUserRole troca o papel e o escopo de uma conta.
 //
-// Só o papel: nome de usuário e senha não se editam por aqui. Trocar a
+// Só isso: nome de usuário e senha não se editam por aqui. Trocar a
 // senha de outra pessoa sem ela saber é o tipo de poder que uma
 // ferramenta de monitoramento não precisa ter, e renomear conta quebra
 // o rastro de quem fez o quê.
@@ -81,7 +103,14 @@ func (a *API) handleUpdateUserRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	u, err := a.auth.SetRole(r.Context(), id, role)
+	if req.Scope != nil {
+		if err := viewerFrom(r).checkGrant(*req.Scope); err != nil {
+			writeScopeError(w, err)
+			return
+		}
+	}
+
+	u, err := a.auth.SetAccess(r.Context(), id, role, req.Scope)
 	if err != nil {
 		writeStoreError(w, err)
 		return

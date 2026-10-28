@@ -30,6 +30,9 @@ var (
 	ErrNotFound = errors.New("store: registro não encontrado")
 	// ErrConflict indica violação de unicidade, como nome de monitor repetido.
 	ErrConflict = errors.New("store: conflito de unicidade")
+	// ErrLastFullAdmin recusa a escrita que deixaria a instalação sem
+	// nenhum administrador de escopo total.
+	ErrLastFullAdmin = errors.New("store: a instalação ficaria sem administrador de escopo total")
 )
 
 // PageFilter é a paginação por keyset. Keyset em vez de OFFSET porque
@@ -81,12 +84,27 @@ func (r TimeRange) Contains(ts time.Time) bool {
 	return !ts.Before(r.From) && ts.Before(r.To)
 }
 
+// GroupSelection restringe uma listagem aos monitores de certos grupos.
+//
+// Ponteiro nos filtros: nulo não restringe, e uma seleção vazia não traz
+// nada. Confundir os dois faria uma conta com escopo esvaziado enxergar a
+// instalação inteira.
+type GroupSelection struct {
+	// IDs são os grupos aceitos. O store não expande sistema em
+	// ambientes: quem monta a seleção já entrega a lista resolvida.
+	IDs []int64
+	// Ungrouped inclui os monitores sem grupo.
+	Ungrouped bool
+}
+
 // MonitorFilter seleciona monitores numa listagem.
 type MonitorFilter struct {
 	Page PageFilter
 	// Enabled nulo traz habilitados e pausados.
 	Enabled *bool
 	Tag     string
+	// Groups nulo traz de todos os grupos.
+	Groups *GroupSelection
 }
 
 // HeartbeatQuery seleciona batidas cruas.
@@ -96,6 +114,21 @@ type HeartbeatQuery struct {
 	ProbeID string
 	Range   TimeRange
 	Limit   int
+	// OnlyFailures restringe às batidas fora do ar e degradadas. O filtro
+	// acontece antes do limite, senão uma janela de batidas boas
+	// esconderia a falha que veio antes delas.
+	OnlyFailures bool
+	// Before, quando preenchido, traz só as batidas anteriores ao cursor
+	// na ordem (instante, origem) decrescente. É como a linha do tempo
+	// pagina para trás: cortar só pelo instante perdia as batidas de
+	// outras origens que caíam no mesmo milissegundo da última da página.
+	Before *HeartbeatCursor
+}
+
+// HeartbeatCursor é a posição de uma batida na ordem (instante, origem).
+type HeartbeatCursor struct {
+	At      time.Time
+	ProbeID string
 }
 
 // Normalize aplica limites e normaliza a janela.
@@ -125,13 +158,22 @@ func (q RollupQuery) Normalize() RollupQuery {
 // MonitorRepo é o CRUD de definições de monitor.
 type MonitorRepo interface {
 	// Create insere o monitor e preenche ID, CreatedAt e UpdatedAt.
-	// Devolve ErrConflict se o nome já existir.
+	// Devolve ErrConflict se o nome já existir no grupo, e ErrNotFound se
+	// o grupo (ou o monitor pai) não existir — o que Update também faz.
 	Create(ctx context.Context, m *domain.Monitor) error
 	Get(ctx context.Context, id int64) (domain.Monitor, error)
 	Update(ctx context.Context, m domain.Monitor) error
 	// Delete remove o monitor e, em cascata, seu histórico.
 	Delete(ctx context.Context, id int64) error
 	List(ctx context.Context, f MonitorFilter) (Page[domain.Monitor], error)
+
+	// FindByPushToken devolve o monitor dono do token de push, ou
+	// ErrNotFound. Token vazio não acha ninguém.
+	//
+	// É o caminho do /push, que não tem login: a busca é indexada para
+	// uma requisição qualquer não custar uma varredura da tabela. O token
+	// é único entre os monitores — gravar um repetido devolve ErrConflict.
+	FindByPushToken(ctx context.Context, token string) (domain.Monitor, error)
 }
 
 // UserRepo é o CRUD de contas de acesso.
@@ -140,11 +182,28 @@ type UserRepo interface {
 	Get(ctx context.Context, id int64) (domain.User, error)
 	// GetByUsername é o caminho do login.
 	GetByUsername(ctx context.Context, username string) (domain.User, error)
-	Update(ctx context.Context, u domain.User) error
+
+	// SetPasswordHash grava a senha e nada mais.
+	//
+	// Não existe "gravar a conta inteira": quem lê a conta, decide e
+	// regrava tudo desfaz o que outro pedido gravou no meio — a troca de
+	// senha devolvia o escopo que um administrador acabara de retirar, e
+	// a troca de acesso devolvia a senha que a pessoa acabara de trocar.
+	SetPasswordHash(ctx context.Context, id int64, hash string) error
+
+	// SetAccess grava o papel e, quando não nulo, o escopo — nada mais.
+	// Escopo nulo mantém o gravado.
+	//
+	// Devolve ErrLastFullAdmin se a escrita deixaria a instalação sem
+	// administrador de escopo total, conferido na mesma transação: conferir
+	// antes deixava dois rebaixamentos simultâneos verem "sobra o outro".
+	SetAccess(ctx context.Context, id int64, role domain.Role, scope *domain.Scope) error
 	// Count decide se o assistente de primeiro acesso deve aparecer.
 	Count(ctx context.Context) (int, error)
 
 	List(ctx context.Context) ([]domain.User, error)
+	// Delete apaga a conta. Devolve ErrLastFullAdmin, como SetAccess, se
+	// ela for o último administrador de escopo total.
 	Delete(ctx context.Context, id int64) error
 
 	// CountByRole é o que impede a instalação de se trancar para fora:
@@ -200,6 +259,8 @@ type IncidentFilter struct {
 	MonitorID int64
 	// OnlyOpen restringe aos que ainda não terminaram.
 	OnlyOpen bool
+	// Groups nulo traz de todos os grupos.
+	Groups *GroupSelection
 }
 
 // IncidentRepo guarda as janelas de indisponibilidade.
@@ -222,14 +283,82 @@ type ChannelRepo interface {
 	Update(ctx context.Context, c domain.Channel) error
 	Delete(ctx context.Context, id int64) error
 	List(ctx context.Context) ([]domain.Channel, error)
+	// ListFor devolve, em ordem de id, os canais que avisam sobre algo da
+	// seleção: vinculados a um monitor dos grupos escolhidos ou ao próprio
+	// grupo. Inclui os desligados, como List. É a listagem de quem tem
+	// escopo: o canal que só avisa sobre os outros revela, pelo nome e pelo
+	// destino, o que existe fora.
+	ListFor(ctx context.Context, sel GroupSelection) ([]domain.Channel, error)
 
-	// Link e Unlink definem quais canais avisam sobre qual monitor.
+	// Link e Unlink definem quais canais avisam sobre qual monitor. Link
+	// devolve ErrNotFound se o canal ou o monitor não existir.
 	Link(ctx context.Context, monitorID, channelID int64) error
 	Unlink(ctx context.Context, monitorID, channelID int64) error
 	// ForMonitor devolve apenas os canais habilitados do monitor: um canal
 	// desligado não deve receber nada, e filtrar aqui evita que cada
 	// chamador precise lembrar disso.
 	ForMonitor(ctx context.Context, monitorID int64) ([]domain.Channel, error)
+
+	// LinkGroup e UnlinkGroup definem quais canais avisam sobre todos os
+	// monitores de um grupo, inclusive os criados depois. LinkGroup
+	// devolve ErrNotFound se o canal ou o grupo não existir.
+	LinkGroup(ctx context.Context, groupID, channelID int64) error
+	UnlinkGroup(ctx context.Context, groupID, channelID int64) error
+	// ForGroup devolve os canais habilitados vinculados direto ao grupo.
+	ForGroup(ctx context.Context, groupID int64) ([]domain.Channel, error)
+
+	// Destinations é para onde vai o aviso de um monitor: os canais
+	// habilitados vinculados a ele, ao grupo dele e ao sistema do grupo,
+	// cada um uma vez só.
+	//
+	// Uma consulta, e não três somadas por quem chama: a regra de quem é
+	// avisado precisa morar num lugar só, senão o motor e a tela de canais
+	// passam a discordar sobre quem recebe.
+	Destinations(ctx context.Context, monitorID int64) ([]domain.Channel, error)
+}
+
+// GroupRepo guarda os grupos de monitores.
+//
+// A forma da árvore — dois níveis, só folha recebe monitor — é conferida
+// no domínio (domain.GroupTree), que dá a mensagem para quem pediu. Aqui
+// ficam as garantias que só o banco dá sem corrida: unicidade entre
+// irmãos, a profundidade de dois níveis e a recusa de apagar o que está
+// em uso.
+type GroupRepo interface {
+	// Create devolve ErrConflict se já houver irmão com o mesmo nome ou
+	// slug, ou se o pai não for de topo; ErrNotFound se o pai não existir.
+	Create(ctx context.Context, g *domain.Group) error
+	Get(ctx context.Context, id int64) (domain.Group, error)
+	// Update recusa como Create, e também quando o grupo que ganha pai tem
+	// ambientes dentro dele.
+	Update(ctx context.Context, g domain.Group) error
+	// Delete devolve ErrConflict enquanto o grupo tiver monitores ou
+	// ambientes: apagar perderia o vínculo deles em silêncio. Vínculos de
+	// canal e concessões de escopo saem junto.
+	Delete(ctx context.Context, id int64) error
+	List(ctx context.Context) ([]domain.Group, error)
+}
+
+// TransitionFilter seleciona mudanças de estado de um monitor.
+type TransitionFilter struct {
+	MonitorID int64
+	// Before corta a página: só mudanças anteriores a este instante. Zero
+	// começa do agora.
+	Before time.Time
+	// BeforeID desempata no instante Before: com ele, entram também as
+	// mudanças desse instante com id menor. A lista sai em (instante, id)
+	// decrescente, e sem o desempate a página seguinte pulava as mudanças
+	// que dividiam o instante com a última da página anterior.
+	BeforeID int64
+	Limit    int
+}
+
+// TransitionRepo guarda o histórico de mudanças confirmadas de estado.
+type TransitionRepo interface {
+	Record(ctx context.Context, t *domain.Transition) error
+	// List devolve da mais recente para a mais antiga, que é como uma
+	// linha do tempo de falhas se lê.
+	List(ctx context.Context, f TransitionFilter) ([]domain.Transition, error)
 }
 
 // StatusPageRepo guarda as páginas públicas, seus grupos e componentes.
@@ -312,6 +441,8 @@ type MetadataStore interface {
 	Channels() ChannelRepo
 	StatusPages() StatusPageRepo
 	Announcements() AnnouncementRepo
+	Groups() GroupRepo
+	Transitions() TransitionRepo
 	Close() error
 }
 
@@ -352,10 +483,24 @@ type TimeseriesStore interface {
 	// batida a cada verificação, então ler a última batida seria ler a
 	// que ele próprio acabou de escrever, e o monitor pareceria
 	// eternamente saudável.
-	RecordPush(ctx context.Context, monitorID int64, at time.Time) error
+	//
+	// Guarda só o último sinal, inteiro: status, causa e latência
+	// substituem os do anterior, para uma causa velha não grudar num sinal
+	// saudável.
+	RecordPush(ctx context.Context, monitorID int64, sig domain.PushSignal) error
 
-	// LastPush devolve o instante do último sinal, e se houve algum.
-	LastPush(ctx context.Context, monitorID int64) (time.Time, bool, error)
+	// LastPush devolve o último sinal, e se houve algum.
+	LastPush(ctx context.Context, monitorID int64) (domain.PushSignal, bool, error)
+
+	// MarkPushEvaluated registra que o sinal signalID já foi contado por
+	// uma verificação.
+	//
+	// O sinal fica guardado até chegar o seguinte, e cada verificação o
+	// relê. Sem a marca, o mesmo "down" contaria como falha nova a cada
+	// releitura, e um sinal só abriria incidente sozinho. Marcar um sinal
+	// que já foi substituído não tem efeito: a marca é do sinal, e o novo
+	// continua inédito.
+	MarkPushEvaluated(ctx context.Context, monitorID, signalID int64) error
 
 	// LatestHeartbeats devolve a batida mais recente de cada monitor.
 	//

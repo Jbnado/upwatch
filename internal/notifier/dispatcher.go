@@ -180,6 +180,21 @@ func (d *Dispatcher) deliver(ctx context.Context, item delivery) {
 			return
 		}
 
+		if IsPermanent(err) {
+			// Recusa definitiva — destino apagado, credencial revogada,
+			// caixa inexistente — não melhora com a espera. Repetir só
+			// prenderia este trabalhador enquanto outros incidentes
+			// aguardam, e repetiria o mesmo erro no log.
+			d.dropped.Add(1)
+			d.opts.Counters.ObserveNotification(false)
+			slog.Error("aviso recusado pelo destino; sem nova tentativa",
+				"monitor", item.notification.Monitor.Name,
+				"estado", item.notification.Status(),
+				"tentativas", tentativa,
+				"erro", err)
+			return
+		}
+
 		if tentativa == d.opts.MaxAttempts {
 			d.dropped.Add(1)
 			d.opts.Counters.ObserveNotification(false)

@@ -7,7 +7,8 @@ import type {
   SelectHTMLAttributes,
   TextareaHTMLAttributes,
 } from "react";
-import type { Status } from "../api/types";
+import { useState } from "react";
+import type { GroupStatus } from "../api/types";
 import { href, navigate, type Route } from "../lib/router";
 
 /**
@@ -93,16 +94,20 @@ export function LinkButton({
 export function RowLink({
   to,
   className = "",
+  current = false,
   children,
 }: {
   to: Route;
   className?: string;
+  /** Marca o item do menu onde a pessoa está, para o leitor de tela também. */
+  current?: boolean;
   children: ReactNode;
 }) {
   return (
     <a
       href={href(to)}
       onClick={interceptar(to)}
+      aria-current={current ? "page" : undefined}
       className={`pressable block hover:bg-sunken active:bg-pressed ${className}`}
     >
       {children}
@@ -122,7 +127,7 @@ export function InlineLink({ to, children }: { to: Route; children: ReactNode })
     <a
       href={href(to)}
       onClick={interceptar(to)}
-      className="pressable underline decoration-line-strong hover:decoration-ink active:text-ink-2"
+      className="pressable text-action underline decoration-line-strong hover:decoration-ink active:text-ink-2"
     >
       {children}
     </a>
@@ -156,9 +161,62 @@ export function TextLink({
 }: ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
     <button
-      className={`pressable eyebrow hover:text-ink hover:underline active:text-ink-2 ${className}`}
+      className={`pressable text-action eyebrow hover:text-ink hover:underline active:text-ink-2 ${className}`}
       {...props}
     />
+  );
+}
+
+/**
+ * NewItem guarda o formulário de criar atrás de "+ Novo …".
+ *
+ * Aberto o tempo todo, o formulário vinha antes da lista e empurrava para
+ * baixo justamente o que a pessoa veio conferir — o que já existe. Criar
+ * é a exceção; ver é a regra.
+ */
+export function NewItem({
+  label,
+  children,
+}: {
+  label: string;
+  /** Recebe o fechar, para o formulário se recolher ao criar ou cancelar. */
+  children: (close: () => void) => ReactNode;
+}) {
+  const [aberto, setAberto] = useState(false);
+
+  if (!aberto) {
+    return (
+      <Button onClick={() => setAberto(true)} className="self-start">
+        + {label}
+      </Button>
+    );
+  }
+  return <>{children(() => setAberto(false))}</>;
+}
+
+/**
+ * FormActions é o par enviar e cancelar no pé de um formulário de criar.
+ */
+export function FormActions({
+  submit,
+  busy = false,
+  disabled = false,
+  onCancel,
+}: {
+  submit: string;
+  busy?: boolean;
+  disabled?: boolean;
+  onCancel: () => void;
+}) {
+  return (
+    <span className="flex flex-wrap gap-2">
+      <Button type="submit" variant="primary" disabled={busy || disabled}>
+        {submit}
+      </Button>
+      <Button type="button" onClick={onCancel}>
+        Cancelar
+      </Button>
+    </span>
   );
 }
 
@@ -246,11 +304,14 @@ export function Checkbox({
   );
 }
 
-const STATUS_STYLE: Record<Status, { dot: string; text: string; label: string }> = {
+const STATUS_STYLE: Record<GroupStatus, { dot: string; text: string; label: string }> = {
   up: { dot: "bg-up", text: "text-up", label: "no ar" },
   degraded: { dot: "bg-degraded", text: "text-degraded", label: "degradado" },
   down: { dot: "bg-down", text: "text-down", label: "fora do ar" },
   unknown: { dot: "bg-unknown", text: "text-unknown", label: "sem medição" },
+  // Grupo sem monitor: anel vazio e sem cor de estado. Não há o que
+  // medir, e pintá-lo como "sem medição" alarmaria por um grupo novo.
+  empty: { dot: "border border-ink-3", text: "text-ink-3", label: "vazio" },
 };
 
 /**
@@ -260,7 +321,13 @@ const STATUS_STYLE: Record<Status, { dot: string; text: string; label: string }>
  * não distingue vermelho de verde, e um painel que só usa cor deixa essa
  * pessoa sem informação nenhuma.
  */
-export function StatusDot({ status, withLabel = false }: { status: Status; withLabel?: boolean }) {
+export function StatusDot({
+  status,
+  withLabel = false,
+}: {
+  status: GroupStatus;
+  withLabel?: boolean;
+}) {
   const style = STATUS_STYLE[status];
 
   return (

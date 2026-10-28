@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ago, duration, latency, uptime } from "./format";
+import { ago, duration, elapsed, latency, sinceClock, uptime } from "./format";
 
 /**
  * Formatação é onde a interface mente com mais facilidade.
@@ -76,5 +76,43 @@ describe("ago", () => {
   it("não inventa futuro quando o relógio do servidor está adiantado", () => {
     // Diferença de relógio entre servidor e navegador produziria "há -3 s".
     expect(ago(new Date(agora.getTime() + 5000).toISOString(), agora)).toBe("agora");
+  });
+});
+
+describe("elapsed", () => {
+  const agora = new Date("2026-07-29T12:00:00Z");
+  const atras = (segundos: number) =>
+    new Date(agora.getTime() - segundos * 1000).toISOString();
+
+  it("diz há quanto tempo um estado dura, com duas unidades quando a segunda conta", () => {
+    // "há 2 h" para uma queda de 2 h 50 min esconde quase uma hora de
+    // quem decide se escala o incidente.
+    expect(elapsed(atras(45), agora)).toBe("45 s");
+    expect(elapsed(atras(12 * 60 + 30), agora)).toBe("12 min");
+    expect(elapsed(atras(2 * 3600 + 50 * 60), agora)).toBe("2 h 50 min");
+    expect(elapsed(atras(3 * 86400 + 4 * 3600), agora)).toBe("3 d 4 h");
+  });
+
+  it("não escreve a segunda unidade quando ela é zero", () => {
+    expect(elapsed(atras(2 * 3600), agora)).toBe("2 h");
+    expect(elapsed(atras(86400 + 120), agora)).toBe("1 d");
+  });
+
+  it("não inventa futuro com relógio adiantado", () => {
+    expect(elapsed(new Date(agora.getTime() + 5000).toISOString(), agora)).toBe("0 s");
+  });
+});
+
+describe("sinceClock", () => {
+  // Datas no fuso de quem roda o teste: "hoje" é o dia de quem olha.
+  const agora = new Date(2026, 9, 28, 12, 0);
+
+  it("mostra só a hora quando é hoje", () => {
+    expect(sinceClock(new Date(2026, 9, 28, 11, 31).toISOString(), agora)).toBe("11:31");
+  });
+
+  it("acrescenta o dia quando não é hoje", () => {
+    // "desde 11:31" de ontem leria como 29 minutos de queda, e não 25 h.
+    expect(sinceClock(new Date(2026, 9, 27, 11, 31).toISOString(), agora)).toMatch(/27.*11:31/);
   });
 });

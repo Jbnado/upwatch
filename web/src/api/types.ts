@@ -1,8 +1,19 @@
 /** Tipos do contrato da API, espelhando internal/api/openapi.yaml. */
 
+import type { ConfigCanal, ConfigEmail, ConfigNtfy } from "../lib/channel-config";
+
 export type Status = "up" | "down" | "degraded" | "unknown";
 
-export type MonitorType = "http" | "tcp" | "icmp" | "dns" | "tls" | "push";
+export type MonitorType =
+  | "http"
+  | "tcp"
+  | "icmp"
+  | "dns"
+  | "tls"
+  | "push"
+  | "redis"
+  | "postgres"
+  | "mysql";
 
 export type Monitor = {
   id: number;
@@ -15,10 +26,14 @@ export type Monitor = {
   degraded_latency_ms: number;
   config?: Record<string, unknown>;
   parent_id?: number;
+  /** Grupo folha do monitor; null é "Sem grupo". */
+  group_id?: number | null;
   enabled: boolean;
   tags: string[];
   created_at: string;
   updated_at: string;
+  /** Próxima execução prevista de um push com agenda; só no detalhe. */
+  next_expected_push?: string;
 };
 
 export type MonitorInput = {
@@ -32,6 +47,8 @@ export type MonitorInput = {
   config?: Record<string, unknown>;
   enabled?: boolean;
   tags?: string[];
+  /** O PUT sobrescreve: omitir move o monitor para "Sem grupo". */
+  group_id?: number | null;
 };
 
 /**
@@ -45,7 +62,16 @@ export type MonitorInput = {
  */
 export type Summary = {
   monitor_id: number;
+  /**
+   * Estado confirmado: o mesmo do cartão de grupo e de "Problemas agora".
+   * Não é o da última batida — uma falha só vira queda depois do limiar.
+   */
   status: Status;
+  /**
+   * Resultado da última batida, sem confirmação; null quando nunca houve.
+   * É por ele que a tela vê a falha que ainda não virou queda.
+   */
+  last_check_status: Status | null;
   source: "raw" | "hourly" | "daily";
   uptime_percent: number | null;
   latency_p50_ms: number | null;
@@ -92,11 +118,98 @@ export type Rollup = {
 
 export type Role = "admin" | "viewer";
 
+/**
+ * Sobre quais grupos o papel vale. Conceder um sistema concede os
+ * ambientes dele. A barreira está no servidor; aqui é só o que mostrar.
+ */
+export type Scope = {
+  all_groups: boolean;
+  group_ids: number[];
+};
+
+/** Grupo de monitores: Sistema → Ambiente, dois níveis no máximo. */
+export type Group = {
+  id: number;
+  name: string;
+  slug: string;
+  parent_id: number | null;
+  /** Nome completo, como "RPA / prod". */
+  path: string;
+  created_at: string;
+  updated_at: string;
+};
+
+/**
+ * Estado de um grupo: o pior entre os monitores ativos, ou "empty" para o
+ * grupo sem monitor nenhum. "empty" não é "unknown": não há o que medir,
+ * e não há problema nenhum.
+ */
+export type GroupStatus = Status | "empty";
+
+/**
+ * Cartão de um grupo na tela inicial. O sistema soma os ambientes dele;
+ * group_id nulo é "Sem grupo".
+ */
+export type GroupSummary = {
+  group_id: number | null;
+  parent_id: number | null;
+  name: string;
+  path: string;
+  /** Pior estado entre os ativos; "empty" sem monitor nenhum. */
+  status: GroupStatus;
+  total: number;
+  up: number;
+  degraded: number;
+  down: number;
+  unknown: number;
+  paused: number;
+  /** down + degraded + unknown. */
+  problems: number;
+};
+
+/** Uma linha de "Problemas agora". */
+export type Problem = {
+  monitor_id: number;
+  name: string;
+  type: MonitorType;
+  group_id: number | null;
+  /** Vazio é "Sem grupo". */
+  group_path: string;
+  status: Exclude<Status, "up">;
+  /** Desde quando o estado vale; para monitor nunca medido, o cadastro. */
+  since: string;
+  cause: string;
+  last_check_at: string | null;
+};
+
+/**
+ * Evento da linha do tempo do monitor: mudança confirmada de estado
+ * (`state`) ou batida com falha (`failure`).
+ */
+export type MonitorEvent = {
+  type: "state" | "failure";
+  at: string;
+  status: Status;
+  /** Estado anterior; só em `state`. */
+  from?: Status;
+  message?: string;
+  latency_ms?: number;
+  probe_id?: string;
+};
+
+export type EventPage = {
+  items: MonitorEvent[];
+  has_more: boolean;
+  /** Só com has_more; volta em `cursor` para a página seguinte. Opaco. */
+  next_cursor?: string;
+};
+
 export type User = {
   id: number;
   username: string;
   /** admin administra; viewer só lê. */
   role: Role;
+  scope: Scope;
   created_at: string;
   updated_at: string;
 };
@@ -113,11 +226,12 @@ export type APIToken = {
 /** CreatedToken traz o segredo, que só aparece nesta resposta. */
 export type CreatedToken = APIToken & { token: string };
 
-export type ChannelType = "webhook" | "discord" | "slack";
+export type ChannelType = "webhook" | "discord" | "slack" | "email" | "ntfy";
 
 /**
- * A configuração nunca vem do servidor: ela contém a URL do webhook, que
- * é a credencial de quem pode publicar no canal.
+ * A configuração nunca vem do servidor: ela contém a URL do webhook, a
+ * senha do SMTP ou o token do ntfy — credenciais de quem pode publicar no
+ * canal.
  */
 export type Channel = {
   id: number;
@@ -132,11 +246,7 @@ export type ChannelInput = {
   name: string;
   type: ChannelType;
   enabled?: boolean;
-  config: {
-    url: string;
-    headers?: Record<string, string>;
-    template?: string;
-  };
+  config: ConfigCanal | ConfigEmail | ConfigNtfy;
 };
 
 export type Incident = {

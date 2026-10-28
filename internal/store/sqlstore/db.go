@@ -3,9 +3,11 @@ package sqlstore
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strconv"
 	"strings"
 
+	"github.com/Jbnado/upwatch/internal/secretbox"
 	"github.com/Jbnado/upwatch/internal/store/migrations"
 )
 
@@ -28,6 +30,9 @@ import (
 type db struct {
 	sql     *sql.DB
 	dialect migrations.Dialect
+	// secrets cifra e decifra as credenciais da configuração (ver
+	// secrets.go).
+	secrets *secretbox.Box
 }
 
 // rebind traduz "?" para o marcador do dialeto.
@@ -98,6 +103,19 @@ func (d *db) insertID(ctx context.Context, query string, args ...any) (int64, er
 	return id, nil
 }
 
+// inTx roda fn numa transação, desfazendo-a se fn falhar.
+func (d *db) inTx(ctx context.Context, fn func(*tx) error) error {
+	t, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlstore: iniciando transação: %w", err)
+	}
+	if err := fn(t); err != nil {
+		_ = t.Rollback()
+		return err
+	}
+	return t.Commit()
+}
+
 // tx é a transação com o mesmo tratamento de dialeto.
 type tx struct {
 	sql     *sql.Tx
@@ -106,6 +124,10 @@ type tx struct {
 
 func (t *tx) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
 	return t.sql.ExecContext(ctx, rebind(t.dialect, query), args...)
+}
+
+func (t *tx) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return t.sql.QueryContext(ctx, rebind(t.dialect, query), args...)
 }
 
 func (t *tx) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {

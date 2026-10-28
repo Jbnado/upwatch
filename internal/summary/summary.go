@@ -135,7 +135,7 @@ func FromRollups(monitorID int64, src Source, rs []domain.Rollup) Summary {
 		s.Unknown += r.Unknown
 	}
 
-	s.Status = bucketStatus(rs[len(rs)-1])
+	s.Status = BucketStatus(rs[len(rs)-1])
 
 	// LastCheckAt fica vazio de propósito: num agregado o carimbo é o
 	// início do período, não o instante de uma verificação. Preenchê-lo com
@@ -194,7 +194,7 @@ func Series(from, to time.Time, buckets int, hbs []domain.Heartbeat) []Point {
 			i = buckets - 1
 		}
 
-		pontos[i].Status = pior2(pontos[i].Status, hb.Status)
+		pontos[i].Status = domain.Worse(pontos[i].Status, hb.Status, domain.UnknownIsAbsence)
 		if hb.Status.Responsive() {
 			somas[i] += float64(hb.LatencyMS)
 			respostas[i]++
@@ -209,29 +209,6 @@ func Series(from, to time.Time, buckets int, hbs []domain.Heartbeat) []Point {
 		pontos[i].LatencyMS = &media
 	}
 	return pontos
-}
-
-// pior2 escolhe o estado que mais importa entre dois.
-//
-// Qualquer falha no bucket pesa mais que o resto: é justamente ela que se
-// procura ao olhar a faixa, e uma média a esconderia.
-func pior2(a, b domain.Status) domain.Status {
-	peso := func(s domain.Status) int {
-		switch s {
-		case domain.StatusDown:
-			return 3
-		case domain.StatusDegraded:
-			return 2
-		case domain.StatusUp:
-			return 1
-		default:
-			return 0
-		}
-	}
-	if peso(b) > peso(a) {
-		return b
-	}
-	return a
 }
 
 func (s *Summary) setLatencias(latencias []float64) {
@@ -260,22 +237,28 @@ func uptime(responderam, caiu int) *float64 {
 	return &v
 }
 
-// bucketStatus resume um período agregado num estado.
+// BucketStatus resume um período agregado num estado: o pior que
+// apareceu nele, pela ordem de domain.Severity, com "sem medição" como
+// ausência. A faixa desenhada de agregados usa a mesma função, para o
+// número e a figura não divergirem.
 //
 // Qualquer falha no intervalo pesa mais que o resto: uma hora com
 // cinquenta e nove minutos no ar e um fora não é "no ar", e é justamente
 // esse minuto que se procura ao olhar a faixa.
-func bucketStatus(r domain.Rollup) domain.Status {
-	switch {
-	case r.Down > 0:
-		return domain.StatusDown
-	case r.Degraded > 0:
-		return domain.StatusDegraded
-	case r.Up > 0:
-		return domain.StatusUp
-	default:
-		return domain.StatusUnknown
+func BucketStatus(r domain.Rollup) domain.Status {
+	presentes := make([]domain.Status, 0, 4)
+	for _, c := range []struct {
+		n int
+		s domain.Status
+	}{
+		{r.Unknown, domain.StatusUnknown}, {r.Up, domain.StatusUp},
+		{r.Degraded, domain.StatusDegraded}, {r.Down, domain.StatusDown},
+	} {
+		if c.n > 0 {
+			presentes = append(presentes, c.s)
+		}
 	}
+	return domain.Worst(presentes, domain.UnknownIsAbsence)
 }
 
 // pior toma o maior percentil da janela, ignorando buckets sem resposta.

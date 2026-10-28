@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { api } from "../api/client";
 import {
   ApiError,
   type Announcement,
+  type Group,
   type IncidentImpact,
   type IncidentPhase,
   type Monitor,
@@ -15,21 +16,25 @@ import {
   Button,
   Checkbox,
   Field,
+  FormActions,
   Input,
   Loading,
+  NewItem,
   Nothing,
   RowLink,
   Select,
   TextLink,
 } from "../components/ui";
+import { ServicePicker } from "../components/ServicePicker";
 import { stamp } from "../lib/format";
 import { navigate } from "../lib/router";
+import { serviceOrigin } from "../lib/service-tree";
 
 /**
  * Administração das páginas públicas.
  *
- * Duas telas: a lista, e a edição de uma página com seus grupos,
- * componentes e relatos. O que se escreve aqui é exatamente o que
+ * Duas telas: a lista, e a edição de uma página com suas seções,
+ * serviços e relatos. O que se escreve aqui é exatamente o que
  * qualquer pessoa com o link vê depois, então cada campo diz em voz alta
  * se é público.
  */
@@ -64,23 +69,17 @@ export function StatusPages() {
   }, [carregar]);
 
   return (
-    <div className="mx-auto flex max-w-2xl flex-col gap-6 px-5 py-6">
-      <div className="flex flex-col gap-6">
-        <nav>
-          <TextLink onClick={() => navigate({ name: "board" })}>← todos os monitores</TextLink>
-        </nav>
-        <div className="flex flex-col gap-1.5">
-          <h1 className="text-title font-semibold tracking-tight">Páginas de estado</h1>
-          <p className="text-body text-ink-2">
-            Endereços públicos que qualquer pessoa abre sem entrar. Mostram apenas o que você
-            publicar — nunca o endereço do alvo nem a causa detectada.
-          </p>
-        </div>
+    <section className="flex flex-col gap-4">
+      <div className="flex flex-col gap-1.5">
+        <h2 className="text-lead font-medium">Páginas de estado</h2>
+        <p className="text-body text-ink-2">
+          Endereços públicos que qualquer pessoa abre sem entrar, para compartilhar disponibilidade
+          com clientes e com o time. Mostram apenas o que você publicar — nunca o endereço do alvo
+          nem a causa detectada.
+        </p>
       </div>
 
       {erro && <Alert>{erro}</Alert>}
-
-      <NovaPagina onCreated={carregar} onError={setErro} />
 
       {paginas === null ? (
         <Loading what="páginas" />
@@ -93,7 +92,7 @@ export function StatusPages() {
           {paginas.map((p) => (
             <RowLink
               key={p.id}
-              to={{ name: "status-page", id: p.id }}
+              to={{ name: "ajustes-pagina", id: p.id }}
               className="flex items-center justify-between gap-4 border-b border-line px-1 py-2.5"
             >
               <span className="flex min-w-0 flex-col">
@@ -108,16 +107,22 @@ export function StatusPages() {
           ))}
         </div>
       )}
-    </div>
+
+      <NewItem label="Nova página">
+        {(fechar) => <NovaPagina onCreated={carregar} onError={setErro} onCancel={fechar} />}
+      </NewItem>
+    </section>
   );
 }
 
 function NovaPagina({
   onCreated,
   onError,
+  onCancel,
 }: {
   onCreated: () => Promise<void>;
   onError: (msg: string) => void;
+  onCancel: () => void;
 }) {
   const [title, setTitle] = useState("");
   const [slug, setSlug] = useState("");
@@ -140,11 +145,8 @@ function NovaPagina({
 
     try {
       const criada = await api.createStatusPage({ slug, title });
-      setTitle("");
-      setSlug("");
-      setTocouNoSlug(false);
       await onCreated();
-      navigate({ name: "status-page", id: criada.id });
+      navigate({ name: "ajustes-pagina", id: criada.id });
     } catch (e) {
       if (e instanceof ApiError && e.field) setCampoErro({ campo: e.field, msg: e.message });
       else if (e instanceof ApiError) onError(e.message);
@@ -167,6 +169,7 @@ function NovaPagina({
             value={title}
             onChange={(e) => mudarTitulo(e.target.value)}
             placeholder="Estado da plataforma"
+            autoFocus
             required
           />
         </Field>
@@ -189,9 +192,7 @@ function NovaPagina({
         </Field>
       </div>
 
-      <Button type="submit" variant="primary" disabled={enviando} className="self-start">
-        {enviando ? "Criando" : "Criar página"}
-      </Button>
+      <FormActions submit={enviando ? "Criando" : "Criar página"} busy={enviando} onCancel={onCancel} />
     </form>
   );
 }
@@ -217,21 +218,24 @@ export function slugify(texto: string): string {
 
 export function StatusPageAdmin({ id }: { id: number }) {
   const [page, setPage] = useState<StatusPage | null>(null);
-  const [groups, setGroups] = useState<StatusPageGroup[]>([]);
+  const [secoes, setSecoes] = useState<StatusPageGroup[]>([]);
   const [components, setComponents] = useState<StatusPageComponent[]>([]);
   const [monitors, setMonitors] = useState<Monitor[]>([]);
+  const [grupos, setGrupos] = useState<Group[]>([]);
   const [erro, setErro] = useState<string | null>(null);
 
   const carregar = useCallback(async () => {
     try {
-      const [detalhe, lista] = await Promise.all([
+      const [detalhe, lista, g] = await Promise.all([
         api.getStatusPage(id),
         api.listMonitors({ limit: 200 }),
+        api.listGroups(),
       ]);
       setPage(detalhe.page);
-      setGroups(detalhe.groups);
+      setSecoes(detalhe.groups);
       setComponents(detalhe.components);
       setMonitors(lista.items);
+      setGrupos(g.items);
       setErro(null);
     } catch (e) {
       setErro(e instanceof Error ? e.message : "Não foi possível carregar a página.");
@@ -242,51 +246,50 @@ export function StatusPageAdmin({ id }: { id: number }) {
     void carregar();
   }, [carregar]);
 
-  if (erro) {
+  const voltar = (
+    <nav aria-label="Voltar às páginas">
+      <TextLink onClick={() => navigate({ name: "ajustes", section: "paginas" })}>
+        ← páginas de estado
+      </TextLink>
+    </nav>
+  );
+
+  if (erro && !page) {
     return (
-      <div className="mx-auto max-w-2xl px-5 py-6">
+      <div className="flex flex-col gap-6">
+        {voltar}
         <Alert>{erro}</Alert>
       </div>
     );
   }
-  if (!page) {
-    return (
-      <div className="mx-auto max-w-2xl px-5 py-6">
-        <Loading what="a página" />
-      </div>
-    );
-  }
+  if (!page) return <Loading what="a página" />;
 
   async function remover() {
     if (!confirm(`Remover "${page!.title}"? O endereço deixa de responder.`)) return;
 
     await api.deleteStatusPage(page!.id);
-    navigate({ name: "status-pages" });
+    navigate({ name: "ajustes", section: "paginas" });
   }
 
-  const publicados = new Set(components.map((c) => c.monitor_id));
+  const publico = page.default ? "/status" : `/status/${page.slug}`;
 
   return (
-    <div className="mx-auto flex max-w-2xl flex-col gap-10 px-5 py-6">
+    <div className="flex flex-col gap-10">
       <div className="flex flex-col gap-6">
-        <nav>
-          <TextLink onClick={() => navigate({ name: "status-pages" })}>
-            ← páginas de estado
-          </TextLink>
-        </nav>
+        {voltar}
 
         <header className="flex flex-wrap items-start justify-between gap-4">
-          <div className="flex flex-col gap-1.5">
-            <h1 className="text-title font-semibold tracking-tight">{page.title}</h1>
+          <div className="flex min-w-0 flex-col gap-1.5">
+            <h2 className="text-title font-semibold tracking-tight">{page.title}</h2>
             {/* O endereço público, clicável: conferir como a página ficou
                 é a primeira coisa que se quer fazer depois de mexer nela. */}
             <a
-              href={page.default ? "/status" : `/status/${page.slug}`}
+              href={publico}
               target="_blank"
               rel="noreferrer"
-              className="pressable tabular text-small text-ink-3 underline decoration-line-strong hover:decoration-ink"
+              className="pressable text-action tabular self-start text-small text-ink-3 underline decoration-line-strong hover:decoration-ink"
             >
-              {page.default ? "/status" : `/status/${page.slug}`} ↗
+              {publico} ↗
             </a>
           </div>
           <div className="flex items-center gap-2">
@@ -317,42 +320,29 @@ export function StatusPageAdmin({ id }: { id: number }) {
             instalação com uma página só, o slug repete o que o caminho já diz.
           </p>
         )}
+        {!page.enabled && (
+          <p className="border-l-2 border-degraded bg-degraded-dim px-3 py-2 text-body">
+            Desligada: o endereço devolve 404 até você marcar "Publicada" nos ajustes da página,
+            no fim desta tela.
+          </p>
+        )}
       </div>
 
+      <Secoes pageID={page.id} secoes={secoes} onChanged={carregar} />
+
+      <Servicos
+        pageID={page.id}
+        secoes={secoes}
+        components={components}
+        setComponents={setComponents}
+        monitors={monitors}
+        grupos={grupos}
+        onChanged={carregar}
+      />
+
+      <Relatos monitors={monitors} grupos={grupos} onChanged={carregar} />
+
       <Ajustes page={page} onSaved={carregar} />
-
-      <section className="flex flex-col gap-4">
-        <div className="flex flex-col gap-1.5">
-          <h2 className="text-lead font-medium">Serviços publicados</h2>
-          <p className="text-body text-ink-2">
-            Marque o que aparece na página. O rótulo é o nome que o público lê — o monitor mantém o
-            nome interno.
-          </p>
-        </div>
-
-        {monitors.length === 0 ? (
-          <Nothing>Nenhum monitor cadastrado ainda.</Nothing>
-        ) : (
-          <ul className="-mx-1 flex flex-col">
-            {monitors.map((m) => (
-              <li key={m.id}>
-                <ComponenteLinha
-                  monitor={m}
-                  pageID={page.id}
-                  groups={groups}
-                  component={components.find((c) => c.monitor_id === m.id)}
-                  publicado={publicados.has(m.id)}
-                  onChanged={carregar}
-                />
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      <Grupos pageID={page.id} groups={groups} onChanged={carregar} />
-
-      <Relatos monitors={monitors} onChanged={carregar} />
     </div>
   );
 }
@@ -389,7 +379,7 @@ function Ajustes({ page, onSaved }: { page: StatusPage; onSaved: () => Promise<v
 
   return (
     <form onSubmit={salvar} className="flex flex-col gap-4">
-      <h2 className="text-lead font-medium">Ajustes da página</h2>
+      <h3 className="text-lead font-medium">Ajustes da página</h3>
 
       {erro && <Alert>{erro}</Alert>}
 
@@ -436,109 +426,288 @@ function Ajustes({ page, onSaved }: { page: StatusPage; onSaved: () => Promise<v
   );
 }
 
-function ComponenteLinha({
-  monitor,
+/**
+ * Servicos é o que a página mostra: primeiro como ela fica, seção por
+ * seção, e depois a árvore para escolher.
+ *
+ * Os nomes repetem entre ambientes — há um "erp" em produção e outro em
+ * homologação —, então tudo aqui diz de onde cada serviço vem. Publicar o
+ * de homologação no lugar do de produção mostraria ao cliente um estado
+ * que não é o dele.
+ */
+function Servicos({
   pageID,
-  groups,
-  component,
-  publicado,
+  secoes,
+  components,
+  setComponents,
+  monitors,
+  grupos,
   onChanged,
 }: {
-  monitor: Monitor;
   pageID: number;
-  groups: StatusPageGroup[];
-  component?: StatusPageComponent;
-  publicado: boolean;
+  secoes: StatusPageGroup[];
+  components: StatusPageComponent[];
+  setComponents: (c: StatusPageComponent[]) => void;
+  monitors: Monitor[];
+  grupos: Group[];
   onChanged: () => Promise<void>;
 }) {
-  const [label, setLabel] = useState(component?.label ?? "");
+  const [erro, setErro] = useState<string | null>(null);
+  const publicados = new Set(components.map((c) => c.monitor_id));
 
-  async function alternar() {
-    if (publicado) await api.removeComponent(pageID, monitor.id);
-    else await api.setComponent(pageID, monitor.id, { label });
-    await onChanged();
-  }
+  async function escolher(proximo: Set<number>) {
+    const entram = [...proximo].filter((id) => !publicados.has(id));
+    const saem = [...publicados].filter((id) => !proximo.has(id));
+    setErro(null);
 
-  async function salvarRotulo() {
-    if (!publicado || label === (component?.label ?? "")) return;
-    await api.setComponent(pageID, monitor.id, { label, group_id: component?.group_id ?? null });
-    await onChanged();
-  }
+    // A caixa responde na hora e o servidor confirma em seguida: esperar
+    // a volta de seis requisições para ver a marca aparecer pareceria um
+    // clique que não pegou.
+    setComponents([
+      ...components.filter((c) => !saem.includes(c.monitor_id)),
+      ...entram.map((id) => ({ page_id: pageID, monitor_id: id, group_id: null, position: 0 })),
+    ]);
 
-  async function mudarGrupo(valor: string) {
-    await api.setComponent(pageID, monitor.id, {
-      label,
-      group_id: valor === "" ? null : Number(valor),
-    });
+    try {
+      await Promise.all([
+        ...entram.map((id) => api.setComponent(pageID, id, { label: "" })),
+        ...saem.map((id) => api.removeComponent(pageID, id)),
+      ]);
+    } catch (e) {
+      setErro(e instanceof ApiError ? e.message : "Não foi possível mudar o que está publicado.");
+    }
     await onChanged();
   }
 
   return (
-    <div className="flex flex-col gap-2 py-1">
-      <Checkbox checked={publicado} onChange={alternar}>
-        <span>{monitor.name}</span>
-        {!publicado && <span className="text-small text-ink-3">não publicado</span>}
-      </Checkbox>
+    <section className="flex flex-col gap-4">
+      <div className="flex flex-col gap-1.5">
+        <h3 className="text-lead font-medium">Serviços publicados</h3>
+        <p className="text-body text-ink-2">
+          O rótulo é o nome que o público lê. O monitor mantém o nome interno, e o grupo de onde
+          ele vem não aparece na página.
+        </p>
+      </div>
 
-      {publicado && (
-        <div className="ml-6 flex flex-wrap items-end gap-3">
-          <div className="min-w-[180px] flex-1">
-            <Field label="rótulo público" hint={label ? undefined : `usa "${monitor.name}"`}>
-              <Input
-                value={label}
-                onChange={(e) => setLabel(e.target.value)}
-                onBlur={salvarRotulo}
-                placeholder={monitor.name}
+      {erro && <Alert>{erro}</Alert>}
+
+      <NaPagina components={components} secoes={secoes} monitors={monitors} grupos={grupos} />
+
+      <div className="flex flex-col gap-2">
+        <span className="eyebrow">escolher serviços</span>
+        <ServicePicker
+          groups={grupos}
+          monitors={monitors}
+          selected={publicados}
+          onChange={escolher}
+          renderDetail={(monitorId) => {
+            const c = components.find((x) => x.monitor_id === monitorId);
+            const m = monitors.find((x) => x.id === monitorId);
+            if (!c || !m) return null;
+            return (
+              <ComponenteDetalhe
+                key={monitorId}
+                pageID={pageID}
+                monitor={m}
+                component={c}
+                secoes={secoes}
+                onChanged={onChanged}
               />
-            </Field>
-          </div>
-          {groups.length > 0 && (
-            <div className="min-w-[160px]">
-              <Field label="grupo">
-                <Select
-                  value={component?.group_id ? String(component.group_id) : ""}
-                  onChange={(e) => mudarGrupo(e.target.value)}
-                >
-                  <option value="">Sem grupo</option>
-                  {groups.map((g) => (
-                    <option key={g.id} value={g.id}>
-                      {g.name}
-                    </option>
-                  ))}
-                </Select>
-              </Field>
-            </div>
-          )}
+            );
+          }}
+        />
+        <p className="max-w-prose text-small text-ink-3">
+          Marcar um ambiente ou um sistema publica os serviços que ele tem agora. Serviço criado
+          depois não entra sozinho na página pública.
+        </p>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * NaPagina é a página como o público vai lê-la, seção por seção, com o
+ * grupo de origem de cada serviço ao lado — só aqui, nunca lá.
+ */
+function NaPagina({
+  components,
+  secoes,
+  monitors,
+  grupos,
+}: {
+  components: StatusPageComponent[];
+  secoes: StatusPageGroup[];
+  monitors: Monitor[];
+  grupos: Group[];
+}) {
+  if (components.length === 0) {
+    return (
+      <Nothing hint="Marque abaixo o que vai aparecer. Sem serviço, a página pública mostra só o título.">
+        Nenhum serviço publicado.
+      </Nothing>
+    );
+  }
+
+  const blocos = [
+    ...[...secoes]
+      .sort((a, b) => a.position - b.position)
+      .map((s) => ({
+        key: `s${s.id}`,
+        titulo: s.name,
+        itens: components.filter((c) => c.group_id === s.id),
+      })),
+    {
+      key: "sem-secao",
+      titulo: secoes.length > 0 ? "Sem seção" : "",
+      itens: components.filter((c) => !c.group_id || !secoes.some((s) => s.id === c.group_id)),
+    },
+  ].filter((b) => b.itens.length > 0);
+
+  return (
+    <div className="flex flex-col gap-4 rounded-sm border border-line p-4">
+      <span className="eyebrow">na página</span>
+      {blocos.map((b) => (
+        <div key={b.key} className="flex flex-col gap-1">
+          {b.titulo && <span className="text-body font-medium">{b.titulo}</span>}
+          <ul className="flex flex-col border-t border-line">
+            {[...b.itens]
+              .sort((x, y) => x.position - y.position)
+              .map((c) => {
+                const m = monitors.find((x) => x.id === c.monitor_id);
+                const nome = m?.name ?? `#${c.monitor_id}`;
+                return (
+                  <li
+                    key={c.monitor_id}
+                    className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-0.5 border-b border-line py-1.5"
+                  >
+                    <span className="min-w-0 truncate text-body">{c.label || nome}</span>
+                    <span className="min-w-0 truncate text-small text-ink-3">
+                      {nome}
+                      <span className="mx-1.5">·</span>
+                      {m ? serviceOrigin(m, grupos) : "fora do seu acesso"}
+                    </span>
+                  </li>
+                );
+              })}
+          </ul>
         </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * ComponenteDetalhe é o rótulo público e a seção de um serviço marcado,
+ * logo abaixo dele na árvore.
+ */
+function ComponenteDetalhe({
+  pageID,
+  monitor,
+  component,
+  secoes,
+  onChanged,
+}: {
+  pageID: number;
+  monitor: Monitor;
+  component: StatusPageComponent;
+  secoes: StatusPageGroup[];
+  onChanged: () => Promise<void>;
+}) {
+  const [label, setLabel] = useState(component.label ?? "");
+  const [secao, setSecao] = useState<number | null>(component.group_id ?? null);
+  // O último par enviado, e a fila das gravações. Rótulo e seção vão
+  // sempre juntos e um de cada vez: digitar o rótulo e ir direto à seção
+  // dispara duas gravações, e em paralelo o servidor ficava com a que
+  // chegasse por último — às vezes a do rótulo, ainda com a seção antiga.
+  const enviado = useRef({ label: component.label ?? "", secao: component.group_id ?? null });
+  const fila = useRef<Promise<unknown>>(Promise.resolve());
+
+  function salvar(proximo: { label: string; secao: number | null }) {
+    if (proximo.label === enviado.current.label && proximo.secao === enviado.current.secao) return;
+    enviado.current = proximo;
+    fila.current = fila.current
+      .then(() =>
+        api.setComponent(pageID, monitor.id, { label: proximo.label, group_id: proximo.secao }),
+      )
+      .then(onChanged, onChanged);
+  }
+
+  const salvarRotulo = () => salvar({ label, secao });
+
+  function mudarSecao(valor: string) {
+    const proxima = valor === "" ? null : Number(valor);
+    setSecao(proxima);
+    salvar({ label, secao: proxima });
+  }
+
+  return (
+    <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,11rem)]">
+      <Field label="rótulo público" hint={label ? undefined : `vazio, usa "${monitor.name}"`}>
+        <Input
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          onBlur={salvarRotulo}
+          onKeyDown={(e) => {
+            // Enter salva em vez de não fazer nada: o campo está fora de
+            // formulário, e a pessoa espera que o Enter confirme.
+            if (e.key === "Enter") {
+              e.preventDefault();
+              salvarRotulo();
+            }
+          }}
+          placeholder={monitor.name}
+        />
+      </Field>
+      {secoes.length > 0 && (
+        <Field label="seção">
+          <Select value={secao ? String(secao) : ""} onChange={(e) => mudarSecao(e.target.value)}>
+            <option value="">Sem seção</option>
+            {[...secoes]
+              .sort((a, b) => a.position - b.position)
+              .map((g) => (
+                <option key={g.id} value={g.id}>
+                  {g.name}
+                </option>
+              ))}
+          </Select>
+        </Field>
       )}
     </div>
   );
 }
 
-function Grupos({
+/**
+ * Secoes são as divisões da página pública, como "API" e "Console".
+ *
+ * Na API elas ainda se chamam grupos; na tela, não. "Grupo" já é o
+ * Sistema › Ambiente dos monitores, e duas coisas com o mesmo nome na
+ * mesma tela faziam a pessoa marcar uma achando que era a outra.
+ */
+function Secoes({
   pageID,
-  groups,
+  secoes,
   onChanged,
 }: {
   pageID: number;
-  groups: StatusPageGroup[];
+  secoes: StatusPageGroup[];
   onChanged: () => Promise<void>;
 }) {
   const [nome, setNome] = useState("");
 
-  async function criar(e: FormEvent) {
+  async function criar(e: FormEvent): Promise<boolean> {
     e.preventDefault();
-    if (!nome.trim()) return;
+    if (!nome.trim()) return false;
 
-    await api.createGroup(pageID, { name: nome, position: groups.length + 1 });
+    await api.createGroup(pageID, { name: nome, position: secoes.length + 1 });
     setNome("");
     await onChanged();
+    return true;
   }
 
   async function remover(g: StatusPageGroup) {
-    // Vale dizer o que não acontece: quem apaga um grupo costuma temer
+    // Vale dizer o que não acontece: quem apaga uma seção costuma temer
     // que os serviços saiam da página junto.
-    if (!confirm(`Remover o grupo "${g.name}"? Os serviços continuam publicados, sem grupo.`)) {
+    if (!confirm(`Remover a seção "${g.name}"? Os serviços continuam publicados, sem seção.`)) {
       return;
     }
     await api.deleteGroup(pageID, g.id);
@@ -548,42 +717,54 @@ function Grupos({
   return (
     <section className="flex flex-col gap-4">
       <div className="flex flex-col gap-1.5">
-        <h2 className="text-lead font-medium">Grupos</h2>
+        <h3 className="text-lead font-medium">Seções</h3>
         <p className="text-body text-ink-2">
-          Seções da página, como "API" e "Console". Sem grupo, quarenta serviços viram uma lista
-          onde ninguém acha o que veio procurar.
+          Divisões da página pública, como "API" e "Console". Sem seção, quarenta serviços viram
+          uma lista onde ninguém acha o que veio procurar.
         </p>
       </div>
 
-      {groups.length === 0 ? (
-        <Nothing>Nenhum grupo. Os serviços aparecem numa lista única.</Nothing>
+      {secoes.length === 0 ? (
+        <Nothing>Nenhuma seção. Os serviços aparecem numa lista única.</Nothing>
       ) : (
         <ul className="border-t border-line">
-          {groups.map((g) => (
-            <li
-              key={g.id}
-              className="flex items-center justify-between gap-4 border-b border-line py-2"
-            >
-              <span className="text-body">{g.name}</span>
-              <Button size="sm" variant="danger" onClick={() => remover(g)}>
-                Remover
-              </Button>
-            </li>
-          ))}
+          {[...secoes]
+            .sort((a, b) => a.position - b.position)
+            .map((g) => (
+              <li
+                key={g.id}
+                className="flex items-center justify-between gap-4 border-b border-line py-2"
+              >
+                <span className="text-body">{g.name}</span>
+                <Button size="sm" variant="danger" onClick={() => remover(g)}>
+                  Remover
+                </Button>
+              </li>
+            ))}
         </ul>
       )}
 
-      <form onSubmit={criar} className="flex gap-2">
-        <Input
-          value={nome}
-          onChange={(e) => setNome(e.target.value)}
-          placeholder="API"
-          className="flex-1"
-        />
-        <Button type="submit" className="shrink-0">
-          Criar grupo
-        </Button>
-      </form>
+      <NewItem label="Nova seção">
+        {(fechar) => (
+          <form
+            onSubmit={async (e) => {
+              if (await criar(e)) fechar();
+            }}
+            className="flex flex-col gap-4 rounded-sm border border-line-strong p-4"
+          >
+            <Field label="nome da seção" hint="Aparece como título na página pública.">
+              <Input
+                value={nome}
+                onChange={(e) => setNome(e.target.value)}
+                placeholder="API"
+                autoFocus
+                required
+              />
+            </Field>
+            <FormActions submit="Criar seção" onCancel={fechar} />
+          </form>
+        )}
+      </NewItem>
     </section>
   );
 }
@@ -592,9 +773,11 @@ function Grupos({
 
 function Relatos({
   monitors,
+  grupos,
   onChanged,
 }: {
   monitors: Monitor[];
+  grupos: Group[];
   onChanged: () => Promise<void>;
 }) {
   const [items, setItems] = useState<Announcement[] | null>(null);
@@ -612,7 +795,7 @@ function Relatos({
   return (
     <section className="flex flex-col gap-4">
       <div className="flex flex-col gap-1.5">
-        <h2 className="text-lead font-medium">Relatos</h2>
+        <h3 className="text-lead font-medium">Relatos</h3>
         <p className="text-body text-ink-2">
           O texto que aparece em "incidentes anteriores". A causa detectada pela sonda nunca é
           publicada — ela cita host e porta internos —, então o que o público lê é o que você
@@ -621,15 +804,6 @@ function Relatos({
       </div>
 
       {erro && <Alert>{erro}</Alert>}
-
-      <NovoRelato
-        monitors={monitors}
-        onCreated={async () => {
-          await carregar();
-          await onChanged();
-        }}
-        onError={setErro}
-      />
 
       {items === null ? (
         <Loading what="relatos" />
@@ -644,6 +818,22 @@ function Relatos({
           ))}
         </ul>
       )}
+
+      <NewItem label="Novo relato">
+        {(fechar) => (
+          <NovoRelato
+            monitors={monitors}
+            grupos={grupos}
+            onCreated={async () => {
+              fechar();
+              await carregar();
+              await onChanged();
+            }}
+            onError={setErro}
+            onCancel={fechar}
+          />
+        )}
+      </NewItem>
     </section>
   );
 }
@@ -724,12 +914,16 @@ function RelatoLinha({ a, onChanged }: { a: Announcement; onChanged: () => Promi
 
 function NovoRelato({
   monitors,
+  grupos,
   onCreated,
   onError,
+  onCancel,
 }: {
   monitors: Monitor[];
+  grupos: Group[];
   onCreated: () => Promise<void>;
   onError: (msg: string) => void;
+  onCancel: () => void;
 }) {
   const [title, setTitle] = useState("");
   const [impact, setImpact] = useState<IncidentImpact>("minor");
@@ -767,15 +961,6 @@ function NovoRelato({
     }
   }
 
-  function alternar(id: number) {
-    setAfetados((atual) => {
-      const proximo = new Set(atual);
-      if (proximo.has(id)) proximo.delete(id);
-      else proximo.add(id);
-      return proximo;
-    });
-  }
-
   const erroDe = (campo: string) => (campoErro?.campo === campo ? campoErro.msg : undefined);
 
   return (
@@ -786,6 +971,7 @@ function NovoRelato({
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder="Lentidão na API de pagamentos"
+            autoFocus
             required
           />
         </Field>
@@ -808,8 +994,10 @@ function NovoRelato({
         />
       </Field>
 
-      <div className="flex flex-col gap-1.5">
-        <span className="eyebrow">o que foi afetado</span>
+      {/* fieldset e não Field: são várias caixas, e um label em volta de
+          todas faria um clique no texto marcar a primeira. */}
+      <fieldset className="flex flex-col gap-1.5">
+        <legend className="eyebrow mb-1.5">o que foi afetado</legend>
         {erroDe("components") && (
           <span className="text-small text-down">{erroDe("components")}</span>
         )}
@@ -819,19 +1007,23 @@ function NovoRelato({
             <span>Toda a plataforma</span>
             <span className="text-small text-ink-3">aparece em todas as páginas</span>
           </Checkbox>
-
-          {!global &&
-            monitors.map((m) => (
-              <Checkbox key={m.id} checked={afetados.has(m.id)} onChange={() => alternar(m.id)}>
-                <span>{m.name}</span>
-              </Checkbox>
-            ))}
         </div>
-      </div>
 
-      <Button type="submit" variant="primary" disabled={enviando} className="self-start">
-        {enviando ? "Publicando" : "Publicar relato"}
-      </Button>
+        {!global && (
+          <ServicePicker
+            groups={grupos}
+            monitors={monitors}
+            selected={afetados}
+            onChange={setAfetados}
+          />
+        )}
+      </fieldset>
+
+      <FormActions
+        submit={enviando ? "Publicando" : "Publicar relato"}
+        busy={enviando}
+        onCancel={onCancel}
+      />
     </form>
   );
 }

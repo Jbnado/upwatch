@@ -1,13 +1,17 @@
 package api
 
 import (
-	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/Jbnado/upwatch/internal/auth"
+	"github.com/Jbnado/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/store"
 )
 
 // eventBuffer é quantos eventos um assinante lento acumula antes de
@@ -21,10 +25,48 @@ const eventBuffer = 32
 // keepAliveInterval evita que intermediários encerrem a conexão ociosa.
 const keepAliveInterval = 25 * time.Second
 
+// eventsRecheckInterval é de quanto em quanto tempo o fluxo reconfere a
+// credencial. O fluxo dura dias numa aba esquecida; sem reconferir, uma
+// sessão encerrada ou um token revogado continuavam recebendo eventos
+// até alguém fechar a aba.
+const eventsRecheckInterval = 60 * time.Second
+
+// scopeCacheTTL é por quanto tempo o escopo resolvido serve aos eventos
+// seguintes. Reler a conta e a árvore de grupos a cada evento custava
+// duas consultas por evento por aba — justamente no momento em que muita
+// coisa muda junto. Alguns segundos de atraso para uma concessão
+// retirada valer no fluxo aberto é o preço, e é pequeno.
+const scopeCacheTTL = 5 * time.Second
+
 // event é uma notificação enviada à interface.
 type event struct {
 	Type string `json:"type"`
 	Data any    `json:"data"`
+
+	// monitor e previous decidem quem recebe o evento: o monitor como
+	// ficou e como era antes. Evento sem nenhum dos dois só chega a quem
+	// alcança tudo — quem publica e esquece de dizer de qual monitor se
+	// trata não pode vazar para todo mundo.
+	monitor  *domain.Monitor
+	previous *domain.Monitor
+}
+
+// visibleTo devolve o que a conta pode receber deste evento.
+//
+// Quem via o monitor e deixou de ver — porque ele mudou para um grupo de
+// fora, ou foi apagado — recebe a saída dele, e só ela: o destino do
+// monitor movido é justamente o que não se pode contar.
+func (e event) visibleTo(acc domain.Access) (event, bool) {
+	if e.monitor == nil && e.previous == nil {
+		return e, acc.All()
+	}
+	if e.monitor != nil && acc.Monitor(*e.monitor) {
+		return e, true
+	}
+	if e.previous != nil && acc.Monitor(*e.previous) {
+		return event{Type: "monitor.deleted", Data: map[string]int64{"id": e.previous.ID}}, true
+	}
+	return event{}, false
 }
 
 // eventHub distribui eventos aos assinantes conectados.
@@ -103,17 +145,58 @@ func (a *API) handleEvents(w http.ResponseWriter, r *http.Request) {
 	events, unsubscribe := a.events.subscribe()
 	defer unsubscribe()
 
+	ctx := r.Context()
+	conta := mustUser(r)
+	visao, resolvidaEm := viewerFrom(r), a.clock.Now()
+
 	keepAlive := time.NewTicker(keepAliveInterval)
 	defer keepAlive.Stop()
 
+	reconferir := a.clock.NewTimer(eventsRecheckInterval)
+	defer reconferir.Stop()
+
 	for {
 		select {
-		case <-r.Context().Done():
+		case <-ctx.Done():
 			return
+
+		case <-reconferir.C():
+			// A credencial da requisição, de novo: sessão encerrada, token
+			// revogado ou conta apagada fecham o fluxo. Erro de banco não
+			// fecha — derrubar todas as abas num soluço do banco faria
+			// todas reconectarem juntas.
+			u, err := a.resolveUser(r)
+			if errors.Is(err, auth.ErrUnauthenticated) {
+				return
+			}
+			if err == nil {
+				if v, err := a.resolveViewer(ctx, u); err == nil {
+					visao, resolvidaEm = v, a.clock.Now()
+				}
+			}
+			reconferir.Reset(eventsRecheckInterval)
 
 		case e, open := <-events:
 			if !open {
 				return
+			}
+			// O escopo não fica guardado para sempre: uma concessão
+			// retirada, ou uma conta apagada, valem para o fluxo aberto
+			// depois de scopeCacheTTL.
+			if a.clock.Now().Sub(resolvidaEm) >= scopeCacheTTL {
+				atual, err := a.store.Users().Get(ctx, conta.ID)
+				if errors.Is(err, store.ErrNotFound) {
+					return
+				}
+				if err == nil {
+					if v, err := a.resolveViewer(ctx, atual); err == nil {
+						visao, resolvidaEm = v, a.clock.Now()
+					}
+				}
+			}
+			e, ok := e.visibleTo(visao.access)
+			if !ok {
+				continue
 			}
 			payload, err := json.Marshal(e.Data)
 			if err != nil {
@@ -147,12 +230,4 @@ func (a *API) handleEvents(w http.ResponseWriter, r *http.Request) {
 // que resta é deixar rastro no log para a investigação.
 func writeStreamFailure(_ http.ResponseWriter, err error) {
 	slog.Error("api: falha durante o envio da resposta", "erro", err)
-}
-
-// subtleEqual compara segredos em tempo constante.
-//
-// Comparação comum encerra no primeiro byte diferente, e a variação de
-// tempo permitiria descobrir um token caractere a caractere.
-func subtleEqual(a, b string) bool {
-	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }

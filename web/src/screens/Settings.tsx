@@ -1,61 +1,201 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client";
 import { ApiError, type APIToken, type User } from "../api/types";
-import { Alert, Button, Field, Input, Loading, Nothing, TextLink } from "../components/ui";
+import {
+  Alert,
+  Button,
+  Field,
+  FormActions,
+  Input,
+  Loading,
+  NewItem,
+  Nothing,
+  RowLink,
+  TextLink,
+} from "../components/ui";
 import { ago, stamp } from "../lib/format";
-import { navigate } from "../lib/router";
+import { href, navigate } from "../lib/router";
+import {
+  firstSection,
+  sectionAccess,
+  sectionLabel,
+  settingsMenu,
+  type SectionId,
+} from "../lib/settings-sections";
 import { Channels } from "./Channels";
+import { Groups } from "./Groups";
+import { StatusPageAdmin, StatusPages } from "./StatusPages";
 import { Users } from "./Users";
 
-/** Ajustes: credenciais de acesso programático e troca de senha. */
-export function Settings({ onSignedOut, eu }: { onSignedOut: () => void; eu: User }) {
-  // O observador não vê o que não pode usar. A barreira de verdade está
-  // no servidor — esconder aqui só evita oferecer um botão que devolve
-  // "sem permissão".
-  const administra = eu.role === "admin";
+/**
+ * Ajustes: um menu lateral e uma seção por vez.
+ *
+ * Empilhadas numa página só, as seções faziam de "trocar a senha" uma
+ * rolagem por cima de canais, grupos e contas — e o endereço não levava a
+ * lugar nenhum dentro dela. Agora cada seção tem endereço próprio, e o
+ * link de "crie um canal em ajustes" cai nos canais.
+ *
+ * No celular o menu e a seção não cabem lado a lado: /ajustes é o menu, e
+ * a seção ocupa a tela com a volta à vista. No computador, /ajustes abre a
+ * primeira seção da conta ao lado do menu.
+ */
+export function Settings({
+  eu,
+  section,
+  pageId,
+  onSignedOut,
+}: {
+  eu: User;
+  section?: SectionId;
+  /** Página de estado em edição, dentro da seção de páginas. */
+  pageId?: number;
+  onSignedOut: () => void;
+}) {
+  const escolhida = section ?? (pageId ? "paginas" : undefined);
+  const aberta = escolhida ?? firstSection(eu);
+  const acesso = sectionAccess(eu, aberta);
+
   return (
-    <div className="mx-auto flex max-w-2xl flex-col gap-10 px-5 py-6">
-      {/* Navegação e título formam um bloco. Soltos no ritmo de 40px que
-          separa as seções, ficavam a quatro dedos de distância um do
-          outro — como se fossem assuntos diferentes. */}
-      <div className="flex flex-col gap-6">
-        <nav>
+    <div className="mx-auto flex max-w-5xl flex-col gap-6 px-5 py-6">
+      {/* Navegação e título formam um bloco: no celular, dentro de uma
+          seção, a volta é para o menu; no menu, para o painel. */}
+      <div className={`flex flex-col gap-6 ${escolhida ? "max-md:hidden" : ""}`}>
+        <nav aria-label="Voltar">
           <TextLink onClick={() => navigate({ name: "board" })}>← todos os monitores</TextLink>
         </nav>
         <h1 className="text-title font-semibold tracking-tight">Ajustes</h1>
       </div>
 
-      {administra && <PaginasPublicas />}
-      {administra && <Channels />}
-      {administra && <Users eu={eu} />}
-      {administra && <Tokens />}
-      <Password onSignedOut={onSignedOut} />
+      <div className="flex flex-col gap-6 md:grid md:grid-cols-[13rem_minmax(0,1fr)] md:gap-10">
+        <Menu eu={eu} current={escolhida} aberta={aberta} />
+
+        <div className={`flex min-w-0 max-w-2xl flex-col gap-6 ${escolhida ? "" : "max-md:hidden"}`}>
+          {/* Na edição de uma página a volta é para a lista de páginas,
+              que a própria tela oferece; duas voltas empilhadas competiam. */}
+          <nav aria-label="Voltar ao menu" className={pageId ? "hidden" : "md:hidden"}>
+            <a
+              href={href({ name: "ajustes" })}
+              onClick={(e) => {
+                e.preventDefault();
+                navigate({ name: "ajustes" });
+              }}
+              className="pressable text-action eyebrow hover:text-ink hover:underline active:text-ink-2"
+            >
+              ← Ajustes
+            </a>
+          </nav>
+
+          {acesso.ok ? (
+            <Secao id={aberta} pageId={pageId} eu={eu} onSignedOut={onSignedOut} />
+          ) : (
+            <SemAcesso titulo={sectionLabel(aberta)} motivo={acesso.reason} />
+          )}
+        </div>
+      </div>
     </div>
   );
 }
 
 /**
- * PaginasPublicas é a porta de entrada da funcionalidade.
+ * Menu é a lista de seções da conta.
  *
- * Fica em ajustes porque publicar estado é decisão de configuração, não
- * de operação: quem está resolvendo um incidente não vem aqui, e quem
- * vem aqui não está com pressa.
+ * Links de verdade, não botões: abrir uma seção em outra aba com Ctrl e
+ * copiar o endereço dela é o que se espera de um menu de navegação.
  */
-function PaginasPublicas() {
+function Menu({
+  eu,
+  current,
+  aberta,
+}: {
+  eu: User;
+  /** Seção do endereço; vazia no menu do celular. */
+  current?: SectionId;
+  /** Seção que aparece ao lado no computador. */
+  aberta: SectionId;
+}) {
   return (
-    <section className="flex flex-col gap-4">
-      <div className="flex flex-col gap-1.5">
-        <h2 className="text-lead font-medium">Páginas de estado</h2>
-        <p className="text-body text-ink-2">
-          Endereços que qualquer pessoa abre sem entrar, para compartilhar disponibilidade com
-          clientes e com o time. Mostram só o que você publicar — nunca o endereço do alvo nem a
-          causa detectada.
-        </p>
-      </div>
+    <nav
+      aria-label="Seções dos ajustes"
+      className={`flex flex-col gap-5 ${current ? "max-md:hidden" : ""} md:sticky md:top-16 md:self-start`}
+    >
+      {settingsMenu(eu).map((grupo) => (
+        <div key={grupo.title} className="flex flex-col gap-1">
+          <span id={`menu-${grupo.title}`} className="eyebrow px-2.5">
+            {grupo.title}
+          </span>
+          <ul aria-labelledby={`menu-${grupo.title}`} className="flex flex-col max-md:border-t max-md:border-line">
+            {grupo.items.map((item) => {
+              const atual = item.id === aberta;
+              return (
+                <li key={item.id}>
+                  <RowLink
+                    to={{ name: "ajustes", section: item.id }}
+                    current={atual}
+                    className={[
+                      "flex items-center justify-between gap-2 rounded-sm px-2.5 text-body",
+                      // No celular o item é linha de lista, alto o bastante
+                      // para o dedo, e nenhum está "aberto": o menu ocupa a
+                      // tela sozinho. No computador, um degrau compacto com
+                      // a seção ao lado marcada.
+                      "max-md:rounded-none max-md:border-b max-md:border-line max-md:py-3 max-md:text-ink",
+                      "md:py-1.5",
+                      atual
+                        ? "md:bg-sunken md:font-medium md:text-ink md:shadow-[inset_2px_0_0_var(--color-ink)]"
+                        : "md:text-ink-2 md:hover:text-ink",
+                    ].join(" ")}
+                  >
+                    <span>{item.label}</span>
+                    <span aria-hidden className="text-ink-3 md:hidden">
+                      ›
+                    </span>
+                  </RowLink>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ))}
+    </nav>
+  );
+}
 
-      <Button onClick={() => navigate({ name: "status-pages" })} className="self-start">
-        Gerenciar páginas
-      </Button>
+function Secao({
+  id,
+  pageId,
+  eu,
+  onSignedOut,
+}: {
+  id: SectionId;
+  pageId?: number;
+  eu: User;
+  onSignedOut: () => void;
+}) {
+  switch (id) {
+    case "grupos":
+      return <Groups scope={eu.scope} />;
+    case "contas":
+      return <Users eu={eu} />;
+    case "canais":
+      return <Channels />;
+    case "paginas":
+      return pageId ? <StatusPageAdmin id={pageId} /> : <StatusPages />;
+    case "tokens":
+      return <Tokens />;
+    case "senha":
+      return <Password onSignedOut={onSignedOut} />;
+  }
+}
+
+/**
+ * SemAcesso é a seção que a conta abriu por um link e não pode usar.
+ * Diz o porquê: uma tela vazia, ou uma lista onde tudo devolve "sem
+ * permissão", deixaria a pessoa achando que algo quebrou.
+ */
+function SemAcesso({ titulo, motivo }: { titulo: string; motivo: string }) {
+  return (
+    <section className="flex flex-col gap-1.5">
+      <h2 className="text-lead font-medium">{titulo}</h2>
+      <p className="max-w-prose border-l-2 border-line-strong pl-3 text-body text-ink-2">{motivo}</p>
     </section>
   );
 }
@@ -75,7 +215,8 @@ function Tokens() {
     void carregar();
   }, []);
 
-  async function criar(e: FormEvent) {
+  /** criar devolve se deu certo, para o formulário se recolher só então. */
+  async function criar(e: FormEvent): Promise<boolean> {
     e.preventDefault();
     setErro(null);
 
@@ -84,8 +225,10 @@ function Tokens() {
       setNovo(criado.token);
       setNome("");
       await carregar();
+      return true;
     } catch (e) {
       setErro(e instanceof ApiError ? e.message : "Não foi possível criar o token.");
+      return false;
     }
   }
 
@@ -99,7 +242,7 @@ function Tokens() {
   return (
     <section className="flex flex-col gap-4">
       <div className="flex flex-col gap-1.5">
-        <h2 className="text-lead font-medium">Tokens de acesso</h2>
+        <h2 className="text-lead font-medium">Tokens de API</h2>
         <p className="text-body text-ink-2">
           Para scripts e integrações. Um token faz tudo o que esta interface faz.
         </p>
@@ -120,30 +263,6 @@ function Tokens() {
           </TextLink>
         </div>
       )}
-
-      {/* Campo e botão dividem uma linha própria, e a dica fica sob os
-          dois. Empilhar o Field inteiro ao lado do botão alinhava o botão
-          com a base da dica — ele descia uma linha e ficava torto em
-          relação ao campo que o acompanha. */}
-      <form onSubmit={criar} className="flex flex-col gap-1.5">
-        <label htmlFor="novo-token" className="eyebrow">
-          novo token
-        </label>
-        <div className="flex gap-2">
-          <Input
-            id="novo-token"
-            value={nome}
-            onChange={(e) => setNome(e.target.value)}
-            placeholder="pipeline de deploy"
-            className="flex-1"
-            required
-          />
-          <Button type="submit" variant="primary" className="shrink-0">
-            Criar
-          </Button>
-        </div>
-        <span className="text-small text-ink-3">Um nome que diga onde ele é usado.</span>
-      </form>
 
       {tokens === null ? (
         <Loading what="tokens" />
@@ -180,6 +299,28 @@ function Tokens() {
           ))}
         </ul>
       )}
+
+      <NewItem label="Novo token">
+        {(fechar) => (
+          <form
+            onSubmit={async (e) => {
+              if (await criar(e)) fechar();
+            }}
+            className="flex flex-col gap-4 rounded-sm border border-line-strong p-4"
+          >
+            <Field label="nome" hint="Um nome que diga onde ele é usado.">
+              <Input
+                value={nome}
+                onChange={(e) => setNome(e.target.value)}
+                placeholder="pipeline de deploy"
+                autoFocus
+                required
+              />
+            </Field>
+            <FormActions submit="Criar token" onCancel={fechar} />
+          </form>
+        )}
+      </NewItem>
     </section>
   );
 }

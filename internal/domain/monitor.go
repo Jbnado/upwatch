@@ -28,15 +28,25 @@ const (
 	MonitorTLS
 	// MonitorPush inverte o fluxo: o serviço monitorado bate no UpWatch.
 	MonitorPush
+	// MonitorRedis conversa com o Redis: PING e, opcionalmente, asserções
+	// sobre comandos de leitura.
+	MonitorRedis
+	// MonitorPostgres conecta ao PostgreSQL e executa uma consulta.
+	MonitorPostgres
+	// MonitorMySQL conecta ao MySQL ou MariaDB e executa uma consulta.
+	MonitorMySQL
 )
 
 var monitorTypeNames = map[MonitorType]string{
-	MonitorHTTP: "http",
-	MonitorTCP:  "tcp",
-	MonitorICMP: "icmp",
-	MonitorDNS:  "dns",
-	MonitorTLS:  "tls",
-	MonitorPush: "push",
+	MonitorHTTP:     "http",
+	MonitorTCP:      "tcp",
+	MonitorICMP:     "icmp",
+	MonitorDNS:      "dns",
+	MonitorTLS:      "tls",
+	MonitorPush:     "push",
+	MonitorRedis:    "redis",
+	MonitorPostgres: "postgres",
+	MonitorMySQL:    "mysql",
 }
 
 // String devolve o nome canônico do tipo.
@@ -132,11 +142,35 @@ type Monitor struct {
 	// não exigir migração depois.
 	ParentID *int64 `json:"parent_id,omitempty"`
 
+	// GroupID é o grupo folha do monitor. Nulo é "Sem grupo", que é onde
+	// toda instalação anterior aos grupos cai na migração.
+	GroupID *int64 `json:"group_id,omitempty"`
+
 	Enabled bool     `json:"enabled"`
 	Tags    []string `json:"tags,omitempty"`
 
+	// PushToken é o segredo do monitor push, copiado da configuração para
+	// uma coluna própria, indexada e única.
+	//
+	// Existe para o /push achar o dono do token sem percorrer todos os
+	// monitores — o endpoint não tem login, e cada requisição custaria uma
+	// varredura — e para o banco impedir dois monitores com o mesmo token.
+	// Quem o preenche é a API, a partir do checker, que é quem interpreta a
+	// configuração; vazio fora do push.
+	PushToken string `json:"-"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+
+	// RearmedAt é o instante da última mudança que recomeça a espera de
+	// um monitor push: configuração, intervalo ou reativação. Começa na
+	// criação.
+	//
+	// Separado de UpdatedAt porque aquele muda em qualquer edição, e
+	// renomear não pode adiar um alarme legítimo. Sem ele, trocar a
+	// agenda ou religar um monitor parado o derrubaria na hora, cobrando
+	// uma janela que ninguém estava vigiando.
+	RearmedAt time.Time `json:"rearmed_at"`
 }
 
 // Validate confere as invariantes do monitor e devolve *ValidationError

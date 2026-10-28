@@ -24,6 +24,12 @@ type Result struct {
 	// Meta traz dados auxiliares do tipo de check — código de status HTTP,
 	// dias até o certificado expirar, IP resolvido.
 	Meta map[string]string
+
+	// Repeated diz que o resultado repete uma observação já contada, sem
+	// medição nova. É o push relendo o mesmo sinal: o status continua o
+	// que o serviço disse, mas o motor não o conta de novo para a
+	// confirmação.
+	Repeated bool
 }
 
 // Checker verifica um tipo de alvo.
@@ -38,6 +44,12 @@ type Checker interface {
 	// monitor ser gravado, para o erro aparecer no cadastro e não só na
 	// primeira execução.
 	ValidateConfig(cfg json.RawMessage) error
+}
+
+// TargetValidator é implementado pelo checker que tem regra própria
+// para o alvo, conferida no cadastro junto da configuração.
+type TargetValidator interface {
+	ValidateTarget(target string) error
 }
 
 // NetworkProbe informa se a rede do próprio host de monitoramento está
@@ -102,6 +114,11 @@ func (r *Registry) Validate(m domain.Monitor) error {
 	c, err := r.Get(m.Type)
 	if err != nil {
 		return err
+	}
+	if tv, ok := c.(TargetValidator); ok {
+		if err := tv.ValidateTarget(m.Target); err != nil {
+			return err
+		}
 	}
 	return c.ValidateConfig(m.Config)
 }

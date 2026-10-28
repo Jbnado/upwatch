@@ -20,12 +20,35 @@ func TestMonitorTypeString(t *testing.T) {
 		{domain.MonitorDNS, "dns"},
 		{domain.MonitorTLS, "tls"},
 		{domain.MonitorPush, "push"},
+		{domain.MonitorRedis, "redis"},
+		{domain.MonitorPostgres, "postgres"},
+		{domain.MonitorMySQL, "mysql"},
 	} {
 		t.Run(tt.want, func(t *testing.T) {
 			if got := tt.typ.String(); got != tt.want {
 				t.Errorf("String() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// Os tipos novos entram no fim da enumeração. O valor numérico circula
+// em memória e em testes de outros pacotes; reordenar trocaria o tipo de
+// um monitor sem que nada no nome indicasse.
+func TestMonitorTypeValuesAreStable(t *testing.T) {
+	for _, tt := range []struct {
+		typ  domain.MonitorType
+		want uint8
+	}{
+		{domain.MonitorHTTP, 1},
+		{domain.MonitorPush, 6},
+		{domain.MonitorRedis, 7},
+		{domain.MonitorPostgres, 8},
+		{domain.MonitorMySQL, 9},
+	} {
+		if uint8(tt.typ) != tt.want {
+			t.Errorf("%s = %d, want %d", tt.typ, uint8(tt.typ), tt.want)
+		}
 	}
 }
 

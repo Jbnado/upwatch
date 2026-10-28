@@ -21,6 +21,7 @@ import (
 
 	"github.com/Jbnado/upwatch/internal/rollup"
 	"github.com/Jbnado/upwatch/internal/scheduler"
+	"github.com/Jbnado/upwatch/internal/secretbox"
 	"github.com/Jbnado/upwatch/internal/sentinel"
 )
 
@@ -65,6 +66,27 @@ type Config struct {
 
 	// SessionTTL é a validade de um login na interface.
 	SessionTTL time.Duration `yaml:"session_ttl"`
+
+	// MetricsToken, quando definido, passa a ser exigido em /metrics.
+	// Vazio mantém a exposição aberta, que serve à rede local; numa
+	// instalação exposta, ela publica o nome de todos os monitores.
+	MetricsToken string `yaml:"metrics_token"`
+
+	// RestrictPrivateTargets recusa, para contas com acesso restrito a
+	// grupos, monitor cujo alvo resolva para a rede interna do servidor
+	// (loopback, rede privada, enlace local e metadado da nuvem). Contas
+	// de escopo total não são afetadas. Ligado por padrão: o checker
+	// conecta a partir do servidor, e sem isto cada administrador de grupo
+	// ganharia uma sonda na rede de dentro dele.
+	RestrictPrivateTargets bool `yaml:"restrict_private_targets"`
+
+	// SecretKey é a chave, em base64 de 32 bytes, que cifra as
+	// credenciais dos monitores e canais no banco. Vazia, a instalação
+	// SQLite usa a gerada ao lado do banco (ver secretbox.Resolver).
+	//
+	// Só vem do ambiente ou de arquivo apontado por ele, nunca do YAML:
+	// o arquivo de configuração costuma ir para o controle de versão.
+	SecretKey string `yaml:"-"`
 }
 
 // Database identifica o armazenamento.
@@ -103,6 +125,8 @@ func Default() Config {
 		SentinelTargets: sentinel.DefaultTargets,
 		SecureCookies:   false,
 		SessionTTL:      7 * 24 * time.Hour,
+
+		RestrictPrivateTargets: true,
 	}
 }
 
@@ -146,7 +170,21 @@ func applyEnv(cfg *Config) error {
 	str(&cfg.Listen, "LISTEN")
 	str(&cfg.PublicURL, "PUBLIC_URL")
 	str(&cfg.Database.Driver, "DB_DRIVER")
-	str(&cfg.Database.DSN, "DB_DSN")
+
+	// As opções sensíveis aceitam também <NOME>_FILE. A lista é esta: uma
+	// opção nova com segredo entra aqui, e não com str.
+	for _, opt := range []struct {
+		dst  *string
+		name string
+	}{
+		{&cfg.Database.DSN, "DB_DSN"},
+		{&cfg.MetricsToken, "METRICS_TOKEN"},
+		{&cfg.SecretKey, "SECRET_KEY"},
+	} {
+		if err := secret(opt.dst, opt.name); err != nil {
+			return err
+		}
+	}
 
 	if err := dur(&cfg.Retention.Raw, "RETENTION_RAW"); err != nil {
 		return err
@@ -167,6 +205,9 @@ func applyEnv(cfg *Config) error {
 		return err
 	}
 	if err := boolean(&cfg.SecureCookies, "SECURE_COOKIES"); err != nil {
+		return err
+	}
+	if err := boolean(&cfg.RestrictPrivateTargets, "RESTRICT_PRIVATE_TARGETS"); err != nil {
 		return err
 	}
 
@@ -197,6 +238,12 @@ func (c Config) Validate() error {
 		return fmt.Errorf("config: session_ttl precisa ser positivo")
 	}
 
+	if c.SecretKey != "" {
+		if _, err := secretbox.ParseKey(c.SecretKey); err != nil {
+			return fmt.Errorf("config: %sSECRET_KEY: %w", envPrefix, err)
+		}
+	}
+
 	// A validação da cascata vive no pacote que a aplica, para não haver
 	// duas versões da mesma regra.
 	return c.RetentionPolicy().Validate()
@@ -225,6 +272,56 @@ func str(dst *string, name string) {
 	if v, ok := lookup(name); ok {
 		*dst = v
 	}
+}
+
+func secret(dst *string, name string) error {
+	v, ok, err := LookupSecret(name)
+	if err != nil {
+		return err
+	}
+	if ok {
+		*dst = v
+	}
+	return nil
+}
+
+// fileSuffix aponta o arquivo com o valor de uma opção sensível.
+const fileSuffix = "_FILE"
+
+// LookupSecret lê uma opção sensível de UPWATCH_<NOME> ou do arquivo
+// apontado por UPWATCH_<NOME>_FILE.
+//
+// Variável de ambiente aparece em docker inspect, em /proc/<pid>/environ
+// e em dump de diagnóstico; o Swarm, o Kubernetes e o Compose montam
+// segredo como arquivo para não passar por aí. Do arquivo sai só a
+// quebra de linha final, que editores e echo acrescentam; o resto é do
+// valor.
+//
+// As duas formas juntas é erro, e não precedência: uma variável esquecida
+// de antes da troca para secrets subiria o serviço com o valor velho.
+func LookupSecret(name string) (string, bool, error) {
+	direct, hasDirect := lookup(name)
+	path, hasFile := lookup(name + fileSuffix)
+
+	switch {
+	case hasDirect && hasFile:
+		return "", false, fmt.Errorf("config: %s%s e %s%s%s definidas juntas; use só uma",
+			envPrefix, name, envPrefix, name, fileSuffix)
+	case hasDirect:
+		return direct, true, nil
+	case !hasFile:
+		return "", false, nil
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false, fmt.Errorf("config: %s%s%s: lendo o arquivo: %w", envPrefix, name, fileSuffix, err)
+	}
+	v := strings.TrimRight(string(data), "\r\n")
+	if v == "" {
+		return "", false, fmt.Errorf("config: %s%s%s: o arquivo %s está vazio", envPrefix, name, fileSuffix, path)
+	}
+	return v, true, nil
 }
 
 func num(dst *int, name string) error {

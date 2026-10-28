@@ -7,7 +7,26 @@
 # A mesma suíte de conformidade roda contra os dois bancos, com o mesmo
 # número de casos: trocar de backend não muda o comportamento.
 #
+# Os segredos vão por arquivo (secrets), e não por variável de ambiente,
+# que aparece em `docker inspect` e em /proc/<pid>/environ. São três: a
+# senha do PostgreSQL, o DSN do UpWatch, que a contém, e a chave que
+# cifra as credenciais dos monitores e canais no banco.
+#
+# Para experimentar, gere os três uma vez e suba:
+#
+#   mkdir -p secrets
+#   openssl rand -hex 24 > secrets/postgres_password
+#   printf 'postgres://upwatch:%s@postgres:5432/upwatch?sslmode=disable\n' \
+#     "$(cat secrets/postgres_password)" > secrets/upwatch_db_dsn
+#   openssl rand -base64 32 > secrets/upwatch_secret_key
 #   docker compose -f compose.postgres.yaml up -d
+#
+# Em produção, guarde a chave fora do servidor do banco e faça backup
+# dela à parte: sem ela, as credenciais guardadas se perdem (o resto do
+# banco continua íntegro). Fora do Swarm, o Compose monta o próprio
+# arquivo, com as permissões do host: ele precisa ser legível pelo
+# usuário do contêiner (UID 10001). A pasta secrets/ está no .gitignore
+# e no .dockerignore.
 
 services:
   upwatch:
@@ -22,9 +41,15 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    secrets:
+      - upwatch_db_dsn
+      - upwatch_secret_key
     environment:
       UPWATCH_DB_DRIVER: postgres
-      UPWATCH_DB_DSN: postgres://upwatch:${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD}@postgres:5432/upwatch?sslmode=disable
+      UPWATCH_DB_DSN_FILE: /run/secrets/upwatch_db_dsn
+      # No PostgreSQL a chave não é gerada sozinha: duas instâncias
+      # sorteariam cada uma a sua. Todas apontam para o mesmo arquivo.
+      UPWATCH_SECRET_KEY_FILE: /run/secrets/upwatch_secret_key
       UPWATCH_RETENTION_RAW: 168h
       UPWATCH_RETENTION_HOURLY: 2160h
       UPWATCH_RETENTION_DAILY: 17520h
@@ -34,12 +59,14 @@ services:
   postgres:
     image: postgres:17-alpine
     restart: unless-stopped
+    secrets:
+      - postgres_password
     environment:
       POSTGRES_USER: upwatch
       POSTGRES_DB: upwatch
       # Sem valor padrão de propósito: uma senha padrão em arquivo de
       # exemplo vira a senha de produção de alguém.
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
     volumes:
       - upwatch-postgres:/var/lib/postgresql/data
     # O UpWatch só sobe depois que o banco aceita conexão; sem isto, a
@@ -49,6 +76,14 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password
+  upwatch_db_dsn:
+    file: ./secrets/upwatch_db_dsn
+  upwatch_secret_key:
+    file: ./secrets/upwatch_secret_key
 
 volumes:
   upwatch-postgres:

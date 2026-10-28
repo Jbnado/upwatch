@@ -47,3 +47,7 @@ Thumbs.db
 
 # Banco de dados local de desenvolvimento
 /upwatch.db*
+
+# Segredos do compose.postgres.yaml e a chave gerada ao lado do banco.
+/secrets/
+secret.key

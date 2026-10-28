@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "./api/client";
 import { ApiError, type User } from "./api/types";
-import { Board } from "./screens/Board";
 import { Gate, Mark } from "./screens/Gate";
+import { GroupScreen } from "./screens/GroupScreen";
+import { Home } from "./screens/Home";
 import { MonitorDetail } from "./screens/MonitorDetail";
 import { MonitorForm } from "./screens/MonitorForm";
 import { Settings } from "./screens/Settings";
 import { Status } from "./screens/Status";
-import { StatusPageAdmin, StatusPages } from "./screens/StatusPages";
 import { TextLink } from "./components/ui";
 import { navigate, useRoute } from "./lib/router";
 
@@ -79,15 +79,28 @@ export function App() {
       <TopBar user={session.user} onSignOut={sair} />
 
       <main>
-        {route.name === "board" && <Board podeEscrever={session.user.role === "admin"} />}
-        {route.name === "monitor" && <MonitorDetail id={route.id} />}
+        {route.name === "board" && <Home podeEscrever={session.user.role === "admin"} />}
+        {route.name === "group" && (
+          <GroupScreen id={route.id} podeEscrever={session.user.role === "admin"} />
+        )}
+        {route.name === "monitor" && (
+          <MonitorDetail
+            id={route.id}
+            tab={route.tab ?? "eventos"}
+            anchor={route.anchor}
+            eu={session.user}
+          />
+        )}
         {route.name === "monitor-new" && <MonitorForm />}
         {route.name === "monitor-edit" && <MonitorForm id={route.id} />}
-        {route.name === "settings" && (
-          <Settings onSignedOut={() => setSession({ kind: "anonymous" })} eu={session.user} />
+        {(route.name === "ajustes" || route.name === "ajustes-pagina") && (
+          <Settings
+            eu={session.user}
+            section={route.name === "ajustes" ? route.section : "paginas"}
+            pageId={route.name === "ajustes-pagina" ? route.id : undefined}
+            onSignedOut={() => setSession({ kind: "anonymous" })}
+          />
         )}
-        {route.name === "status-pages" && <StatusPages />}
-        {route.name === "status-page" && <StatusPageAdmin id={route.id} />}
       </main>
     </div>
   );
@@ -116,7 +129,7 @@ function TopBar({ user, onSignOut }: { user: User; onSignOut: () => void }) {
                 que não pode mexer ao tentar e receber uma recusa. */}
             {user.role === "viewer" && <span className="eyebrow">só leitura</span>}
           </span>
-          <TextLink onClick={() => navigate({ name: "settings" })}>ajustes</TextLink>
+          <TextLink onClick={() => navigate({ name: "ajustes" })}>ajustes</TextLink>
           <TextLink onClick={onSignOut}>sair</TextLink>
         </div>
       </div>

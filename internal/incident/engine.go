@@ -122,6 +122,15 @@ func (e *Engine) evaluate(ctx context.Context, hb domain.Heartbeat) {
 		return
 	}
 
+	// A confirmação conta observações, não leituras. A batida que repete
+	// uma observação já contada — o mesmo sinal de push relido até chegar
+	// o próximo — não move a máquina nem zera a contagem, como a amostra
+	// sem medição: contá-la faria um único "down" abrir incidente sozinho
+	// depois de N verificações.
+	if hb.Repeated {
+		return
+	}
+
 	proximo, eventos := Next(anterior, hb.Status, hb.Timestamp,
 		Config{Threshold: monitor.ConfirmationThreshold})
 
@@ -143,8 +152,13 @@ func (e *Engine) evaluate(ctx context.Context, hb domain.Heartbeat) {
 	}
 }
 
-// record mantém o histórico de incidentes em dia.
+// record mantém o histórico de incidentes e de mudanças de estado em dia.
 func (e *Engine) record(ctx context.Context, m domain.Monitor, evt Event, cause string) {
+	mudanca := domain.Transition{MonitorID: m.ID, From: evt.From, To: evt.To, At: evt.At, Cause: cause}
+	if err := e.store.Transitions().Record(ctx, &mudanca); err != nil {
+		slog.Error("falha ao registrar mudança de estado", "monitor", m.Name, "erro", err)
+	}
+
 	if evt.Kind == KindDown {
 		incidente := domain.Incident{MonitorID: m.ID, StartedAt: evt.At, Cause: cause}
 
@@ -173,7 +187,10 @@ func (e *Engine) notify(ctx context.Context, m domain.Monitor, evt Event, cause 
 		return
 	}
 
-	canais, err := e.store.Channels().ForMonitor(ctx, m.ID)
+	// Destinations, e não ForMonitor: o canal vinculado ao grupo ou ao
+	// sistema do monitor também é destino, e a regra de quem recebe mora
+	// no store, num lugar só.
+	canais, err := e.store.Channels().Destinations(ctx, m.ID)
 	if err != nil {
 		slog.Error("falha ao listar canais do monitor", "monitor", m.Name, "erro", err)
 		return

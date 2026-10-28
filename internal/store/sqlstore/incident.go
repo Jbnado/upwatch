@@ -3,12 +3,12 @@ package sqlstore
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/Jbnado/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/notifier"
 	"github.com/Jbnado/upwatch/internal/store"
 )
 
@@ -161,6 +161,10 @@ func (r *incidentRepo) List(ctx context.Context, f store.IncidentFilter) (store.
 	if f.OnlyOpen {
 		conds = append(conds, "resolved_at IS NULL")
 	}
+	if cond, condArgs := groupCondition("group_id", f.Groups); cond != "" {
+		conds = append(conds, "monitor_id IN (SELECT id FROM monitor WHERE "+cond+")")
+		args = append(args, condArgs...)
+	}
 	args = append(args, f.Page.Limit+1)
 
 	q := `SELECT ` + incidentColumns + ` FROM incident WHERE ` +
@@ -220,10 +224,32 @@ func (r *channelRepo) Create(ctx context.Context, c *domain.Channel) error {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	c.CreatedAt, c.UpdatedAt = now, now
 
-	id, err := r.db.insertID(ctx, `
-		INSERT INTO notification_channel (name, type, config, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)`,
-		c.Name, c.Type, encodeConfig(c.Config), boolToInt(c.Enabled), toMillis(now), toMillis(now))
+	// Como no monitor: a cifra leva o id, e a linha recebe a configuração
+	// cifrada na mesma transação em que nasce.
+	fields := notifier.SecretFields(c.Type)
+	config := encodeConfig(c.Config)
+	insertConfig := config
+	if !fields.Empty() {
+		insertConfig = emptyConfig
+	}
+
+	var id int64
+	err := r.db.inTx(ctx, func(t *tx) error {
+		var err error
+		id, err = t.insertID(ctx, `
+			INSERT INTO notification_channel (name, type, config, enabled, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?)`,
+			c.Name, c.Type, insertConfig, boolToInt(c.Enabled), toMillis(now), toMillis(now))
+		if err != nil || insertConfig == config {
+			return err
+		}
+		sealed, err := r.db.sealForWrite(config, fields, channelTable, id)
+		if err != nil {
+			return err
+		}
+		_, err = t.ExecContext(ctx, `UPDATE notification_channel SET config = ? WHERE id = ?`, sealed, id)
+		return err
+	})
 	if err != nil {
 		return translateAuthErr(err, "canal")
 	}
@@ -235,7 +261,7 @@ func (r *channelRepo) Get(ctx context.Context, id int64) (domain.Channel, error)
 	row := r.db.QueryRowContext(ctx,
 		`SELECT `+channelColumns+` FROM notification_channel WHERE id = ?`, id)
 
-	c, err := scanChannel(row)
+	c, err := r.db.scanChannel(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.Channel{}, fmt.Errorf("canal %d: %w", id, store.ErrNotFound)
 	}
@@ -244,12 +270,16 @@ func (r *channelRepo) Get(ctx context.Context, id int64) (domain.Channel, error)
 
 func (r *channelRepo) Update(ctx context.Context, c domain.Channel) error {
 	now := time.Now().UTC().Truncate(time.Millisecond)
+	config, err := r.db.sealForWrite(encodeConfig(c.Config), notifier.SecretFields(c.Type), channelTable, c.ID)
+	if err != nil {
+		return err
+	}
 
 	res, err := r.db.ExecContext(ctx, `
 		UPDATE notification_channel
 		SET name = ?, type = ?, config = ?, enabled = ?, updated_at = ?
 		WHERE id = ?`,
-		c.Name, c.Type, encodeConfig(c.Config), boolToInt(c.Enabled), toMillis(now), c.ID)
+		c.Name, c.Type, config, boolToInt(c.Enabled), toMillis(now), c.ID)
 	if err != nil {
 		return translateAuthErr(err, "canal")
 	}
@@ -272,7 +302,7 @@ func (r *channelRepo) List(ctx context.Context) ([]domain.Channel, error) {
 	}
 	defer rows.Close()
 
-	return collectChannels(rows)
+	return r.db.collectChannels(rows)
 }
 
 func (r *channelRepo) Link(ctx context.Context, monitorID, channelID int64) error {
@@ -283,6 +313,9 @@ func (r *channelRepo) Link(ctx context.Context, monitorID, channelID int64) erro
 		ON CONFLICT (monitor_id, channel_id) DO NOTHING`
 
 	if _, err := r.db.ExecContext(ctx, q, monitorID, channelID); err != nil {
+		if isForeignKeyViolation(err) {
+			return fmt.Errorf("canal %d ou monitor %d: %w", channelID, monitorID, store.ErrNotFound)
+		}
 		return fmt.Errorf("sqlstore: vinculando canal %d ao monitor %d: %w", channelID, monitorID, err)
 	}
 	return nil
@@ -315,13 +348,13 @@ func (r *channelRepo) ForMonitor(ctx context.Context, monitorID int64) ([]domain
 	}
 	defer rows.Close()
 
-	return collectChannels(rows)
+	return r.db.collectChannels(rows)
 }
 
-func collectChannels(rows *sql.Rows) ([]domain.Channel, error) {
+func (d *db) collectChannels(rows *sql.Rows) ([]domain.Channel, error) {
 	var out []domain.Channel
 	for rows.Next() {
-		c, err := scanChannel(rows)
+		c, err := d.scanChannel(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -333,7 +366,8 @@ func collectChannels(rows *sql.Rows) ([]domain.Channel, error) {
 	return out, nil
 }
 
-func scanChannel(sc scanner) (domain.Channel, error) {
+// scanChannel lê a linha e decifra as credenciais da configuração.
+func (d *db) scanChannel(sc scanner) (domain.Channel, error) {
 	var (
 		c          domain.Channel
 		configJSON string
@@ -346,7 +380,9 @@ func scanChannel(sc scanner) (domain.Channel, error) {
 		return domain.Channel{}, err
 	}
 
-	c.Config = json.RawMessage(configJSON)
+	if c.Config, err = d.openForRead(configJSON, notifier.SecretFields(c.Type), channelTable, c.ID); err != nil {
+		return domain.Channel{}, err
+	}
 	c.Enabled = enabled != 0
 	c.CreatedAt = fromMillis(createdMS)
 	c.UpdatedAt = fromMillis(updatedMS)
