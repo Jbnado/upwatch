@@ -7,6 +7,7 @@ import {
   type ChannelInput,
   type ChannelType,
   type CreatedToken,
+  type Group,
   type Heartbeat,
   type Incident,
   type IncidentImpact,
@@ -17,6 +18,7 @@ import {
   type PublicView,
   type Role,
   type Rollup,
+  type Scope,
   type StatusPage,
   type StatusPageComponent,
   type StatusPageGroup,
@@ -190,11 +192,23 @@ export const api = {
 
   listUsers: () => request<{ items: User[] }>("/users"),
 
-  createUser: (input: { username: string; password: string; role: Role }) =>
+  createUser: (input: { username: string; password: string; role: Role; scope?: Scope }) =>
     request<User>("/users", { method: "POST", body: JSON.stringify(input) }),
 
   setUserRole: (id: number, role: Role) =>
     request<User>(`/users/${id}`, { method: "PUT", body: JSON.stringify({ role }) }),
+
+  setUserScope: (id: number, role: Role, scope: Scope) =>
+    request<User>(`/users/${id}`, { method: "PUT", body: JSON.stringify({ role, scope }) }),
+
+  // ---------- grupos ----------
+
+  listGroups: () => request<{ items: Group[] }>("/groups"),
+
+  createMonitorGroup: (input: { name: string; parent_id?: number }) =>
+    request<Group>("/groups", { method: "POST", body: JSON.stringify(input) }),
+
+  deleteMonitorGroup: (id: number) => request<void>(`/groups/${id}`, { method: "DELETE" }),
 
   deleteUser: (id: number) => request<void>(`/users/${id}`, { method: "DELETE" }),
 

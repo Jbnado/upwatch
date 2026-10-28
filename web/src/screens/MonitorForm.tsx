@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client";
-import { ApiError, type MonitorInput, type MonitorType } from "../api/types";
+import { ApiError, type Group, type MonitorInput, type MonitorType } from "../api/types";
 import { Alert, Button, Field, Input, NumberInput, Select, TextLink } from "../components/ui";
 import { navigate } from "../lib/router";
 
@@ -89,8 +89,21 @@ export function MonitorForm({ id }: { id?: number }) {
   // "produção, api" e sair do campo é mais rápido que apertar Enter a
   // cada etiqueta, e o servidor normaliza o que chegar.
   const [tags, setTags] = useState("");
+  const [grupos, setGrupos] = useState<Group[]>([]);
 
   const editando = id !== undefined;
+
+  useEffect(() => {
+    void api.listGroups().then(({ items }) => {
+      setGrupos(items);
+      // Quem tem escopo não pode deixar em "Sem grupo", que o servidor
+      // recusaria; o primeiro ambiente é um padrão que se troca fácil.
+      if (id === undefined) {
+        const primeiro = items.find((g) => folha(g, items));
+        setForm((f) => (f.group_id == null && primeiro ? { ...f, group_id: primeiro.id } : f));
+      }
+    });
+  }, [id]);
   const tipo = TIPOS.find((t) => t.value === form.type)!;
 
   useEffect(() => {
@@ -106,6 +119,7 @@ export function MonitorForm({ id }: { id?: number }) {
         confirmation_threshold: m.confirmation_threshold,
         degraded_latency_ms: m.degraded_latency_ms,
         config: m.config,
+        group_id: m.group_id,
       });
       setPushToken(String(m.config?.["token"] ?? ""));
       setTags((m.tags ?? []).join(", "));
@@ -176,6 +190,28 @@ export function MonitorForm({ id }: { id?: number }) {
             required
           />
         </Field>
+
+        {grupos.length > 0 && (
+          <Field
+            label="grupo"
+            hint="Só ambientes (ou sistemas sem ambientes) recebem monitores."
+            error={erroDe("group_id")}
+          >
+            <Select
+              value={form.group_id ?? ""}
+              onChange={(e) => set("group_id", e.target.value ? Number(e.target.value) : null)}
+            >
+              <option value="">Sem grupo</option>
+              {grupos
+                .filter((g) => folha(g, grupos))
+                .map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.path}
+                  </option>
+                ))}
+            </Select>
+          </Field>
+        )}
 
         <Field label="o que verificar" hint={tipo.ajuda} error={erroDe("type")}>
           <Select
@@ -289,6 +325,11 @@ export function MonitorForm({ id }: { id?: number }) {
 }
 
 /** gerarToken produz um segredo imprevisível com a API do navegador. */
+/** folha diz se o grupo pode receber monitores: não tem ambientes. */
+function folha(g: Group, todos: Group[]): boolean {
+  return !todos.some((x) => x.parent_id === g.id);
+}
+
 function gerarToken(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(24));
 

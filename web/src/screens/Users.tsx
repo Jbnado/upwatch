@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client";
-import { ApiError, type Role, type User } from "../api/types";
+import { ApiError, type Group, type Role, type Scope, type User } from "../api/types";
 import { Alert, Button, Field, Input, Loading, Select } from "../components/ui";
 import { stamp } from "../lib/format";
 
@@ -22,13 +22,52 @@ const PAPEIS: { value: Role; label: string; ajuda: string }[] = [
   { value: "viewer", label: "Observador", ajuda: "Vê tudo, não altera nada." },
 ];
 
+/**
+ * O escopo aqui é escolhido como "todos os grupos" ou um grupo só, o caso
+ * comum. Vários grupos a API aceita, e a tela mostra a contagem sem
+ * conseguir editá-la — a gestão completa vem com a tela de grupos.
+ */
+const TODOS = "todos";
+const VARIOS = "varios";
+
+function escopoValor(s: Scope): string {
+  if (s.all_groups) return TODOS;
+  if (s.group_ids.length === 1) return String(s.group_ids[0]);
+  return VARIOS;
+}
+
+function escopoDe(valor: string): Scope {
+  if (valor === TODOS) return { all_groups: true, group_ids: [] };
+  return { all_groups: false, group_ids: [Number(valor)] };
+}
+
+function OpcoesEscopo({ grupos, atual }: { grupos: Group[]; atual?: Scope }) {
+  return (
+    <>
+      <option value={TODOS}>Todos os grupos</option>
+      {grupos.map((g) => (
+        <option key={g.id} value={g.id}>
+          {g.path}
+        </option>
+      ))}
+      {atual && escopoValor(atual) === VARIOS && (
+        <option value={VARIOS} disabled>
+          {atual.group_ids.length} grupos
+        </option>
+      )}
+    </>
+  );
+}
+
 export function Users({ eu }: { eu: User }) {
   const [contas, setContas] = useState<User[] | null>(null);
+  const [grupos, setGrupos] = useState<Group[]>([]);
   const [erro, setErro] = useState<string | null>(null);
 
   const carregar = useCallback(async () => {
-    const { items } = await api.listUsers();
+    const [{ items }, g] = await Promise.all([api.listUsers(), api.listGroups()]);
     setContas(items);
+    setGrupos(g.items);
   }, []);
 
   useEffect(() => {
@@ -42,6 +81,16 @@ export function Users({ eu }: { eu: User }) {
       await carregar();
     } catch (e) {
       setErro(e instanceof ApiError ? e.message : "Não foi possível trocar o papel.");
+    }
+  }
+
+  async function trocarEscopo(u: User, valor: string) {
+    setErro(null);
+    try {
+      await api.setUserScope(u.id, u.role, escopoDe(valor));
+      await carregar();
+    } catch (e) {
+      setErro(e instanceof ApiError ? e.message : "Não foi possível trocar o escopo.");
     }
   }
 
@@ -73,7 +122,7 @@ export function Users({ eu }: { eu: User }) {
 
       {erro && <Alert>{erro}</Alert>}
 
-      <NovaConta onCreated={carregar} onError={setErro} />
+      <NovaConta onCreated={carregar} onError={setErro} grupos={grupos} />
 
       {contas === null ? (
         <Loading what="contas" />
@@ -94,7 +143,15 @@ export function Users({ eu }: { eu: User }) {
                 </span>
               </span>
 
-              <span className="flex shrink-0 items-center gap-2">
+              <span className="flex shrink-0 flex-wrap items-center gap-2">
+                <Select
+                  value={escopoValor(u.scope)}
+                  onChange={(e) => trocarEscopo(u, e.target.value)}
+                  className="w-[200px]"
+                  aria-label={`escopo de ${u.username}`}
+                >
+                  <OpcoesEscopo grupos={grupos} atual={u.scope} />
+                </Select>
                 {/* O papel se troca no lugar, sem tela de edição: é o
                     único campo editável, e abrir uma tela para um campo
                     só é um clique a mais sem nada em troca. */}
@@ -125,13 +182,16 @@ export function Users({ eu }: { eu: User }) {
 function NovaConta({
   onCreated,
   onError,
+  grupos,
 }: {
   onCreated: () => Promise<void>;
   onError: (msg: string) => void;
+  grupos: Group[];
 }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [role, setRole] = useState<Role>("viewer");
+  const [escopo, setEscopo] = useState(TODOS);
   const [enviando, setEnviando] = useState(false);
   const [campoErro, setCampoErro] = useState<{ campo: string; msg: string } | null>(null);
 
@@ -141,10 +201,11 @@ function NovaConta({
     setCampoErro(null);
 
     try {
-      await api.createUser({ username, password, role });
+      await api.createUser({ username, password, role, scope: escopoDe(escopo) });
       setUsername("");
       setPassword("");
       setRole("viewer");
+      setEscopo(TODOS);
       await onCreated();
     } catch (e) {
       if (e instanceof ApiError && e.field) setCampoErro({ campo: e.field, msg: e.message });
@@ -194,6 +255,16 @@ function NovaConta({
           </Select>
         </Field>
       </div>
+
+      <Field
+        label="acesso"
+        hint="O que a conta enxerga. Dar acesso a um sistema dá acesso aos ambientes dele."
+        error={erroDe("scope")}
+      >
+        <Select value={escopo} onChange={(e) => setEscopo(e.target.value)}>
+          <OpcoesEscopo grupos={grupos} />
+        </Select>
+      </Field>
 
       <Button type="submit" variant="primary" disabled={enviando} className="self-start">
         {enviando ? "Criando" : "Criar conta"}
