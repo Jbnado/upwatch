@@ -179,6 +179,18 @@ func postgresClass(err error) (string, bool) {
 	return fmt.Sprintf("%s (SQLSTATE %s)", class, pgErr.Code), true
 }
 
+// superuserRefused é a causa quando um superusuário roda consulta
+// personalizada.
+//
+// A transação somente leitura não segura um superusuário: contra o
+// PostgreSQL 17, SELECT lo_export(...) grava um arquivo no servidor dentro
+// dela, e nenhuma lista de palavras proibidas pega a função de forma
+// confiável (U&"..." e query_to_xml('...') escondem o nome). A consulta
+// padrão é texto do UpWatch e continua valendo, para quem só quer saber
+// se o banco aceita sessão; a personalizada exige um usuário que não
+// possa fazer isso.
+const superuserRefused = "o usuário do monitor é superusuário; consulta personalizada recusada — use um usuário só com LOGIN"
+
 // Check abre a sessão, executa a consulta numa transação somente leitura
 // e fecha tudo.
 func (c *Postgres) Check(ctx context.Context, m domain.Monitor) Result {
@@ -228,6 +240,16 @@ func (c *Postgres) Check(ctx context.Context, m domain.Monitor) Result {
 		defer cancel()
 		_ = tx.Rollback(rbCtx)
 	}()
+
+	if !cfg.isDefaultQuery() {
+		var super string
+		if err := tx.QueryRow(ctx, "SELECT current_setting('is_superuser')").Scan(&super); err != nil {
+			return fail("transação", err)
+		}
+		if super == "on" {
+			return Result{Status: domain.StatusDown, Message: superuserRefused, Meta: meta}
+		}
+	}
 
 	queryCtx, stopReading := context.WithCancel(ctx)
 	defer stopReading()

@@ -68,6 +68,12 @@ func (c sqlConfig) query() string {
 	return c.Query
 }
 
+// isDefaultQuery informa se a consulta é a padrão, sem contar espaço nem
+// caixa: "  select 1 " é o mesmo SELECT 1 de quem deixou o campo vazio.
+func (c sqlConfig) isDefaultQuery() bool {
+	return strings.EqualFold(strings.Join(strings.Fields(c.query()), " "), defaultSQLQuery)
+}
+
 // readingKeywords são as palavras com que a consulta de verificação pode
 // começar.
 //

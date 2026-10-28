@@ -261,10 +261,12 @@ servidor ou a quem estiver no caminho. O mesmo vale para a senha do basic
 auth e para os cabeçalhos de credencial do monitor HTTP, que voltam pela
 API com o valor `***`.
 
-A transação somente leitura não segura tudo o que um usuário privilegiado
-consegue: no PostgreSQL, um superusuário grava arquivo no servidor com
-`SELECT lo_export(...)` mesmo dentro dela. O usuário acima, só com
-`LOGIN`, não consegue.
+No PostgreSQL, um superusuário só roda a consulta padrão (`SELECT 1`);
+com consulta personalizada, o monitor cai com a causa "o usuário do
+monitor é superusuário". A transação somente leitura não o segura: ele
+grava arquivo no servidor com `SELECT lo_export(...)` mesmo dentro dela.
+O usuário acima, só com `LOGIN`, roda a consulta personalizada
+normalmente.
 
 ## Página pública de estado
 

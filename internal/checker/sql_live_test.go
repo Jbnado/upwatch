@@ -29,10 +29,16 @@ import (
 //	  -p 53306:3306 mysql:8.4
 //	UPWATCH_TEST_MYSQL_DSN='upwatch:upwatch@tcp(127.0.0.1:53306)/upwatch' go test ./internal/checker/...
 //
-// Os testes criam e apagam a tabela upwatch_probe.
+// Os testes criam e apagam a tabela upwatch_probe. No PostgreSQL, com DSN
+// de superusuário, criam também o papel upwatch_monitor, só com LOGIN.
 const (
 	postgresDSNEnv = "UPWATCH_TEST_POSTGRES_DSN"
 	mysqlDSNEnv    = "UPWATCH_TEST_MYSQL_DSN"
+
+	// loginOnlyRole é o papel do PostgreSQL que os testes criam para o
+	// monitor, quando a DSN é de superusuário.
+	loginOnlyRole     = "upwatch_monitor"
+	loginOnlyPassword = "senha-do-papel-de-login"
 )
 
 // liveSQL descreve um banco real: como o monitor o enxerga e uma conexão
@@ -55,6 +61,12 @@ type liveSQL struct {
 	// sleep é uma consulta que dorme os segundos pedidos e carrega marker
 	// no texto, para ser achada na lista de sessões.
 	sleep func(seconds int, marker string) string
+	// grant dá ao usuário do monitor todos os direitos sobre a tabela, para
+	// a recusa de escrita vir da transação e não da falta de permissão.
+	grant func(t *testing.T, table string)
+	// adminUser e adminPassword são as credenciais da DSN, para os testes
+	// que precisam do monitor com o usuário privilegiado.
+	adminUser, adminPassword string
 }
 
 // waitNoneRunning espera até não sobrar sessão executando marker, ou falha.
@@ -82,7 +94,8 @@ func (l liveSQL) monitor(cfg map[string]any) domain.Monitor {
 	return sqlMonitor(l.typ, l.target, string(raw))
 }
 
-func livePostgres(t *testing.T) liveSQL {
+// livePostgresConn abre uma conexão administrativa com a DSN de teste.
+func livePostgresConn(t *testing.T) *pgx.Conn {
 	t.Helper()
 
 	dsn := os.Getenv(postgresDSNEnv)
@@ -98,6 +111,14 @@ func livePostgres(t *testing.T) liveSQL {
 		t.Fatalf("conectando em %s: %v", postgresDSNEnv, err)
 	}
 	t.Cleanup(func() { conn.Close(context.Background()) })
+	return conn
+}
+
+func livePostgres(t *testing.T) liveSQL {
+	t.Helper()
+
+	conn := livePostgresConn(t)
+	cc := conn.Config()
 
 	exec := func(t *testing.T, stmt string) {
 		t.Helper()
@@ -105,11 +126,34 @@ func livePostgres(t *testing.T) liveSQL {
 			t.Fatalf("%s: %v", stmt, err)
 		}
 	}
+
+	// O monitor usa um papel só com LOGIN, o recomendado no README: com o
+	// superusuário da DSN, consulta personalizada é recusada (ver
+	// TestPostgresLiveSuperuserCustomQueryIsRefused). Sem permissão de
+	// criar papel, fica o usuário da DSN.
+	user, password := cc.User, cc.Password
+	grant := func(*testing.T, string) {}
+	var super string
+	if err := conn.QueryRow(context.Background(), "SELECT current_setting('is_superuser')").Scan(&super); err != nil {
+		t.Fatalf("reading is_superuser: %v", err)
+	}
+	if super == "on" {
+		exec(t, "DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '"+loginOnlyRole+"') "+
+			"THEN CREATE ROLE "+loginOnlyRole+" LOGIN; END IF; END $$")
+		exec(t, "ALTER ROLE "+loginOnlyRole+" LOGIN NOSUPERUSER PASSWORD '"+loginOnlyPassword+"'")
+		user, password = loginOnlyRole, loginOnlyPassword
+		grant = func(t *testing.T, table string) {
+			t.Helper()
+			exec(t, "GRANT ALL ON "+table+" TO "+loginOnlyRole)
+		}
+	}
+
 	return liveSQL{
 		typ: domain.MonitorPostgres, checker: checker.NewPostgres(),
 		target: net.JoinHostPort(cc.Host, strconv.Itoa(int(cc.Port))),
-		user:   cc.User, password: cc.Password, database: cc.Database,
-		exec: exec,
+		user:   user, password: password, database: cc.Database,
+		adminUser: cc.User, adminPassword: cc.Password,
+		exec: exec, grant: grant,
 		count: func(t *testing.T) int {
 			var n int
 			if err := conn.QueryRow(context.Background(), "SELECT count(*) FROM upwatch_probe").Scan(&n); err != nil {
@@ -155,7 +199,10 @@ func liveMySQL(t *testing.T) liveSQL {
 	return liveSQL{
 		typ: domain.MonitorMySQL, checker: checker.NewMySQL(),
 		target: dc.Addr, user: dc.User, password: dc.Passwd, database: dc.DBName,
+		adminUser: dc.User, adminPassword: dc.Passwd,
 		admin: db,
+		// O monitor usa o próprio usuário da DSN, dono das tabelas.
+		grant: func(*testing.T, string) {},
 		exec: func(t *testing.T, stmt string) {
 			t.Helper()
 			if _, err := db.Exec(stmt); err != nil {
@@ -240,6 +287,7 @@ func TestSQLLiveQueryCannotWrite(t *testing.T) {
 		l.exec(t, "DROP TABLE IF EXISTS upwatch_probe")
 		l.exec(t, "CREATE TABLE upwatch_probe (id INT)")
 		l.exec(t, "INSERT INTO upwatch_probe (id) VALUES (1)")
+		l.grant(t, "upwatch_probe")
 		t.Cleanup(func() { l.exec(t, "DROP TABLE IF EXISTS upwatch_probe") })
 
 		for _, q := range []string{
@@ -361,6 +409,7 @@ func TestSQLLiveQueryErrorDoesNotLeakRowData(t *testing.T) {
 		l.exec(t, "DROP TABLE IF EXISTS upwatch_secret")
 		l.exec(t, "CREATE TABLE upwatch_secret (token VARCHAR(64))")
 		l.exec(t, "INSERT INTO upwatch_secret (token) VALUES ('"+token+"')")
+		l.grant(t, "upwatch_secret")
 		t.Cleanup(func() { l.exec(t, "DROP TABLE IF EXISTS upwatch_secret") })
 
 		query := "SELECT CAST(token AS int) FROM upwatch_secret"
@@ -431,4 +480,58 @@ func TestSQLLiveReadsOnlyTheFirstRows(t *testing.T) {
 		}
 		l.waitNoneRunning(t, marker, 3*time.Second)
 	})
+}
+
+// A transação somente leitura não segura um superusuário: contra o
+// PostgreSQL 17, SELECT lo_export(...) grava um arquivo no servidor dentro
+// dela, e nenhuma lista de palavras proibidas o pega (U&"..." e
+// query_to_xml('...') escondem o nome da função). Com superusuário, a
+// consulta personalizada é recusada antes de rodar; a padrão, que é texto
+// do UpWatch, continua, para quem só quer saber se o banco aceita sessão.
+// Um papel só com LOGIN, o recomendado, roda a consulta personalizada
+// normalmente.
+func TestPostgresLiveSuperuserCustomQueryIsRefused(t *testing.T) {
+	l := livePostgres(t)
+	if l.user == l.adminUser {
+		t.Skipf("%s não é de superusuário; nada a recusar", postgresDSNEnv)
+	}
+	ctx := context.Background()
+
+	super := l
+	super.user, super.password = l.adminUser, l.adminPassword
+
+	var oid uint32
+	admin := livePostgresConn(t)
+	if err := admin.QueryRow(ctx, "SELECT lo_from_bytea(0, 'upwatch')").Scan(&oid); err != nil {
+		t.Fatalf("creating the large object: %v", err)
+	}
+	t.Cleanup(func() { _, _ = admin.Exec(context.Background(), "SELECT lo_unlink($1)", oid) })
+	path := fmt.Sprintf("/tmp/upwatch-lo-export-%d", time.Now().UnixNano())
+
+	res := super.checker.Check(ctx, super.monitor(map[string]any{
+		"query": fmt.Sprintf("SELECT lo_export(%d, '%s')", oid, path),
+	}))
+
+	if res.Status != domain.StatusDown || !strings.Contains(res.Message, "superusuário") {
+		t.Errorf("superuser lo_export: got %v %q, want down refusing the superuser", res.Status, res.Message)
+	}
+	var written *int64
+	if err := admin.QueryRow(ctx, "SELECT (pg_stat_file($1, true)).size", path).Scan(&written); err != nil {
+		t.Fatalf("checking the file: %v", err)
+	}
+	if written != nil {
+		t.Errorf("the check wrote %s on the server", path)
+	}
+
+	for _, q := range []string{"", "SELECT 1", "  select   1 "} {
+		res := super.checker.Check(ctx, super.monitor(map[string]any{"query": q}))
+		if res.Status != domain.StatusUp {
+			t.Errorf("superuser with the default query %q: got %v %q, want up", q, res.Status, res.Message)
+		}
+	}
+
+	res = l.checker.Check(ctx, l.monitor(map[string]any{"query": "SELECT count(*) FROM pg_stat_activity"}))
+	if res.Status != domain.StatusUp {
+		t.Errorf("LOGIN-only role with a custom query: got %v %q, want up", res.Status, res.Message)
+	}
 }
