@@ -30,6 +30,9 @@ var (
 	ErrNotFound = errors.New("store: registro não encontrado")
 	// ErrConflict indica violação de unicidade, como nome de monitor repetido.
 	ErrConflict = errors.New("store: conflito de unicidade")
+	// ErrLastFullAdmin recusa a escrita que deixaria a instalação sem
+	// nenhum administrador de escopo total.
+	ErrLastFullAdmin = errors.New("store: a instalação ficaria sem administrador de escopo total")
 )
 
 // PageFilter é a paginação por keyset. Keyset em vez de OFFSET porque
@@ -159,11 +162,28 @@ type UserRepo interface {
 	Get(ctx context.Context, id int64) (domain.User, error)
 	// GetByUsername é o caminho do login.
 	GetByUsername(ctx context.Context, username string) (domain.User, error)
-	Update(ctx context.Context, u domain.User) error
+
+	// SetPasswordHash grava a senha e nada mais.
+	//
+	// Não existe "gravar a conta inteira": quem lê a conta, decide e
+	// regrava tudo desfaz o que outro pedido gravou no meio — a troca de
+	// senha devolvia o escopo que um administrador acabara de retirar, e
+	// a troca de acesso devolvia a senha que a pessoa acabara de trocar.
+	SetPasswordHash(ctx context.Context, id int64, hash string) error
+
+	// SetAccess grava o papel e, quando não nulo, o escopo — nada mais.
+	// Escopo nulo mantém o gravado.
+	//
+	// Devolve ErrLastFullAdmin se a escrita deixaria a instalação sem
+	// administrador de escopo total, conferido na mesma transação: conferir
+	// antes deixava dois rebaixamentos simultâneos verem "sobra o outro".
+	SetAccess(ctx context.Context, id int64, role domain.Role, scope *domain.Scope) error
 	// Count decide se o assistente de primeiro acesso deve aparecer.
 	Count(ctx context.Context) (int, error)
 
 	List(ctx context.Context) ([]domain.User, error)
+	// Delete apaga a conta. Devolve ErrLastFullAdmin, como SetAccess, se
+	// ela for o último administrador de escopo total.
 	Delete(ctx context.Context, id int64) error
 
 	// CountByRole é o que impede a instalação de se trancar para fora:

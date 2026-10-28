@@ -360,19 +360,19 @@ func testUserScopeRoundTrips(t *testing.T, newStore Factory) {
 		}
 	}
 
-	// Update substitui a lista, não acumula.
+	// SetAccess substitui a lista, não acumula.
 	u.Scope = domain.Scope{Restricted: true, GroupIDs: []int64{a.ID}}
-	if err := s.Users().Update(ctx, u); err != nil {
-		t.Fatalf("Update returned unexpected error: %v", err)
+	if err := s.Users().SetAccess(ctx, u.ID, u.Role, &u.Scope); err != nil {
+		t.Fatalf("SetAccess returned unexpected error: %v", err)
 	}
 	got, _ := s.Users().Get(ctx, u.ID)
 	if len(got.Scope.GroupIDs) != 1 || got.Scope.GroupIDs[0] != a.ID {
-		t.Errorf("Scope after Update = %+v, want [%d]", got.Scope, a.ID)
+		t.Errorf("Scope after SetAccess = %+v, want [%d]", got.Scope, a.ID)
 	}
 
-	u.Scope = domain.Scope{}
-	if err := s.Users().Update(ctx, u); err != nil {
-		t.Fatalf("Update returned unexpected error: %v", err)
+	todos := domain.Scope{}
+	if err := s.Users().SetAccess(ctx, u.ID, u.Role, &todos); err != nil {
+		t.Fatalf("SetAccess returned unexpected error: %v", err)
 	}
 	got, _ = s.Users().Get(ctx, u.ID)
 	if got.Scope.Restricted || len(got.Scope.GroupIDs) != 0 {

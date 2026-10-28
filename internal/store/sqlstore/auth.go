@@ -137,24 +137,94 @@ func (r *userRepo) GetByUsername(ctx context.Context, username string) (domain.U
 	return r.loadScope(ctx, u, err)
 }
 
-func (r *userRepo) Update(ctx context.Context, u domain.User) error {
+// SetPasswordHash grava só a coluna da senha.
+func (r *userRepo) SetPasswordHash(ctx context.Context, id int64, hash string) error {
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	escopo := u.Scope.Normalize()
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE app_user SET password_hash = ?, updated_at = ? WHERE id = ?`, hash, toMillis(now), id)
+	if err != nil {
+		return fmt.Errorf("sqlstore: gravando senha da conta %d: %w", id, err)
+	}
+	return requireAffected(res, fmt.Sprintf("usuário %d", id))
+}
+
+// SetAccess grava papel e, quando informado, escopo, sem tocar na senha.
+func (r *userRepo) SetAccess(ctx context.Context, id int64, role domain.Role, scope *domain.Scope) error {
+	now := time.Now().UTC().Truncate(time.Millisecond)
 
 	return r.inTx(ctx, func(t *tx) error {
-		res, err := t.ExecContext(ctx, `
-			UPDATE app_user SET username = ?, role = ?, password_hash = ?, updated_at = ?, all_groups = ?
-			WHERE id = ?`,
-			u.Username, u.Role.String(), u.PasswordHash, toMillis(now),
-			boolToInt(!escopo.Restricted), u.ID)
+		antes, err := lockFullAdmins(ctx, t)
 		if err != nil {
-			return translateAuthErr(err, "usuário")
-		}
-		if err := requireAffected(res, fmt.Sprintf("usuário %d", u.ID)); err != nil {
 			return err
 		}
-		return writeUserGroups(ctx, t, u.ID, escopo)
+
+		var res sql.Result
+		if scope == nil {
+			res, err = t.ExecContext(ctx,
+				`UPDATE app_user SET role = ?, updated_at = ? WHERE id = ?`, role.String(), toMillis(now), id)
+		} else {
+			res, err = t.ExecContext(ctx,
+				`UPDATE app_user SET role = ?, all_groups = ?, updated_at = ? WHERE id = ?`,
+				role.String(), boolToInt(!scope.Normalize().Restricted), toMillis(now), id)
+		}
+		if err != nil {
+			return fmt.Errorf("sqlstore: gravando acesso da conta %d: %w", id, err)
+		}
+		if err := requireAffected(res, fmt.Sprintf("usuário %d", id)); err != nil {
+			return err
+		}
+		if scope != nil {
+			if err := writeUserGroups(ctx, t, id, scope.Normalize()); err != nil {
+				return err
+			}
+		}
+		return keepFullAdmin(ctx, t, antes)
 	})
+}
+
+// lockFullAdmins trava as contas que administram tudo até o fim da
+// transação e devolve quantas são.
+//
+// Um UPDATE que não muda nada, e não SELECT ... FOR UPDATE, porque vale
+// igual nos dois bancos: no PostgreSQL trava as linhas, e quem chega
+// depois espera e relê já com a mudança de quem chegou antes; no SQLite
+// pega a trava de escrita, que serializa as transações inteiras. Sem a
+// trava, no PostgreSQL dois rebaixamentos simultâneos contariam cada um
+// o outro ainda como administrador, e os dois gravariam.
+func lockFullAdmins(ctx context.Context, t *tx) (int64, error) {
+	res, err := t.ExecContext(ctx,
+		`UPDATE app_user SET updated_at = updated_at WHERE role = ? AND all_groups = 1`,
+		domain.RoleAdmin.String())
+	if err != nil {
+		return 0, fmt.Errorf("sqlstore: travando administradores: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("sqlstore: contando administradores: %w", err)
+	}
+	return n, nil
+}
+
+// keepFullAdmin recusa a escrita que levou de algum para nenhum
+// administrador de escopo total.
+//
+// "De algum para nenhum", e não "nenhum": antes do primeiro acesso não há
+// administrador, e mexer em outras contas não pode depender disso.
+func keepFullAdmin(ctx context.Context, t *tx, antes int64) error {
+	if antes == 0 {
+		return nil
+	}
+	var depois int64
+	err := t.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM app_user WHERE role = ? AND all_groups = 1`,
+		domain.RoleAdmin.String()).Scan(&depois)
+	if err != nil {
+		return fmt.Errorf("sqlstore: contando administradores: %w", err)
+	}
+	if depois == 0 {
+		return store.ErrLastFullAdmin
+	}
+	return nil
 }
 
 func (r *userRepo) Count(ctx context.Context) (int, error) {
@@ -227,11 +297,20 @@ func (r *userRepo) List(ctx context.Context) ([]domain.User, error) {
 // quem for removido perde o acesso na hora, e não no vencimento do
 // cookie.
 func (r *userRepo) Delete(ctx context.Context, id int64) error {
-	res, err := r.db.ExecContext(ctx, `DELETE FROM app_user WHERE id = ?`, id)
-	if err != nil {
-		return fmt.Errorf("sqlstore: apagando conta %d: %w", id, err)
-	}
-	return requireAffected(res, fmt.Sprintf("conta %d", id))
+	return r.inTx(ctx, func(t *tx) error {
+		antes, err := lockFullAdmins(ctx, t)
+		if err != nil {
+			return err
+		}
+		res, err := t.ExecContext(ctx, `DELETE FROM app_user WHERE id = ?`, id)
+		if err != nil {
+			return fmt.Errorf("sqlstore: apagando conta %d: %w", id, err)
+		}
+		if err := requireAffected(res, fmt.Sprintf("conta %d", id)); err != nil {
+			return err
+		}
+		return keepFullAdmin(ctx, t, antes)
+	})
 }
 
 // CountByRole conta as contas de um papel.

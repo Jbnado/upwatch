@@ -245,7 +245,9 @@ func (s *Service) ChangePassword(ctx context.Context, userID int64, current, nex
 	if err := u.SetPassword(next); err != nil {
 		return err
 	}
-	if err := s.store.Users().Update(ctx, u); err != nil {
+	// Só a senha: regravar a conta lida acima devolveria o papel e o
+	// escopo de antes, desfazendo uma revogação feita nesse meio-tempo.
+	if err := s.store.Users().SetPasswordHash(ctx, userID, u.PasswordHash); err != nil {
 		return err
 	}
 	return s.store.Sessions().DeleteByUser(ctx, userID)
@@ -420,71 +422,38 @@ func (s *Service) CreateUser(
 // escopo. Administrador restrito não cria grupo de topo nem mexe em canal
 // ou página pública; sem ninguém com escopo total, a instalação ficaria
 // sem quem faça isso, e a única saída seria mexer no banco à mão.
+//
+// A recusa é do store, na mesma transação da escrita (ver
+// store.UserRepo.SetAccess). Conferir aqui, antes, deixava dois
+// rebaixamentos simultâneos verem "sobra o outro" e gravarem os dois.
 func (s *Service) SetAccess(ctx context.Context, id int64, role domain.Role, scope *domain.Scope) (domain.User, error) {
-	u, err := s.store.Users().Get(ctx, id)
-	if err != nil {
-		return domain.User{}, err
+	if !role.Valid() {
+		return domain.User{}, &domain.ValidationError{Field: "role", Msg: "papel desconhecido"}
 	}
-
-	novo := u
-	novo.Role = role
 	if scope != nil {
-		novo.Scope = scope.Normalize()
-	}
-	if err := novo.Validate(); err != nil {
-		return domain.User{}, err
-	}
-
-	if fullAdmin(u) && !fullAdmin(novo) {
-		if err := s.requireAnotherFullAdmin(ctx); err != nil {
+		normalizado := scope.Normalize()
+		if err := normalizado.Validate(); err != nil {
 			return domain.User{}, err
 		}
+		scope = &normalizado
 	}
 
-	if err := s.store.Users().Update(ctx, novo); err != nil {
-		return domain.User{}, err
+	if err := s.store.Users().SetAccess(ctx, id, role, scope); err != nil {
+		return domain.User{}, lastAdmin(err)
 	}
-	return novo, nil
+	return s.store.Users().Get(ctx, id)
 }
 
 // DeleteUser remove a conta, recusando o último administrador com escopo
-// total.
+// total — também no store, pelo mesmo motivo de SetAccess.
 func (s *Service) DeleteUser(ctx context.Context, id int64) error {
-	u, err := s.store.Users().Get(ctx, id)
-	if err != nil {
-		return err
-	}
-	if fullAdmin(u) {
-		if err := s.requireAnotherFullAdmin(ctx); err != nil {
-			return err
-		}
-	}
-	return s.store.Users().Delete(ctx, id)
+	return lastAdmin(s.store.Users().Delete(ctx, id))
 }
 
-// fullAdmin é a conta que administra a instalação inteira.
-func fullAdmin(u domain.User) bool {
-	return u.Role == domain.RoleAdmin && !u.Scope.Restricted
-}
-
-// requireAnotherFullAdmin confere que sobra alguém administrando tudo.
-//
-// Varre a lista em vez de contar no banco: contas são poucas, e a regra
-// "administrador com escopo total" fica escrita aqui uma vez, em vez de
-// repetida em SQL.
-func (s *Service) requireAnotherFullAdmin(ctx context.Context) error {
-	contas, err := s.store.Users().List(ctx)
-	if err != nil {
-		return err
-	}
-	n := 0
-	for _, c := range contas {
-		if fullAdmin(c) {
-			n++
-		}
-	}
-	if n <= 1 {
+// lastAdmin traduz a recusa do store para o erro deste pacote.
+func lastAdmin(err error) error {
+	if errors.Is(err, store.ErrLastFullAdmin) {
 		return ErrLastAdmin
 	}
-	return nil
+	return err
 }
