@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -86,6 +87,9 @@ func parseRedisConfig(raw json.RawMessage) (RedisConfig, error) {
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return cfg, fmt.Errorf("checker: configuração de Redis inválida: %w", err)
 	}
+	if hasWireBreak(cfg.Username) || hasWireBreak(cfg.Password) {
+		return cfg, errors.New("checker: usuário e senha do Redis não podem ter quebra de linha nem NUL")
+	}
 	if cfg.DB < 0 {
 		return cfg, errors.New("checker: o banco do Redis não pode ser negativo")
 	}
@@ -101,6 +105,18 @@ func parseRedisConfig(raw json.RawMessage) (RedisConfig, error) {
 		}
 	}
 	return cfg, nil
+}
+
+// hasWireBreak informa se o texto tem CR, LF ou NUL.
+//
+// Usuário, senha e chaves vão para qualquer host:porta cadastrado. O RESP
+// os delimita pelo tamanho, mas um serviço que lê comandos por linha (o
+// memcached, por exemplo) não: ali um CR ou LF no meio da senha vira um
+// segundo comando, escrito por quem cadastrou o monitor e enviado pelo
+// UpWatch. NUL termina texto em outros protocolos e não tem uso legítimo
+// em nenhum desses campos.
+func hasWireBreak(s string) bool {
+	return strings.ContainsAny(s, "\r\n\x00")
 }
 
 // Check conecta, envia PING e avalia as asserções.

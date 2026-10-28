@@ -80,6 +80,8 @@ func (a RedisAssertion) Validate() error {
 	}
 
 	switch {
+	case hasWireBreak(a.Key) || hasWireBreak(a.Field) || hasWireBreak(a.Section):
+		return fmt.Errorf("checker: chave, campo e seção de %s não podem ter quebra de linha nem NUL", a.command())
 	case spec.key && a.Key == "":
 		return fmt.Errorf("checker: %s precisa de uma chave", a.command())
 	case !spec.key && a.Key != "":

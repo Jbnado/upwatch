@@ -167,6 +167,29 @@ func TestRedisValidateConfig(t *testing.T) {
 	}
 }
 
+// O checker manda usuário, senha e chaves para qualquer host:porta que se
+// cadastre. Apontado para um serviço que lê comandos por linha, como o
+// memcached, um CR ou LF no meio desses campos vira um segundo comando,
+// escrito por quem cadastrou o monitor e executado pelo UpWatch. NUL
+// fica de fora pelo mesmo motivo nos protocolos que terminam texto nele.
+func TestRedisValidateConfigRejectsLineBreaksAndNUL(t *testing.T) {
+	c := checker.NewRedis()
+
+	for _, ctrl := range []string{`\r`, `\n`, `\u0000`} {
+		for name, cfg := range map[string]string{
+			"usuário":       `{"username":"monitor` + ctrl + `flush_all"}`,
+			"senha":         `{"password":"x` + ctrl + `flush_all"}`,
+			"chave":         `{"assertions":[{"command":"GET","key":"k` + ctrl + `flush_all","op":"eq","value":1}]}`,
+			"campo do HGET": `{"assertions":[{"command":"HGET","key":"k","field":"f` + ctrl + `flush_all","op":"eq","value":1}]}`,
+			"seção do INFO": `{"assertions":[{"command":"INFO","section":"memory` + ctrl + `","field":"used_memory","op":"gt","value":0}]}`,
+		} {
+			if err := c.ValidateConfig(json.RawMessage(cfg)); err == nil {
+				t.Errorf("%s com %s: ValidateConfig(%s) accepted", name, ctrl, cfg)
+			}
+		}
+	}
+}
+
 func TestRedisCheckUpOnPong(t *testing.T) {
 	srv := startFakeRedis(t, nil)
 
