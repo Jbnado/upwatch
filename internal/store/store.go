@@ -147,7 +147,8 @@ func (q RollupQuery) Normalize() RollupQuery {
 // MonitorRepo é o CRUD de definições de monitor.
 type MonitorRepo interface {
 	// Create insere o monitor e preenche ID, CreatedAt e UpdatedAt.
-	// Devolve ErrConflict se o nome já existir.
+	// Devolve ErrConflict se o nome já existir no grupo, e ErrNotFound se
+	// o grupo (ou o monitor pai) não existir — o que Update também faz.
 	Create(ctx context.Context, m *domain.Monitor) error
 	Get(ctx context.Context, id int64) (domain.Monitor, error)
 	Update(ctx context.Context, m domain.Monitor) error

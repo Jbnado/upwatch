@@ -22,6 +22,7 @@ func groupCases() []conformanceCase {
 		{"GroupDeleteRemovesEmptyGroup", testGroupDeleteRemovesEmptyGroup},
 
 		{"MonitorRoundTripsGroup", testMonitorRoundTripsGroup},
+		{"MonitorRefusesMissingGroup", testMonitorRefusesMissingGroup},
 		{"MonitorNameIsUniquePerGroup", testMonitorNameIsUniquePerGroup},
 		{"MonitorListFiltersByGroups", testMonitorListFiltersByGroups},
 		{"MonitorListEmptySelectionReturnsNothing", testMonitorListEmptySelectionReturnsNothing},
@@ -205,6 +206,46 @@ func testMonitorRoundTripsGroup(t *testing.T, newStore Factory) {
 	depois, _ := s.Monitors().Get(ctx, id)
 	if depois.GroupID != nil {
 		t.Errorf("GroupID = %d after moving out, want nil", *depois.GroupID)
+	}
+}
+
+// Monitor em grupo que não existe é ErrNotFound, e nada é gravado.
+//
+// É o que sobra de um grupo apagado em paralelo: a API conferiu que ele
+// existia, outro pedido o apagou, e a gravação chega depois. No SQLite a
+// coluna não tem chave estrangeira (ver a migração), e sem a condição na
+// própria instrução o monitor ficava apontando para um grupo que não
+// existe — invisível para todo escopo restrito, e fora de "Sem grupo".
+func testMonitorRefusesMissingGroup(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	g := mustCreateGroup(t, s, "RPA", nil)
+	if err := s.Groups().Delete(ctx, g.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	m := newMonitor("orfao")
+	m.GroupID = &g.ID
+	if err := s.Monitors().Create(ctx, &m); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("Create in a deleted group returned %v, want store.ErrNotFound", err)
+	}
+	page, err := s.Monitors().List(ctx, store.MonitorFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 0 {
+		t.Fatalf("the refused Create left %d monitors behind", len(page.Items))
+	}
+
+	id := mustCreateMonitorIn(t, s, "api", nil)
+	m, _ = s.Monitors().Get(ctx, id)
+	m.GroupID = &g.ID
+	if err := s.Monitors().Update(ctx, m); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("Update into a deleted group returned %v, want store.ErrNotFound", err)
+	}
+	if got, _ := s.Monitors().Get(ctx, id); got.GroupID != nil {
+		t.Errorf("the refused Update moved the monitor to group %d", *got.GroupID)
 	}
 }
 

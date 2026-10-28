@@ -43,12 +43,21 @@ func (r *monitorRepo) Create(ctx context.Context, m *domain.Monitor) error {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	m.CreatedAt, m.UpdatedAt = now, now
 
+	// INSERT ... SELECT com a existência do grupo na própria instrução.
+	// No SQLite group_id não tem chave estrangeira (ver a migração), e
+	// conferir antes, numa consulta separada, deixava o grupo ser apagado
+	// no meio: o monitor ficava órfão, invisível para todo escopo e fora
+	// de "Sem grupo". O SQLite serializa as escritas, então a condição e a
+	// gravação não se separam. No PostgreSQL a chave estrangeira segura a
+	// corrida que o instantâneo da condição não vê.
 	const q = `
 		INSERT INTO monitor (
 			name, type, target, interval_ms, timeout_ms,
 			confirmation_threshold, degraded_latency_ms, config, parent_id,
 			enabled, tags, created_at, updated_at, group_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		)
+		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		WHERE ` + groupExists
 
 	id, err := r.db.insertID(ctx, q,
 		m.Name, m.Type.String(), m.Target,
@@ -56,7 +65,11 @@ func (r *monitorRepo) Create(ctx context.Context, m *domain.Monitor) error {
 		m.ConfirmationThreshold, m.DegradedLatency.Milliseconds(),
 		encodeConfig(m.Config), m.ParentID,
 		boolToInt(m.Enabled), tags, toMillis(now), toMillis(now), m.GroupID,
+		m.GroupID, m.GroupID,
 	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("grupo %d: %w", *m.GroupID, store.ErrNotFound)
+	}
 	if err != nil {
 		return translateWriteErr(err)
 	}
@@ -87,12 +100,14 @@ func (r *monitorRepo) Update(ctx context.Context, m domain.Monitor) error {
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
 
+	// A mesma condição de Create: mover para um grupo apagado no meio do
+	// pedido não grava nada.
 	const q = `
 		UPDATE monitor SET
 			name = ?, type = ?, target = ?, interval_ms = ?, timeout_ms = ?,
 			confirmation_threshold = ?, degraded_latency_ms = ?, config = ?, parent_id = ?,
 			enabled = ?, tags = ?, updated_at = ?, group_id = ?
-		WHERE id = ?`
+		WHERE id = ? AND ` + groupExists
 
 	res, err := r.db.ExecContext(ctx, q,
 		m.Name, m.Type.String(), m.Target,
@@ -100,11 +115,12 @@ func (r *monitorRepo) Update(ctx context.Context, m domain.Monitor) error {
 		m.ConfirmationThreshold, m.DegradedLatency.Milliseconds(),
 		encodeConfig(m.Config), m.ParentID,
 		boolToInt(m.Enabled), tags, toMillis(now), m.GroupID, m.ID,
+		m.GroupID, m.GroupID,
 	)
 	if err != nil {
 		return translateWriteErr(err)
 	}
-	return requireAffected(res, fmt.Sprintf("monitor %d", m.ID))
+	return requireAffected(res, fmt.Sprintf("monitor %d ou o grupo dele", m.ID))
 }
 
 // Delete remove o monitor. Heartbeats e rollups saem em cascata pelo
@@ -270,8 +286,15 @@ func requireAffected(res sql.Result, subject string) error {
 	return nil
 }
 
+// groupExists é a condição de gravar um monitor: sem grupo, ou num grupo
+// que existe. Recebe o grupo duas vezes. O CAST é para o PostgreSQL, que
+// não deduz o tipo de um parâmetro que só aparece em "? IS NULL".
+const groupExists = `(CAST(? AS BIGINT) IS NULL OR EXISTS (SELECT 1 FROM monitor_group WHERE id = ?))`
+
 // translateWriteErr converte violação de unicidade do driver em
-// store.ErrConflict, mantendo o erro do banco fora das camadas de cima.
+// store.ErrConflict, e a da chave estrangeira — grupo ou monitor pai que
+// deixou de existir no meio do pedido — em store.ErrNotFound, mantendo o
+// erro do banco fora das camadas de cima.
 func translateWriteErr(err error) error {
 	if err == nil {
 		return nil
@@ -279,6 +302,9 @@ func translateWriteErr(err error) error {
 	msg := strings.ToLower(err.Error())
 	if strings.Contains(msg, "unique constraint") || strings.Contains(msg, "duplicate key") {
 		return fmt.Errorf("%w: %s", store.ErrConflict, err)
+	}
+	if isForeignKeyViolation(err) {
+		return fmt.Errorf("grupo ou monitor pai: %w", store.ErrNotFound)
 	}
 	return fmt.Errorf("sqlstore: escrevendo monitor: %w", err)
 }

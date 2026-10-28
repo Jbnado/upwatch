@@ -67,6 +67,11 @@ func (r *groupRepo) Delete(ctx context.Context, id int64) error {
 		  AND NOT EXISTS (SELECT 1 FROM monitor WHERE group_id = ?)
 		  AND NOT EXISTS (SELECT 1 FROM monitor_group filho WHERE filho.parent_id = ?)`,
 		id, id, id)
+	if isForeignKeyViolation(err) {
+		// Só no PostgreSQL: um monitor entrou no grupo numa transação que
+		// a condição acima não enxergava, e a chave estrangeira recusou.
+		return fmt.Errorf("grupo %d ganhou um monitor no meio: %w", id, store.ErrConflict)
+	}
 	if err != nil {
 		return fmt.Errorf("sqlstore: apagando grupo %d: %w", id, err)
 	}
