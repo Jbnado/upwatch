@@ -45,17 +45,32 @@ todos os alertas para sempre.
 **Avisa** por webhook, Discord e Slack, com um botão de teste em cada
 canal. Descobrir que o alerta não chega durante a queda é descobrir
 tarde. O webhook genérico aceita cabeçalhos próprios e deixa você
-escolher a forma do corpo — veja [Webhook](#webhook).
+escolher a forma do corpo — veja [Webhook](#webhook). Canal vinculado a
+um grupo avisa sobre todos os monitores dele, inclusive os criados
+depois; o vínculo direto com um monitor continua existindo, e cada canal
+recebe o aviso uma vez só.
 
-**Agrupa por etiqueta.** Homolog e produção lado a lado sem virar uma
-lista única de quarenta linhas: etiquete os alvos e o painel oferece
-agrupar por qualquer uma delas. As etiquetas são normalizadas na entrada
-— "Produção", "produção " e "PRODUÇÃO" são o mesmo grupo, e não três.
+**Organiza por grupo.** Grupo tem dois níveis no máximo — Sistema →
+Ambiente, como `RPA` → `prod` — e todo monitor fica num ambiente (ou em
+"Sem grupo", onde cai tudo de uma instalação anterior aos grupos). Dentro
+do grupo o nome é curto: o `bff` de produção e o de homologação convivem
+sem repetir o grupo no nome. Etiquetas continuam existindo como recorte
+transversal (`banco`, `crítico`) e são normalizadas na entrada —
+"Produção", "produção " e "PRODUÇÃO" são uma etiqueta só —, mas nunca
+controlam acesso.
 
-**Tem dois papéis de acesso.** Administrador cadastra e altera;
-observador só lê — serve para plantão, gerência e time vizinho
-acompanharem sem poder mexer. A barreira está no servidor, não em botão
-escondido: um observador com token recebe 403 em qualquer escrita.
+**Tem dois papéis de acesso, com escopo por grupo.** Administrador
+cadastra e altera; observador só lê — serve para plantão, gerência e
+time vizinho acompanharem sem poder mexer. Cada conta alcança todos os
+grupos ou uma lista deles, e dar acesso a um sistema dá acesso aos
+ambientes dele, inclusive os criados depois. A barreira está no
+servidor, não em botão escondido: um observador com token recebe 403 em
+qualquer escrita, e um monitor fora do escopo responde 404 em toda rota
+— lista, detalhe, batidas, agregados, incidentes, eventos ao vivo,
+exportação e resumos —, igual a um que não existe. Administrador com
+escopo só cria e altera dentro dos próprios grupos, não concede escopo
+maior que o dele e não mexe em canal, página pública ou relato, que
+afetam todos os grupos.
 
 **Publica uma página de estado** no formato que Anthropic, Cloudflare e
 Google consolidaram: veredito no topo, componentes agrupados, noventa
@@ -63,8 +78,8 @@ barras de histórico, incidentes anteriores com linha do tempo. Ela nunca
 revela o endereço do alvo nem a causa detectada pela sonda — o que sai é
 só o que você escreveu.
 
-**Fala com quem já tem Prometheus** em `/metrics`, sem credencial, para
-o alerta morar onde já mora o resto.
+**Fala com quem já tem Prometheus** em `/metrics`, para o alerta morar
+onde já mora o resto — aberto por padrão, ou atrás de um token próprio.
 
 ## Instalação
 
@@ -111,6 +126,7 @@ configuração nenhuma e uma instalação séria versiona o YAML.
 | `UPWATCH_SESSION_TTL` | `168h` | Validade da sessão da interface |
 | `UPWATCH_SECURE_COOKIES` | `false` | Marca o cookie como Secure; ligue ao servir por HTTPS |
 | `UPWATCH_PUBLIC_URL` | vazio | Endereço externo, para o feed da página pública usar URLs absolutas |
+| `UPWATCH_METRICS_TOKEN` | vazio | Exige `Authorization: Bearer <token>` em `/metrics`; vazio deixa aberto |
 
 Durações aceitam sufixo de dias: `90d` é o mesmo que `2160h`.
 
@@ -236,7 +252,22 @@ scrape_configs:
   - job_name: upwatch
     static_configs:
       - targets: ['upwatch:8080']
+    # Só se UPWATCH_METRICS_TOKEN estiver definido.
+    authorization:
+      credentials: o-mesmo-token
 ```
+
+**Instalação exposta na internet: defina `UPWATCH_METRICS_TOKEN`.** Sem
+ele, `/metrics` responde a qualquer um com o nome de todos os monitores e
+grupos, e isso descreve a topologia interna. O padrão continua aberto
+porque o caso comum é o Prometheus raspando na rede local, sem nada a
+configurar. O token é uma credencial à parte: vai para a configuração do
+Prometheus sem dar acesso à API.
+
+Monitor dentro de um grupo leva também o rótulo `group`, com o caminho
+(`group="RPA / prod"`). O nome só é único dentro do grupo, e sem o rótulo
+o `bff` de produção e o de homologação seriam a mesma série. Monitor sem
+grupo sai com os rótulos de sempre.
 
 Em `upwatch_monitor_status`, 1 é no ar, 0 fora do ar, 2 degradado e -1
 sem medição. "Sem medição" não é zero de propósito: confundir os dois
