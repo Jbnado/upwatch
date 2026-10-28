@@ -28,15 +28,25 @@ const (
 	MonitorTLS
 	// MonitorPush inverte o fluxo: o serviço monitorado bate no UpWatch.
 	MonitorPush
+	// MonitorRedis conversa com o Redis: PING e, opcionalmente, asserções
+	// sobre comandos de leitura.
+	MonitorRedis
+	// MonitorPostgres conecta ao PostgreSQL e executa uma consulta.
+	MonitorPostgres
+	// MonitorMySQL conecta ao MySQL ou MariaDB e executa uma consulta.
+	MonitorMySQL
 )
 
 var monitorTypeNames = map[MonitorType]string{
-	MonitorHTTP: "http",
-	MonitorTCP:  "tcp",
-	MonitorICMP: "icmp",
-	MonitorDNS:  "dns",
-	MonitorTLS:  "tls",
-	MonitorPush: "push",
+	MonitorHTTP:     "http",
+	MonitorTCP:      "tcp",
+	MonitorICMP:     "icmp",
+	MonitorDNS:      "dns",
+	MonitorTLS:      "tls",
+	MonitorPush:     "push",
+	MonitorRedis:    "redis",
+	MonitorPostgres: "postgres",
+	MonitorMySQL:    "mysql",
 }
 
 // String devolve o nome canônico do tipo.

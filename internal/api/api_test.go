@@ -60,6 +60,7 @@ func newServer(t *testing.T) *server {
 	reg, err := checker.NewRegistry(
 		checker.NewHTTP(), checker.NewTCP(), checker.NewDNS(),
 		checker.NewTLS(), checker.NewICMP(), checker.NewPush(st, fake),
+		checker.NewRedis(), checker.NewPostgres(), checker.NewMySQL(),
 	)
 	if err != nil {
 		t.Fatalf("NewRegistry returned unexpected error: %v", err)
