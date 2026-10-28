@@ -60,6 +60,7 @@ func monitoringCases() []conformanceCase {
 		{"MonitorGetMissingReturnsNotFound", testMonitorGetMissingReturnsNotFound},
 		{"MonitorDuplicateNameReturnsConflict", testMonitorDuplicateNameReturnsConflict},
 		{"MonitorUpdatePersistsChanges", testMonitorUpdatePersistsChanges},
+		{"MonitorRearmsOnConfigChangeOrReactivation", testMonitorRearmsOnConfigChangeOrReactivation},
 		{"MonitorUpdateMissingReturnsNotFound", testMonitorUpdateMissingReturnsNotFound},
 		{"MonitorDeleteRemovesIt", testMonitorDeleteRemovesIt},
 		{"MonitorDeleteMissingReturnsNotFound", testMonitorDeleteMissingReturnsNotFound},
@@ -298,6 +299,80 @@ func testMonitorUpdatePersistsChanges(t *testing.T, newStore Factory) {
 	}
 	if got.Enabled {
 		t.Error("Enabled = true, want false")
+	}
+}
+
+// O push conta a espera do sinal a partir do último sinal ou da última
+// mudança que a recomeça — o que vier depois. Sem o instante da mudança,
+// trocar a agenda ou reativar um monitor parado o derrubaria na hora,
+// cobrando uma janela que ninguém estava vigiando. UpdatedAt não serve:
+// muda também ao renomear, e aí renomear adiaria um alarme legítimo.
+func testMonitorRearmsOnConfigChangeOrReactivation(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	id := mustCreateMonitor(t, s, "cron")
+
+	get := func() domain.Monitor {
+		t.Helper()
+		m, err := s.Monitors().Get(ctx, id)
+		if err != nil {
+			t.Fatalf("Get returned unexpected error: %v", err)
+		}
+		return m
+	}
+	update := func(m domain.Monitor) domain.Monitor {
+		t.Helper()
+		// O instante gravado tem resolução de milissegundo; sem a pausa,
+		// a mudança poderia cair no mesmo milissegundo da anterior e o
+		// teste não distinguiria "avançou" de "ficou".
+		time.Sleep(5 * time.Millisecond)
+		if err := s.Monitors().Update(ctx, m); err != nil {
+			t.Fatalf("Update returned unexpected error: %v", err)
+		}
+		return get()
+	}
+
+	created := get()
+	if !created.RearmedAt.Equal(created.CreatedAt) {
+		t.Fatalf("RearmedAt = %v, want the creation time %v", created.RearmedAt, created.CreatedAt)
+	}
+
+	renamed := created
+	renamed.Name = "cron renomeado"
+	renamed = update(renamed)
+	if !renamed.RearmedAt.Equal(created.RearmedAt) {
+		t.Errorf("rename moved RearmedAt to %v, want it kept", renamed.RearmedAt)
+	}
+
+	reconfigured := renamed
+	reconfigured.Config = json.RawMessage(`{"schedule":"0 9 * * *"}`)
+	reconfigured = update(reconfigured)
+	if !reconfigured.RearmedAt.Equal(reconfigured.UpdatedAt) {
+		t.Errorf("config change: RearmedAt = %v, want the update time %v",
+			reconfigured.RearmedAt, reconfigured.UpdatedAt)
+	}
+
+	retimed := reconfigured
+	retimed.Interval = 10 * time.Minute
+	retimed = update(retimed)
+	if !retimed.RearmedAt.Equal(retimed.UpdatedAt) {
+		t.Errorf("interval change: RearmedAt = %v, want the update time %v",
+			retimed.RearmedAt, retimed.UpdatedAt)
+	}
+
+	disabled := retimed
+	disabled.Enabled = false
+	disabled = update(disabled)
+	if !disabled.RearmedAt.Equal(retimed.RearmedAt) {
+		t.Errorf("disabling moved RearmedAt to %v, want it kept", disabled.RearmedAt)
+	}
+
+	enabled := disabled
+	enabled.Enabled = true
+	enabled = update(enabled)
+	if !enabled.RearmedAt.Equal(enabled.UpdatedAt) {
+		t.Errorf("reactivation: RearmedAt = %v, want the update time %v",
+			enabled.RearmedAt, enabled.UpdatedAt)
 	}
 }
 

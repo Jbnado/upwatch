@@ -596,3 +596,68 @@ func TestPushSilenceIsAlwaysANewObservation(t *testing.T) {
 		t.Errorf("silence check = %+v, want a new failure", got)
 	}
 }
+
+// ---------- mudança de configuração e reativação ----------
+
+// Trocar a agenda recomeça a espera. A referência era o último sinal da
+// agenda antiga: uma rotina semanal passada para diária ficava devendo,
+// no instante da edição, a execução diária que a agenda nova teria tido
+// desde o último sinal — e o monitor caía na hora, por uma falta que
+// ninguém cometeu.
+func TestPushScheduleChangeRestartsTheWait(t *testing.T) {
+	sp := mustLocation(t, "America/Sao_Paulo")
+	m := scheduledMonitor(t, "America/Sao_Paulo")
+	now := time.Date(2026, 7, 28, 12, 0, 0, 0, sp)
+	m.RearmedAt = now.Add(-time.Minute)
+	// O último sinal, da agenda semanal antiga, foi há cinco dias.
+	log := &pushLog{at: now.Add(-5 * 24 * time.Hour), has: true}
+
+	got := checkAt(t, now, log, m)
+
+	if got.Status == domain.StatusDown {
+		t.Errorf("Status = %v (%s), want no fault right after the schedule changed", got.Status, got.Message)
+	}
+}
+
+// Reativar um monitor parado há dias é o mesmo caso: enquanto estava
+// desligado ninguém esperava sinal, e cobrar a janela a partir do último
+// recebido derrubaria o monitor no instante em que alguém o liga.
+func TestPushReactivationRestartsTheWait(t *testing.T) {
+	m := pushMonitor(t, time.Minute, nil)
+	m.RearmedAt = pushNow.Add(-30 * time.Second)
+	log := &pushLog{at: pushNow.Add(-3 * 24 * time.Hour), has: true}
+
+	got := newPush(log).Check(context.Background(), m)
+
+	if got.Status == domain.StatusDown {
+		t.Errorf("Status = %v (%s), want no fault right after reactivation", got.Status, got.Message)
+	}
+}
+
+// A espera recomeça, mas não some: passada a primeira janela depois da
+// mudança sem sinal nenhum, o silêncio volta a valer.
+func TestPushSilenceAfterTheRearmWindowIsDown(t *testing.T) {
+	m := pushMonitor(t, time.Minute, nil)
+	m.RearmedAt = pushNow.Add(-3 * time.Minute)
+	log := &pushLog{at: pushNow.Add(-3 * 24 * time.Hour), has: true}
+
+	got := newPush(log).Check(context.Background(), m)
+
+	if got.Status != domain.StatusDown {
+		t.Errorf("Status = %v (%s), want down once the rearmed window ran out", got.Status, got.Message)
+	}
+}
+
+// O monitor que nunca recebeu sinal também conta a primeira janela a
+// partir da última mudança, e não da criação.
+func TestPushNeverSignalledCountsFromTheLastRearm(t *testing.T) {
+	m := pushMonitor(t, time.Minute, nil)
+	m.CreatedAt = pushNow.Add(-24 * time.Hour)
+	m.RearmedAt = pushNow.Add(-30 * time.Second)
+
+	got := newPush(&pushLog{}).Check(context.Background(), m)
+
+	if got.Status != domain.StatusUnknown {
+		t.Errorf("Status = %v (%s), want waiting right after reactivation", got.Status, got.Message)
+	}
+}

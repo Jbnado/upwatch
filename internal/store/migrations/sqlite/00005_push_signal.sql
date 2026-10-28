@@ -26,7 +26,21 @@ ALTER TABLE push_state ADD COLUMN latency_ms INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE push_state ADD COLUMN signal_id    INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE push_state ADD COLUMN evaluated_id INTEGER NOT NULL DEFAULT 0;
 
+-- Instante a partir do qual a espera do push recomeça.
+--
+-- A janela era contada do último sinal. Trocar a agenda ou religar um
+-- monitor parado o derrubava na hora, cobrando uma execução que ninguém
+-- estava vigiando. A base passa a ser o mais recente entre o último sinal
+-- e esta mudança. updated_at não serve: muda em qualquer edição, e
+-- renomear não pode adiar um alarme legítimo.
+--
+-- O monitor que já existe recomeça da criação, que é de onde a primeira
+-- janela já era contada.
+ALTER TABLE monitor ADD COLUMN rearmed_at INTEGER NOT NULL DEFAULT 0;
+UPDATE monitor SET rearmed_at = created_at;
+
 -- +goose Down
+ALTER TABLE monitor DROP COLUMN rearmed_at;
 ALTER TABLE push_state DROP COLUMN evaluated_id;
 ALTER TABLE push_state DROP COLUMN signal_id;
 ALTER TABLE push_state DROP COLUMN latency_ms;

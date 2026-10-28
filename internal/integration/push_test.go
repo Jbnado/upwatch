@@ -75,8 +75,6 @@ type cadeia struct {
 func novaCadeia(t *testing.T, confirmacao int) *cadeia {
 	t.Helper()
 	ctx := context.Background()
-	epoch := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
-	fake := clock.NewFake(epoch)
 
 	st, err := sqlstore.OpenSQLite(filepath.Join(t.TempDir(), "upwatch.db"))
 	if err != nil {
@@ -93,6 +91,11 @@ func novaCadeia(t *testing.T, confirmacao int) *cadeia {
 	if err := st.Monitors().Create(ctx, &m); err != nil {
 		t.Fatalf("Create returned unexpected error: %v", err)
 	}
+	// O relógio começa na criação, que o banco marca com a hora real: é
+	// dela que a espera do push conta, e um relógio falso atrás dela
+	// faria a janela nunca terminar.
+	fake := clock.NewFake(m.CreatedAt)
+
 	canal := domain.Channel{
 		Name: "plantão", Type: "webhook", Enabled: true,
 		Config: json.RawMessage(`{"url":"https://exemplo.invalido/hook"}`),

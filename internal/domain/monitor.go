@@ -137,6 +137,16 @@ type Monitor struct {
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+
+	// RearmedAt é o instante da última mudança que recomeça a espera de
+	// um monitor push: configuração, intervalo ou reativação. Começa na
+	// criação.
+	//
+	// Separado de UpdatedAt porque aquele muda em qualquer edição, e
+	// renomear não pode adiar um alarme legítimo. Sem ele, trocar a
+	// agenda ou religar um monitor parado o derrubaria na hora, cobrando
+	// uma janela que ninguém estava vigiando.
+	RearmedAt time.Time `json:"rearmed_at"`
 }
 
 // Validate confere as invariantes do monitor e devolve *ValidationError

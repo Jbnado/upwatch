@@ -241,7 +241,12 @@ func (p *Push) Check(ctx context.Context, m domain.Monitor) Result {
 
 	// Silêncio vence o que o último sinal disse: um "up" antigo não pode
 	// manter verde quem parou de reportar.
-	limit, run := plan.deadline(last.At, m.Interval)
+	//
+	// A janela conta do último sinal ou da última mudança que recomeça a
+	// espera, o que vier depois. Contar só do sinal derrubaria na hora o
+	// monitor cuja agenda acabou de mudar, ou que acabou de ser religado,
+	// cobrando uma execução que ninguém estava vigiando.
+	limit, run := plan.deadline(latest(last.At, m.RearmedAt), m.Interval)
 	if !limit.IsZero() && now.After(limit) {
 		res.Status = domain.StatusDown
 		res.Message = silenceMessage(plan, silence, run, limit, m.Interval)
@@ -294,7 +299,8 @@ func silenceMessage(plan pushPlan, silence time.Duration, run, limit time.Time, 
 // Durante a primeira janela depois da criação fica desconhecido: o serviço
 // ainda não teve chance de reportar, e alertar seria acusar algo que nunca
 // esteve no ar. Com agenda, a janela termina na primeira execução prevista
-// depois da criação, mais a folga. Passada a janela vira queda, porque o
+// depois da criação — ou da última reativação ou mudança de configuração,
+// se for mais recente —, mais a folga. Passada a janela vira queda, porque o
 // push é um dead-man's switch — uma sonda que nunca subiu (script não
 // agendado, token errado no agente) é exatamente a falha que ninguém
 // perceberia sozinho.
@@ -306,7 +312,7 @@ func neverSignalled(plan pushPlan, m domain.Monitor, now time.Time) Result {
 	if m.CreatedAt.IsZero() {
 		return waiting
 	}
-	limit, _ := plan.deadline(m.CreatedAt, m.Interval)
+	limit, _ := plan.deadline(latest(m.CreatedAt, m.RearmedAt), m.Interval)
 	if limit.IsZero() || !now.After(limit) {
 		return waiting
 	}
@@ -314,6 +320,14 @@ func neverSignalled(plan pushPlan, m domain.Monitor, now time.Time) Result {
 		Status:  domain.StatusDown,
 		Message: "nenhum sinal recebido desde a criação do monitor",
 	}
+}
+
+// latest devolve o mais recente dos dois instantes.
+func latest(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
 }
 
 // reported traduz o que o próprio serviço disse no sinal.

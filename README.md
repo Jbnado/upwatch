@@ -289,6 +289,11 @@ janela depois de criado (com agenda, até a primeira execução prevista mais
 a folga). Depois disso cai: uma sonda que nunca subiu é justamente a falha
 que ninguém perceberia sozinho.
 
+Mudar a configuração ou o intervalo, ou religar o monitor, recomeça a
+espera: a janela conta do último sinal ou da mudança, o que vier depois.
+Sem isso, trocar a agenda de semanal para diária derrubaria o monitor na
+hora, cobrando execuções que ninguém estava vigiando.
+
 ## Desenvolvimento
 
 ```bash
