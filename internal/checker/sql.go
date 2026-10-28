@@ -43,6 +43,12 @@ func (c sqlConfig) validate(kind string) error {
 	if strings.TrimSpace(c.Username) == "" {
 		return fmt.Errorf("checker: o usuário do %s não pode ser vazio", kind)
 	}
+	// A abertura de sessão do PostgreSQL termina cada texto em NUL: um NUL
+	// no usuário ou no banco emendaria parâmetros de sessão escolhidos por
+	// quem cadastrou o monitor. Ver também hasWireBreak.
+	if hasWireBreak(c.Username) || hasWireBreak(c.Password) || hasWireBreak(c.Database) {
+		return fmt.Errorf("checker: usuário, senha e banco do %s não podem ter quebra de linha nem NUL", kind)
+	}
 	if c.Query != "" && strings.TrimSpace(c.Query) == "" {
 		return errors.New("checker: a consulta não pode ser só espaço; deixe vazia para usar SELECT 1")
 	}

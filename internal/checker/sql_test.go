@@ -141,6 +141,15 @@ func TestSQLValidateConfig(t *testing.T) {
 				"tls inventado":  `{"username":"u","` + tc.tlsField + `":"talvez"}`,
 				"consulta vazia": `{"username":"u","query":"   "}`,
 				"consulta longa": `{"username":"u","query":"SELECT ` + strings.Repeat("1", checker.MaxSQLQueryLength) + `"}`,
+				// A abertura de sessão do PostgreSQL termina cada texto em
+				// NUL: um NUL no usuário ou no banco emendaria parâmetros de
+				// sessão escolhidos por quem cadastrou o monitor (options,
+				// replication). CR e LF não têm uso legítimo nesses campos.
+				"usuário com NUL": `{"username":"u\u0000options"}`,
+				"banco com NUL":   `{"username":"u","database":"app\u0000replication"}`,
+				"senha com NUL":   `{"username":"u","password":"p\u0000x"}`,
+				"usuário com LF":  `{"username":"u\nx"}`,
+				"banco com CR":    `{"username":"u","database":"app\rx"}`,
 			} {
 				if err := tc.checker.ValidateConfig(json.RawMessage(bad)); err == nil {
 					t.Errorf("%s: ValidateConfig(%s) accepted", name, bad)
