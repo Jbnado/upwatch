@@ -251,16 +251,19 @@ func (a *API) routes() http.Handler {
 			t.handle(http.MethodPut, "/monitors/{id}", policyMonitor, a.handleUpdateMonitor)
 			t.handle(http.MethodDelete, "/monitors/{id}", policyMonitor, a.handleDeleteMonitor)
 
-			t.handle(http.MethodPut, "/monitors/{id}/channels/{channelID}", policyMonitor, a.handleLinkChannel)
-			t.handle(http.MethodDelete, "/monitors/{id}/channels/{channelID}", policyMonitor, a.handleUnlinkChannel)
+			t.handle(http.MethodPut, "/monitors/{id}/channels/{channelID}", policyFullScope|policyMonitor, a.handleLinkChannel)
+			t.handle(http.MethodDelete, "/monitors/{id}/channels/{channelID}", policyFullScope|policyMonitor, a.handleUnlinkChannel)
 
 			t.handle(http.MethodPost, "/groups", policyPlacement, a.handleCreateMonitorGroup)
 			t.handle(http.MethodPut, "/groups/{id}", policyGroup, a.handleUpdateMonitorGroup)
 			t.handle(http.MethodDelete, "/groups/{id}", policyGroup, a.handleDeleteMonitorGroup)
 			// Canal no grupo vale para todos os monitores dele, inclusive
-			// os criados depois.
-			t.handle(http.MethodPut, "/groups/{id}/channels/{channelID}", policyGroup, a.handleLinkGroupChannel)
-			t.handle(http.MethodDelete, "/groups/{id}/channels/{channelID}", policyGroup, a.handleUnlinkGroupChannel)
+			// os criados depois. O canal é recurso de todos os grupos, então
+			// vincular e desvincular exigem escopo total, como alterá-lo:
+			// pendurar o pager da diretoria no próprio grupo é mexer no
+			// aviso dos outros.
+			t.handle(http.MethodPut, "/groups/{id}/channels/{channelID}", policyFullScope|policyGroup, a.handleLinkGroupChannel)
+			t.handle(http.MethodDelete, "/groups/{id}/channels/{channelID}", policyFullScope|policyGroup, a.handleUnlinkGroupChannel)
 
 			t.handle(http.MethodPost, "/channels", policyFullScope, a.handleCreateChannel)
 			t.handle(http.MethodPut, "/channels/{id}", policyFullScope, a.handleUpdateChannel)

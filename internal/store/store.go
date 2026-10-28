@@ -244,7 +244,8 @@ type ChannelRepo interface {
 	Delete(ctx context.Context, id int64) error
 	List(ctx context.Context) ([]domain.Channel, error)
 
-	// Link e Unlink definem quais canais avisam sobre qual monitor.
+	// Link e Unlink definem quais canais avisam sobre qual monitor. Link
+	// devolve ErrNotFound se o canal ou o monitor não existir.
 	Link(ctx context.Context, monitorID, channelID int64) error
 	Unlink(ctx context.Context, monitorID, channelID int64) error
 	// ForMonitor devolve apenas os canais habilitados do monitor: um canal
@@ -253,7 +254,8 @@ type ChannelRepo interface {
 	ForMonitor(ctx context.Context, monitorID int64) ([]domain.Channel, error)
 
 	// LinkGroup e UnlinkGroup definem quais canais avisam sobre todos os
-	// monitores de um grupo, inclusive os criados depois.
+	// monitores de um grupo, inclusive os criados depois. LinkGroup
+	// devolve ErrNotFound se o canal ou o grupo não existir.
 	LinkGroup(ctx context.Context, groupID, channelID int64) error
 	UnlinkGroup(ctx context.Context, groupID, channelID int64) error
 	// ForGroup devolve os canais habilitados vinculados direto ao grupo.

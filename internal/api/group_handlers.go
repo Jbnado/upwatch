@@ -210,10 +210,7 @@ func (a *API) handleLinkGroupChannel(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// O canal precisa existir: vincular um id errado criaria um vínculo
-	// que nunca avisa, e ninguém perceberia até a queda.
-	if _, err := a.store.Channels().Get(r.Context(), channelID); err != nil {
-		writeStoreError(w, err)
+	if !a.channelExists(w, r, channelID) {
 		return
 	}
 	if err := a.store.Channels().LinkGroup(r.Context(), groupID, channelID); err != nil {
@@ -230,6 +227,9 @@ func (a *API) handleUnlinkGroupChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	channelID, ok := pathParamID(w, r, "channelID")
 	if !ok {
+		return
+	}
+	if !a.channelExists(w, r, channelID) {
 		return
 	}
 	if err := a.store.Channels().UnlinkGroup(r.Context(), groupID, channelID); err != nil {

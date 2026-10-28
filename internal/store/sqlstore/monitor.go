@@ -283,6 +283,13 @@ func translateWriteErr(err error) error {
 	return fmt.Errorf("sqlstore: escrevendo monitor: %w", err)
 }
 
+// isForeignKeyViolation reconhece a recusa da chave estrangeira nos dois
+// bancos: "FOREIGN KEY constraint failed" no SQLite e "violates foreign
+// key constraint" no PostgreSQL.
+func isForeignKeyViolation(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "foreign key constraint")
+}
+
 // escapeLike neutraliza os curingas de um padrão de LIKE.
 //
 // Vale para os dois dialetos: "%" e "_" são curingas em ambos, e a

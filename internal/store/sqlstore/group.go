@@ -165,6 +165,9 @@ func (r *channelRepo) LinkGroup(ctx context.Context, groupID, channelID int64) e
 		ON CONFLICT (group_id, channel_id) DO NOTHING`
 
 	if _, err := r.db.ExecContext(ctx, q, groupID, channelID); err != nil {
+		if isForeignKeyViolation(err) {
+			return fmt.Errorf("canal %d ou grupo %d: %w", channelID, groupID, store.ErrNotFound)
+		}
 		return fmt.Errorf("sqlstore: vinculando canal %d ao grupo %d: %w", channelID, groupID, err)
 	}
 	return nil

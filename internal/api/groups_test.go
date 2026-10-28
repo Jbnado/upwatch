@@ -140,7 +140,7 @@ func TestMonitorListFiltersByGroupIncludingChildren(t *testing.T) {
 
 // Quem só tem a Retaguarda não sai do próprio escopo por nenhum caminho
 // de escrita: nem criando conta maior, nem movendo monitor, nem
-// pendurando canal no grupo dos outros.
+// pendurando canal — nem no próprio grupo.
 func TestScopedAdminCannotEscalate(t *testing.T) {
 	c := novoCenarioEscopo(t)
 	adm := c.s.como(c.retAdmin)
@@ -181,6 +181,16 @@ func TestScopedAdminCannotEscalate(t *testing.T) {
 			map[string]any{"name": "prod", "parent_id": c.rpa}, http.StatusBadRequest},
 		{"tirar ambiente para o topo", http.MethodPut, "/api/v1/groups/" + itoa(c.retProd),
 			map[string]any{"name": "prod"}, http.StatusForbidden},
+		// O canal é de todo mundo. A guarda olhava o monitor ou o grupo do
+		// caminho e nunca o canal, e assim o pager da diretoria ia parar
+		// no grupo da Retaguarda: cada queda dela acordaria quem não tem
+		// nada com isso, e desvincular silenciaria o aviso dos outros.
+		{"vincular canal ao próprio grupo", http.MethodPut,
+			"/api/v1/groups/" + itoa(c.retProd) + "/channels/" + itoa(c.canal), nil, http.StatusForbidden},
+		{"vincular canal ao próprio monitor", http.MethodPut,
+			"/api/v1/monitors/" + itoa(c.dentro) + "/channels/" + itoa(c.canal), nil, http.StatusForbidden},
+		{"desvincular canal do próprio monitor", http.MethodDelete,
+			"/api/v1/monitors/" + itoa(c.dentro) + "/channels/" + itoa(c.canal), nil, http.StatusForbidden},
 	}
 
 	for _, caso := range casos {
@@ -190,11 +200,7 @@ func TestScopedAdminCannotEscalate(t *testing.T) {
 		})
 	}
 
-	// O canal no grupo dos outros responde 404 pela guarda do caminho; o
-	// teste de vazamento cobre. Aqui fica o positivo: dentro do escopo,
-	// pode.
-	assertStatus(t, adm.do(t, http.MethodPut,
-		"/api/v1/groups/"+itoa(c.retProd)+"/channels/"+itoa(c.canal), nil), http.StatusNoContent)
+	// O positivo: dentro do escopo, pode.
 	assertStatus(t, adm.do(t, http.MethodPost, "/api/v1/groups",
 		map[string]any{"name": "dr", "parent_id": c.ret}), http.StatusCreated)
 	assertStatus(t, adm.do(t, http.MethodPost, "/api/v1/users", map[string]any{
@@ -457,4 +463,25 @@ func TestGroupChannelsCanBeLinked(t *testing.T) {
 
 	assertStatus(t, s.do(t, http.MethodPut, "/api/v1/groups/"+itoa(g)+"/channels/999", nil), http.StatusNotFound)
 	assertStatus(t, s.do(t, http.MethodDelete, "/api/v1/groups/"+itoa(g)+"/channels/"+itoa(canal), nil), http.StatusNoContent)
+}
+
+// Vincular um canal que não existe é 404, como no grupo. Antes o pedido
+// chegava ao banco e a chave estrangeira respondia com erro interno, que
+// não diz a quem chama o que corrigir.
+func TestLinkingUnknownChannelIsNotFound(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+
+	id := s.createMonitor(t, newMonitorBody("api"))
+	g := s.criarGrupo(t, "RPA", nil)
+	for _, rota := range []string{
+		"/api/v1/monitors/" + itoa(id) + "/channels/999",
+		"/api/v1/groups/" + itoa(g) + "/channels/999",
+	} {
+		for _, metodo := range []string{http.MethodPut, http.MethodDelete} {
+			t.Run(metodo+" "+rota, func(t *testing.T) {
+				assertStatus(t, s.do(t, metodo, rota, nil), http.StatusNotFound)
+			})
+		}
+	}
 }

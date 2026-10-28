@@ -33,6 +33,7 @@ func groupCases() []conformanceCase {
 		{"UserScopeLosesDeletedGroup", testUserScopeLosesDeletedGroup},
 
 		{"ChannelGroupLinkRoundTrips", testChannelGroupLinkRoundTrips},
+		{"ChannelLinkToMissingReturnsNotFound", testChannelLinkToMissingReturnsNotFound},
 		{"ChannelDestinationsIncludeGroupAndParent", testChannelDestinationsIncludeGroupAndParent},
 		{"ChannelDestinationsCoverFutureMonitors", testChannelDestinationsCoverFutureMonitors},
 		{"ChannelDestinationsSkipDisabled", testChannelDestinationsSkipDisabled},
@@ -451,6 +452,30 @@ func testChannelGroupLinkRoundTrips(t *testing.T, newStore Factory) {
 	}
 	if canais, _ := s.Channels().ForGroup(ctx, g.ID); len(canais) != 0 {
 		t.Errorf("ForGroup after UnlinkGroup returned %d channels, want 0", len(canais))
+	}
+}
+
+// Vincular a um canal, monitor ou grupo que não existe é ErrNotFound. A
+// API confere a existência antes, mas o canal pode sumir entre a
+// conferência e o vínculo; a chave estrangeira recusa, e a recusa precisa
+// chegar como "não existe", não como erro interno.
+func testChannelLinkToMissingReturnsNotFound(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	g := mustCreateGroup(t, s, "RPA", nil)
+	m := mustCreateMonitorIn(t, s, "api", nil)
+	canal := mustCreateChannel(t, s, "discord")
+
+	for nome, err := range map[string]error{
+		"canal inexistente no monitor": s.Channels().Link(ctx, m, 9999),
+		"monitor inexistente":          s.Channels().Link(ctx, 9999, canal.ID),
+		"canal inexistente no grupo":   s.Channels().LinkGroup(ctx, g.ID, 9999),
+		"grupo inexistente":            s.Channels().LinkGroup(ctx, 9999, canal.ID),
+	} {
+		if !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("%s: err = %v, want ErrNotFound", nome, err)
+		}
 	}
 }
 

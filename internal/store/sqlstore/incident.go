@@ -287,6 +287,9 @@ func (r *channelRepo) Link(ctx context.Context, monitorID, channelID int64) erro
 		ON CONFLICT (monitor_id, channel_id) DO NOTHING`
 
 	if _, err := r.db.ExecContext(ctx, q, monitorID, channelID); err != nil {
+		if isForeignKeyViolation(err) {
+			return fmt.Errorf("canal %d ou monitor %d: %w", channelID, monitorID, store.ErrNotFound)
+		}
 		return fmt.Errorf("sqlstore: vinculando canal %d ao monitor %d: %w", channelID, monitorID, err)
 	}
 	return nil

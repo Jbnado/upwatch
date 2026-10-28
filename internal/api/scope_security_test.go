@@ -205,7 +205,9 @@ const (
 	// listagem devolve coleção ou recurso global; o corpo não pode citar
 	// nada de fora do escopo.
 	listagem
-	// escopoTotal altera recurso global (canal, página pública, relato).
+	// escopoTotal altera recurso global (canal, página pública, relato),
+	// inclusive o vínculo de canal com monitor ou grupo: o canal é de todo
+	// mundo, e pendurá-lo no próprio grupo é mexer no pager dos outros.
 	// Responde 403 a quem tem escopo, sem olhar o recurso — a resposta é
 	// a mesma para monitor de dentro e de fora, e não confirma nada.
 	escopoTotal
@@ -258,20 +260,20 @@ var rotas = map[string]classe{
 	"GET /api/v1/monitors/{id}/export":                        porMonitor,
 	"GET /api/v1/monitors/{id}/events":                        porMonitor,
 	"GET /api/v1/monitors/{id}/channels":                      porMonitor,
-	"PUT /api/v1/monitors/{id}/channels/{channelID}":          porMonitor,
-	"DELETE /api/v1/monitors/{id}/channels/{channelID}":       porMonitor,
 	"GET /api/v1/groups/{id}":                                 porGrupo,
 	"PUT /api/v1/groups/{id}":                                 porGrupo,
 	"DELETE /api/v1/groups/{id}":                              porGrupo,
 	"GET /api/v1/groups/{id}/channels":                        porGrupo,
-	"PUT /api/v1/groups/{id}/channels/{channelID}":            porGrupo,
-	"DELETE /api/v1/groups/{id}/channels/{channelID}":         porGrupo,
 	"PUT /api/v1/users/{id}":                                  porConta,
 	"DELETE /api/v1/users/{id}":                               porConta,
 	"POST /api/v1/monitors":                                   criacao,
 	"POST /api/v1/groups":                                     criacao,
 	"POST /api/v1/users":                                      criacao,
 	"POST /api/v1/channels":                                   escopoTotal,
+	"PUT /api/v1/monitors/{id}/channels/{channelID}":          escopoTotal,
+	"DELETE /api/v1/monitors/{id}/channels/{channelID}":       escopoTotal,
+	"PUT /api/v1/groups/{id}/channels/{channelID}":            escopoTotal,
+	"DELETE /api/v1/groups/{id}/channels/{channelID}":         escopoTotal,
 	"PUT /api/v1/channels/{id}":                               escopoTotal,
 	"DELETE /api/v1/channels/{id}":                            escopoTotal,
 	"POST /api/v1/channels/{id}/test":                         escopoTotal,
@@ -510,9 +512,11 @@ func TestScopedAdminCannotTouchGlobalResources(t *testing.T) {
 			continue
 		}
 		metodo, padrao := separar(chave)
-		for nome, id := range map[string]int64{"dentro": c.dentro, "fora": c.foraAgrupado} {
+		for nome, alvo := range map[string][2]int64{
+			"dentro": {c.dentro, c.retProd}, "fora": {c.foraAgrupado, c.rpaProd},
+		} {
 			t.Run(chave+" "+nome, func(t *testing.T) {
-				resp := c.s.como(c.retAdmin).do(t, metodo, c.concreto(padrao, id, 0), map[string]any{})
+				resp := c.s.como(c.retAdmin).do(t, metodo, c.concreto(padrao, alvo[0], alvo[1]), map[string]any{})
 				assertStatus(t, resp, http.StatusForbidden)
 			})
 		}
