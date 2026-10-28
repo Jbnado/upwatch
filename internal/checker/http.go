@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Jbnado/upwatch/internal/domain"
@@ -42,6 +43,10 @@ type HTTPConfig struct {
 	BodyContains    string `json:"body_contains,omitempty"`
 	BodyNotContains string `json:"body_not_contains,omitempty"`
 	BodyRegex       string `json:"body_regex,omitempty"`
+
+	// JSONAssertions são condições sobre valores do corpo JSON. Todas
+	// precisam valer; o corpo só é interpretado como JSON quando há alguma.
+	JSONAssertions []JSONAssertion `json:"json_assertions,omitempty"`
 
 	// FollowRedirects é ponteiro para distinguir "não informado" de
 	// "explicitamente falso"; o padrão é seguir.
@@ -85,6 +90,17 @@ type HTTP struct {
 	// carregar timeout e política de redirecionamento próprios.
 	secure   *http.Transport
 	insecure *http.Transport
+
+	// assertions guarda as asserções JSON já interpretadas por monitor,
+	// junto da configuração de onde vieram: editar o monitor troca a
+	// configuração e invalida a entrada.
+	mu         sync.Mutex
+	assertions map[int64]cachedAssertions
+}
+
+type cachedAssertions struct {
+	config   string
+	compiled []compiledAssertion
 }
 
 // NewHTTP cria o checker HTTP.
@@ -93,7 +109,7 @@ func NewHTTP() *HTTP {
 	insecure := http.DefaultTransport.(*http.Transport).Clone()
 	insecure.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // opção explícita por monitor
 
-	return &HTTP{secure: secure, insecure: insecure}
+	return &HTTP{secure: secure, insecure: insecure, assertions: map[int64]cachedAssertions{}}
 }
 
 // Type identifica o tipo de monitor atendido.
@@ -112,6 +128,9 @@ func (h *HTTP) ValidateConfig(raw json.RawMessage) error {
 			return fmt.Errorf("checker: expressão regular inválida em body_regex: %w", err)
 		}
 	}
+	if _, err := compileAssertions(cfg.JSONAssertions); err != nil {
+		return err
+	}
 	if !isValidMethod(cfg.method()) {
 		return fmt.Errorf("checker: método HTTP desconhecido %q", cfg.Method)
 	}
@@ -129,6 +148,10 @@ func (h *HTTP) ValidateConfig(raw json.RawMessage) error {
 // agendador registrar exatamente uma batida por execução.
 func (h *HTTP) Check(ctx context.Context, m domain.Monitor) Result {
 	cfg, err := parseHTTPConfig(m.Config)
+	if err != nil {
+		return down("configuração inválida: %v", err)
+	}
+	assertions, err := h.assertionsFor(m)
 	if err != nil {
 		return down("configuração inválida: %v", err)
 	}
@@ -189,8 +212,45 @@ func (h *HTTP) Check(ctx context.Context, m domain.Monitor) Result {
 		return res
 	}
 
+	if len(assertions) > 0 {
+		// Corpo do tamanho exato do teto quase certamente foi cortado; a
+		// causa precisa dizer isso em vez de culpar o JSON do alvo.
+		truncated := len(payload) == MaxBodyBytes
+		if msg := evaluateJSONAssertions(assertions, payload, truncated); msg != "" {
+			res.Status = domain.StatusDown
+			res.Message = msg
+			return res
+		}
+	}
+
 	res.Status = domain.StatusUp
 	return res
+}
+
+// assertionsFor devolve as asserções JSON do monitor já interpretadas.
+// Interpretar é trabalho do cadastro; o Check roda a cada poucos segundos
+// e só repete o trabalho quando a configuração muda.
+func (h *HTTP) assertionsFor(m domain.Monitor) ([]compiledAssertion, error) {
+	h.mu.Lock()
+	cached, ok := h.assertions[m.ID]
+	h.mu.Unlock()
+	if ok && cached.config == string(m.Config) {
+		return cached.compiled, nil
+	}
+
+	cfg, err := parseHTTPConfig(m.Config)
+	if err != nil {
+		return nil, err
+	}
+	compiled, err := compileAssertions(cfg.JSONAssertions)
+	if err != nil {
+		return nil, err
+	}
+
+	h.mu.Lock()
+	h.assertions[m.ID] = cachedAssertions{config: string(m.Config), compiled: compiled}
+	h.mu.Unlock()
+	return compiled, nil
 }
 
 // client monta um cliente com o timeout e a política de redirecionamento

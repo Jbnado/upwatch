@@ -1585,12 +1585,13 @@ components:
           description: |
             Configuração específica do tipo, validada no cadastro pelo
             checker correspondente e gravada na grafia canônica dos campos.
-            Para push, ver PushConfig. Para os tipos de protocolo, ver
-            RedisConfig, PostgresConfig e MySQLConfig: a senha é aceita na
-            escrita e nunca devolvida; numa edição, omiti-la mantém a
-            guardada, desde que o endereço não mude e o TLS não fique mais
-            fraco. No tipo http vale o mesmo para basic_auth_pass (a leitura
-            traz basic_auth_pass_set), e os cabeçalhos de credencial
+            Para push, ver PushConfig; para http, ver HTTPConfig. Para os
+            tipos de protocolo, ver RedisConfig, PostgresConfig e
+            MySQLConfig: a senha é aceita na escrita e nunca devolvida;
+            numa edição, omiti-la mantém a guardada, desde que o endereço
+            não mude e o TLS não fique mais fraco. No tipo http vale o
+            mesmo para basic_auth_pass (a leitura traz
+            basic_auth_pass_set), e os cabeçalhos de credencial
             (Authorization, Cookie e nomes com auth, token, key, secret,
             password, session ou credential) voltam com o valor "***";
             reenviar "***" mantém o valor guardado.
@@ -1600,6 +1601,91 @@ components:
         tags:
           type: array
           items: { type: string }
+
+    HTTPConfig:
+      type: object
+      description: Campo `config` de um monitor do tipo `http`.
+      properties:
+        method:
+          type: string
+          enum: [GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS]
+          default: GET
+        headers:
+          type: object
+          additionalProperties: { type: string }
+          description: |
+            Cabeçalhos de credencial (Authorization, Cookie e nomes com auth,
+            token, key, secret, password, session ou credential) voltam com
+            o valor "***"; reenviar "***" mantém o valor guardado.
+        body: { type: string }
+        expect_status:
+          type: array
+          items: { type: integer, minimum: 100, maximum: 599 }
+          description: Códigos aceitos. Vazio aceita qualquer 2xx.
+        body_contains: { type: string }
+        body_not_contains: { type: string }
+        body_regex:
+          type: string
+          description: Expressão regular (sintaxe RE2), validada no cadastro
+        json_assertions:
+          type: array
+          items: { $ref: "#/components/schemas/JSONAssertion" }
+          description: |
+            Condições sobre o corpo interpretado como JSON. Todas precisam
+            valer. Corpo que não é JSON, ou maior que o limite de leitura de
+            1 MiB, derruba o monitor com a causa explicada.
+        follow_redirects: { type: boolean, default: true }
+        skip_tls_verify: { type: boolean, default: false }
+        basic_auth_user: { type: string }
+        basic_auth_pass:
+          type: string
+          writeOnly: true
+          description: |
+            Nunca devolvida; a leitura traz basic_auth_pass_set. Omiti-la
+            na edição mantém a guardada, desde que o endereço não mude e a
+            verificação do certificado continue ligada.
+        basic_auth_pass_set:
+          type: boolean
+          readOnly: true
+          description: Existe senha de basic auth guardada.
+
+    JSONAssertion:
+      type: object
+      required: [path, op]
+      description: |
+        Uma condição sobre um valor do corpo JSON. Asserção inválida é
+        recusada no cadastro com 400.
+      properties:
+        path:
+          type: string
+          maxLength: 512
+          description: |
+            Subconjunto de JSONPath: `$`, `$.chave`, `$.lista[0].chave` e
+            `$["chave com espaço"]`. Sem filtros, wildcards nem fatias —
+            cada caminho aponta para no máximo um valor.
+          example: $.queue_lag
+        op:
+          type: string
+          enum: [eq, ne, lt, lte, gt, gte, contains, exists, absent]
+          description: |
+            `eq` e `ne` comparam valor e tipo (`"100"` não é igual a `100`;
+            números comparam pelo valor, `340` é igual a `340.0`).
+            `lt`, `lte`, `gt` e `gte` só entre números. `contains` procura
+            um trecho num texto ou um elemento numa lista. `exists` passa
+            se o caminho existir, mesmo com valor null; `absent` passa se
+            ele não existir. Caminho ausente é diferente de qualquer valor:
+            `ne` passa e `eq` com null reprova.
+        value:
+          description: |
+            Qualquer valor JSON. Obrigatório para todos os operadores menos
+            `exists` e `absent`, que o recusam; número para `lt`, `lte`,
+            `gt` e `gte`. Números no valor precisam caber exatos num
+            float64 (sobreviver a ida e volta pela menor grafia), ter até
+            100 caracteres e expoente entre -10000 e 10000.
+      example:
+        path: $.queue_lag
+        op: lt
+        value: 100
 
     Monitor:
       allOf:

@@ -24,7 +24,9 @@ conta criada sem autenticação; depois dela, o cadastro fecha.
 **Verifica** por HTTP, TCP, ICMP, DNS, TLS, sinal do próprio serviço
 (push, para tarefas agendadas e processos sem porta exposta) e pelo
 protocolo de Redis, PostgreSQL e MySQL. O intervalo vai de cinco segundos
-em diante, por monitor.
+em diante, por monitor. No HTTP, além do código de resposta, confere
+valores do corpo JSON — veja
+[Conferindo o corpo JSON](#conferindo-o-corpo-json).
 
 **Guarda meses sem guardar meses de dados crus.** As batidas duram uma
 semana; depois viram agregado horário e diário, com percentis exatos
@@ -131,6 +133,66 @@ sentidos.
 # Token de acesso: Ajustes → Tokens de acesso
 curl -H "Authorization: Bearer upw_..." http://localhost:8080/api/v1/monitors
 ```
+
+## Conferindo o corpo JSON
+
+Um health que responde 200 com `{"db":"down"}` está fora do ar, e o código
+de resposta não diz isso. Em `json_assertions` você declara o que precisa
+valer no corpo:
+
+```json
+{
+  "json_assertions": [
+    { "path": "$.db", "op": "eq", "value": "up" },
+    { "path": "$.queue_lag", "op": "lt", "value": 100 },
+    { "path": "$.workers[0].alive", "op": "exists" }
+  ]
+}
+```
+
+Todas precisam passar. Quando uma falha, a causa no aviso diz qual e o que
+foi encontrado: `$.queue_lag = 340, esperado < 100`. Como a causa vai
+para chat e webhook, texto encontrado — que pode ser um token ou um
+e-mail — aparece só como tamanho (`$.status = texto de 12 caracteres,
+esperado contém "ok"`), e lista e objeto só como contagem; em `eq` e `ne`
+contra um texto curto, a causa diz só `$.db diferente do esperado,
+esperado = "up"`. Números, booleanos e `null` são mostrados. O valor
+esperado é cortado em 80 caracteres.
+
+| Operador | Passa quando |
+|---|---|
+| `eq`, `ne` | o valor é (ou não é) igual, **com o mesmo tipo**: `"100"` não é `100` |
+| `lt`, `lte`, `gt`, `gte` | a comparação vale; só entre números |
+| `contains` | o texto contém o trecho, ou a lista contém o elemento |
+| `exists` | o caminho existe, mesmo com valor `null`; não leva `value` |
+| `absent` | o caminho não existe; não leva `value` |
+
+Caminho ausente é diferente de qualquer valor, `null` incluído: `ne` passa
+quando o campo não está lá, e `eq` com `null` reprova. Para exigir que um
+campo não exista, use `absent`; para exigir que exista com valor `null`,
+`eq` com `null`.
+
+Números comparam pelo valor e sem passar por ponto flutuante: `340` é igual
+a `340.0`, e um id acima de 2^53 encontrado no corpo não se confunde com o
+vizinho. O valor esperado, porém, precisa caber exato num float64 — é como
+a interface o lê, e `9007199254740993` voltaria como `…992` na próxima
+gravação pela tela. Números com mais de 100 caracteres ou expoente fora de
+±10000 não entram em comparação: no cadastro são recusados, e no corpo
+derrubam o monitor com a causa "número fora da faixa comparável".
+
+O caminho é um subconjunto pequeno de JSONPath — `$`, `$.chave`,
+`$.lista[0].chave` e `$["chave com espaço"]` — sem filtros, wildcards nem
+fatias. Cada caminho aponta para no máximo um valor, então `eq` nunca
+precisa decidir entre "todos" e "algum".
+
+Caminho mal formado, operador desconhecido e `lt` contra texto são
+recusados no cadastro, não na execução. Um corpo que não é JSON — a página
+de erro HTML do proxy na frente da API, o caso mais comum — derruba o
+monitor com essa causa. O corpo é lido até 1 MiB; um JSON maior que isso
+chega cortado, e a causa diz que o motivo é o limite, não o alvo.
+
+Na interface, fica em "conferir valores do corpo JSON", no cadastro do
+monitor HTTP.
 
 ## Webhook
 

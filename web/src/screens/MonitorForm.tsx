@@ -3,6 +3,16 @@ import { api } from "../api/client";
 import { ApiError, type MonitorInput, type MonitorType } from "../api/types";
 import { Alert, Button, Field, Input, NumberInput, Select, TextLink } from "../components/ui";
 import { fusoLocal, lerPush, montarPushConfig, type AgendaPush } from "../lib/push-config";
+import {
+  OPERADORES,
+  aplicarAssercoes,
+  lerAssercoes,
+  linhaVazia,
+  montarAssercoes,
+  semValor,
+  type LinhaAssercao,
+  type Operador,
+} from "../lib/json-assertions";
 import { navigate } from "../lib/router";
 import { ehProtocolo, lerProtocolo, montarProtocolo, protocoloVazio } from "../lib/protocol-config";
 import { ProtocolFields } from "./ProtocolFields";
@@ -115,6 +125,7 @@ export function MonitorForm({ id }: { id?: number }) {
   // "produção, api" e sair do campo é mais rápido que apertar Enter a
   // cada etiqueta, e o servidor normaliza o que chegar.
   const [tags, setTags] = useState("");
+  const [assercoes, setAssercoes] = useState<LinhaAssercao[]>([linhaVazia()]);
 
   const editando = id !== undefined;
   const tipo = TIPOS.find((t) => t.value === form.type)!;
@@ -138,6 +149,7 @@ export function MonitorForm({ id }: { id?: number }) {
       setAgenda(push.agenda);
       if (ehProtocolo(m.type)) setProtocolo(lerProtocolo(m.type, m.config));
       setTags((m.tags ?? []).join(", "));
+      setAssercoes(lerAssercoes(m.config));
     });
   }, [id]);
 
@@ -158,8 +170,21 @@ export function MonitorForm({ id }: { id?: number }) {
     setErro(null);
     setCampoErro(null);
 
-    let config = form.type === "push" ? montarPushConfig(pushToken, agenda) : form.config;
-    if (ehProtocolo(form.type)) {
+    let config = form.config;
+    if (form.type === "push") {
+      config = montarPushConfig(pushToken, agenda);
+    } else if (form.type === "http") {
+      // Recusa antes de enviar para o erro apontar a linha: o servidor
+      // responderia "config inválida", sem dizer qual asserção.
+      const montado = montarAssercoes(assercoes);
+      if (montado.erro) {
+        setErro(montado.erro);
+        setCampoErro("json_assertions");
+        setEnviando(false);
+        return;
+      }
+      config = aplicarAssercoes(form.config, montado.assercoes!);
+    } else if (ehProtocolo(form.type)) {
       const r = montarProtocolo(form.type, protocolo);
       if (r.erro) {
         setErro(r.erro.msg);
@@ -366,6 +391,14 @@ export function MonitorForm({ id }: { id?: number }) {
           </Field>
         </div>
 
+        {form.type === "http" && (
+          <AssercoesJSON
+            linhas={assercoes}
+            onLinhas={setAssercoes}
+            erro={erroDe("json_assertions") ?? erroDe("config")}
+          />
+        )}
+
         <Field
           label="etiquetas"
           hint="Separadas por vírgula. Agrupam o painel — produção, homolog, o time responsável."
@@ -387,6 +420,118 @@ export function MonitorForm({ id }: { id?: number }) {
           </Button>
         </div>
       </form>
+    </div>
+  );
+}
+
+/**
+ * AssercoesJSON edita as condições sobre o corpo JSON da resposta.
+ *
+ * Fechado por padrão, como os campos avançados do canal: a maioria dos
+ * alvos só precisa do código de resposta. Abre sozinho quando o monitor já
+ * tem asserções, para quem edita ver o que está valendo.
+ */
+function AssercoesJSON({
+  linhas,
+  onLinhas,
+  erro,
+}: {
+  linhas: LinhaAssercao[];
+  onLinhas: (linhas: LinhaAssercao[]) => void;
+  erro?: string;
+}) {
+  const temAlguma = linhas.some((l) => l.caminho.trim() !== "");
+  // null enquanto a pessoa não mexe: aí a seção segue o conteúdo. Depois
+  // do primeiro clique, a escolha dela vale — exceto com erro, que nunca
+  // fica escondido.
+  const [aberto, setAberto] = useState<boolean | null>(null);
+  const visivel = (aberto ?? temAlguma) || erro !== undefined;
+
+  function alterar(i: number, campo: keyof LinhaAssercao, valor: string) {
+    const proximo = linhas.map((l, j) => (j === i ? { ...l, [campo]: valor } : l));
+
+    // Uma linha vazia sempre sobra no fim, para nunca haver um passo entre
+    // querer outra asserção e ter onde digitá-la.
+    const ultima = proximo[proximo.length - 1];
+    if (!ultima || ultima.caminho.trim() !== "") proximo.push(linhaVazia());
+    onLinhas(proximo);
+  }
+
+  function remover(i: number) {
+    const proximo = linhas.filter((_, j) => j !== i);
+    onLinhas(proximo.length > 0 ? proximo : [linhaVazia()]);
+  }
+
+  return (
+    <div className="flex flex-col gap-4 border-t border-line pt-4">
+      <TextLink onClick={() => setAberto(!visivel)} className="self-start">
+        {visivel ? "− " : "+ "}
+        conferir valores do corpo JSON
+      </TextLink>
+
+      {visivel && (
+        <div className="flex flex-col gap-1.5">
+          <span className="text-small text-ink-3">
+            Todas precisam valer. O caminho começa em <code className="tabular">$</code>:{" "}
+            <code className="tabular">$.db</code>, <code className="tabular">$.filas[0].atraso</code>
+            , <code className="tabular">$["chave com espaço"]</code>. No valor, números,{" "}
+            <code className="tabular">true</code>, <code className="tabular">false</code> e{" "}
+            <code className="tabular">null</code> valem como tais; o resto é texto — use aspas para
+            comparar <code className="tabular">"100"</code> como texto.
+          </span>
+
+          <ul className="mt-1 flex flex-col gap-2">
+            {linhas.map((linha, i) => (
+              <li key={i} className="flex gap-2">
+                <Input
+                  value={linha.caminho}
+                  onChange={(e) => alterar(i, "caminho", e.target.value)}
+                  placeholder="$.queue_lag"
+                  className="tabular flex-1"
+                  aria-label={`caminho da asserção ${i + 1}`}
+                />
+                <div className="w-40 shrink-0">
+                  <Select
+                    value={linha.operador}
+                    onChange={(e) => alterar(i, "operador", e.target.value as Operador)}
+                    aria-label={`operador da asserção ${i + 1}`}
+                  >
+                    {OPERADORES.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+                {!semValor(linha.operador) && (
+                  <Input
+                    value={linha.valor}
+                    onChange={(e) => alterar(i, "valor", e.target.value)}
+                    placeholder="100"
+                    className="tabular flex-1"
+                    aria-label={`valor da asserção ${i + 1}`}
+                  />
+                )}
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => remover(i)}
+                  className="shrink-0"
+                  aria-label={`remover asserção ${i + 1}`}
+                >
+                  ×
+                </Button>
+              </li>
+            ))}
+          </ul>
+
+          {erro && (
+            <span role="alert" className="text-small text-down">
+              {erro}
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 }

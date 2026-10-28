@@ -12,6 +12,7 @@ import (
 
 	"github.com/Jbnado/upwatch/internal/api"
 	"github.com/Jbnado/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/checker"
 )
 
 // spec é a parte da especificação que o teste examina.
@@ -162,6 +163,45 @@ func TestOpenAPIDefinesCoreSchemas(t *testing.T) {
 		if _, ok := parsed.Comps.Schemas[name]; !ok {
 			t.Errorf("the spec has no %q schema", name)
 		}
+	}
+}
+
+// A lista de operadores existe em dois lugares: no checker, que decide, e
+// na especificação, que é de onde um script descobre o que pode mandar.
+// Sem este teste, um operador novo no checker fica invisível para quem
+// gera cliente, e um removido continua prometido na documentação.
+func TestOpenAPIJSONAssertionOperatorsMatchChecker(t *testing.T) {
+	s := newServer(t)
+	parsed := fetchSpec(t, s)
+
+	schema, ok := parsed.Comps.Schemas["JSONAssertion"].(map[string]any)
+	if !ok {
+		t.Fatal("the spec has no \"JSONAssertion\" schema")
+	}
+	props, _ := schema["properties"].(map[string]any)
+	op, _ := props["op"].(map[string]any)
+	enum, _ := op["enum"].([]any)
+
+	var documented []string
+	for _, v := range enum {
+		documented = append(documented, v.(string))
+	}
+	sort.Strings(documented)
+
+	want := checker.JSONAssertionOperators()
+	sort.Strings(want)
+
+	if strings.Join(documented, ",") != strings.Join(want, ",") {
+		t.Errorf("documented operators = %v, checker accepts %v", documented, want)
+	}
+
+	httpCfg, ok := parsed.Comps.Schemas["HTTPConfig"].(map[string]any)
+	if !ok {
+		t.Fatal("the spec has no \"HTTPConfig\" schema")
+	}
+	httpProps, _ := httpCfg["properties"].(map[string]any)
+	if _, ok := httpProps["json_assertions"]; !ok {
+		t.Error("HTTPConfig does not document json_assertions")
 	}
 }
 
