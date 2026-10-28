@@ -385,7 +385,7 @@ function Rodape({ view }: { view: PublicView }) {
           que permite ligar num canal de chat sem intermediário. */}
       <a
         href={api.feedUrl(view.slug)}
-        className="pressable underline decoration-line-strong hover:decoration-ink active:text-ink-2"
+        className="pressable text-action underline decoration-line-strong hover:decoration-ink active:text-ink-2"
       >
         Acompanhar por Atom
       </a>

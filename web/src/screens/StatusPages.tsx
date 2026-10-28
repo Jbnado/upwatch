@@ -284,7 +284,7 @@ export function StatusPageAdmin({ id }: { id: number }) {
               href={page.default ? "/status" : `/status/${page.slug}`}
               target="_blank"
               rel="noreferrer"
-              className="pressable tabular text-small text-ink-3 underline decoration-line-strong hover:decoration-ink"
+              className="pressable text-action tabular text-small text-ink-3 underline decoration-line-strong hover:decoration-ink"
             >
               {page.default ? "/status" : `/status/${page.slug}`} ↗
             </a>

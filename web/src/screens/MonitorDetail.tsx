@@ -382,7 +382,7 @@ function BoxCause({ raw }: { raw: string }) {
             type="button"
             aria-expanded={inteiro}
             onClick={() => setInteiro((v) => !v)}
-            className="pressable shrink-0 rounded-sm underline decoration-line-strong hover:decoration-ink"
+            className="pressable text-action shrink-0 rounded-sm underline decoration-line-strong hover:decoration-ink"
           >
             {inteiro ? "recolher" : "texto completo"}
           </button>
@@ -759,7 +759,7 @@ function EventRow({
             type="button"
             aria-expanded={aberto}
             onClick={() => onToggle(!aberto)}
-            className="pressable rounded-sm text-left hover:underline"
+            className="pressable block w-full rounded-sm text-left hover:underline"
           >
             {texto}
           </button>
@@ -822,7 +822,7 @@ function EventGroup({
       <button
         type="button"
         onClick={() => setInteiro((v) => ({ ...v, [lado]: true }))}
-        className="pressable rounded-sm text-small text-ink-2 underline decoration-line-strong hover:decoration-ink"
+        className="pressable text-action rounded-sm text-small text-ink-2 underline decoration-line-strong hover:decoration-ink"
       >
         mostrar as outras {n} mais {lado}
       </button>
