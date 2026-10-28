@@ -3,13 +3,16 @@ package api
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/Jbnado/upwatch/internal/auth"
 	"github.com/Jbnado/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/store"
 )
 
 // eventBuffer é quantos eventos um assinante lento acumula antes de
@@ -22,6 +25,19 @@ const eventBuffer = 32
 
 // keepAliveInterval evita que intermediários encerrem a conexão ociosa.
 const keepAliveInterval = 25 * time.Second
+
+// eventsRecheckInterval é de quanto em quanto tempo o fluxo reconfere a
+// credencial. O fluxo dura dias numa aba esquecida; sem reconferir, uma
+// sessão encerrada ou um token revogado continuavam recebendo eventos
+// até alguém fechar a aba.
+const eventsRecheckInterval = 60 * time.Second
+
+// scopeCacheTTL é por quanto tempo o escopo resolvido serve aos eventos
+// seguintes. Reler a conta e a árvore de grupos a cada evento custava
+// duas consultas por evento por aba — justamente no momento em que muita
+// coisa muda junto. Alguns segundos de atraso para uma concessão
+// retirada valer no fluxo aberto é o preço, e é pequeno.
+const scopeCacheTTL = 5 * time.Second
 
 // event é uma notificação enviada à interface.
 type event struct {
@@ -130,32 +146,56 @@ func (a *API) handleEvents(w http.ResponseWriter, r *http.Request) {
 	events, unsubscribe := a.events.subscribe()
 	defer unsubscribe()
 
+	ctx := r.Context()
 	conta := mustUser(r)
+	visao, resolvidaEm := viewerFrom(r), a.clock.Now()
 
 	keepAlive := time.NewTicker(keepAliveInterval)
 	defer keepAlive.Stop()
 
+	reconferir := a.clock.NewTimer(eventsRecheckInterval)
+	defer reconferir.Stop()
+
 	for {
 		select {
-		case <-r.Context().Done():
+		case <-ctx.Done():
 			return
+
+		case <-reconferir.C():
+			// A credencial da requisição, de novo: sessão encerrada, token
+			// revogado ou conta apagada fecham o fluxo. Erro de banco não
+			// fecha — derrubar todas as abas num soluço do banco faria
+			// todas reconectarem juntas.
+			u, err := a.resolveUser(r)
+			if errors.Is(err, auth.ErrUnauthenticated) {
+				return
+			}
+			if err == nil {
+				if v, err := a.resolveViewer(ctx, u); err == nil {
+					visao, resolvidaEm = v, a.clock.Now()
+				}
+			}
+			reconferir.Reset(eventsRecheckInterval)
 
 		case e, open := <-events:
 			if !open {
 				return
 			}
-			// O escopo é relido a cada evento, e não guardado na conexão:
-			// uma concessão retirada, ou uma conta apagada, valem para o
-			// fluxo já aberto, que pode durar dias numa aba esquecida.
-			atual, err := a.store.Users().Get(r.Context(), conta.ID)
-			if err != nil {
-				return
+			// O escopo não fica guardado para sempre: uma concessão
+			// retirada, ou uma conta apagada, valem para o fluxo aberto
+			// depois de scopeCacheTTL.
+			if a.clock.Now().Sub(resolvidaEm) >= scopeCacheTTL {
+				atual, err := a.store.Users().Get(ctx, conta.ID)
+				if errors.Is(err, store.ErrNotFound) {
+					return
+				}
+				if err == nil {
+					if v, err := a.resolveViewer(ctx, atual); err == nil {
+						visao, resolvidaEm = v, a.clock.Now()
+					}
+				}
 			}
-			v, err := a.resolveViewer(r.Context(), atual)
-			if err != nil {
-				continue
-			}
-			e, ok := e.visibleTo(v.access)
+			e, ok := e.visibleTo(visao.access)
 			if !ok {
 				continue
 			}
