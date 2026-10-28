@@ -42,10 +42,11 @@ medição" em vez de "fora do ar". Essa sonda só ganha esse poder depois
 de provar que funciona — uma sonda bloqueada por firewall silenciaria
 todos os alertas para sempre.
 
-**Avisa** por webhook, Discord e Slack, com um botão de teste em cada
-canal. Descobrir que o alerta não chega durante a queda é descobrir
-tarde. O webhook genérico aceita cabeçalhos próprios e deixa você
-escolher a forma do corpo — veja [Webhook](#webhook).
+**Avisa** por webhook, Discord, Slack, [e-mail](#e-mail) e [ntfy](#ntfy),
+com um botão de teste em cada canal. Descobrir que o alerta não chega
+durante a queda é descobrir tarde. O webhook genérico aceita cabeçalhos
+próprios e deixa você escolher a forma do corpo — veja
+[Webhook](#webhook).
 
 **Agrupa por etiqueta.** Homolog e produção lado a lado sem virar uma
 lista única de quarenta linhas: etiquete os alvos e o painel oferece
@@ -206,6 +207,67 @@ corpo deles é ditado pelo destino.
 
 Os campos avançados também estão na interface, em Ajustes → Canais de
 aviso, atrás de "cabeçalhos e formato do corpo".
+
+## E-mail
+
+O canal `email` envia por SMTP. Na API, a configuração é:
+
+```json
+{
+  "host": "smtp.exemplo.com",
+  "port": 587,
+  "security": "starttls",
+  "username": "alertas@exemplo.com",
+  "password": "…",
+  "from": "UpWatch <alertas@exemplo.com>",
+  "to": ["plantao@exemplo.com", "infra@exemplo.com"]
+}
+```
+
+`security` é `starttls` (padrão), `tls` — o TLS implícito da porta 465 —
+ou `none`. Sem `port`, vale 587, 465 ou 25, conforme o modo. Com
+`starttls`, um servidor que não oferece STARTTLS faz a entrega falhar em
+vez de seguir em claro, e `none` só é aceito sem usuário e senha: serve
+para o relé local, e não deixa a senha atravessar a rede aberta. O
+certificado do servidor é sempre validado. Quando o servidor anuncia só
+AUTH LOGIN, como o Microsoft 365, ele é usado no lugar de PLAIN.
+
+O assunto é sempre `[UpWatch] <monitor>: <estado>` — `fora do ar`,
+`no ar`, `degradado` ou `sem medição` —, para o cliente de e-mail agrupar
+e uma regra de caixa de entrada reconhecer o alerta. O corpo vai em texto
+e em HTML, com a causa, o alvo, o horário e, na volta, quanto tempo a
+queda durou. Nome e causa são escapados no HTML: o que o alvo devolve
+não vira marcação no e-mail.
+
+O botão de teste diz por extenso o que deu errado — usuário e senha
+recusados, certificado não confiável, porta que esperava outro modo de
+TLS.
+
+## ntfy
+
+O canal `ntfy` publica no [ntfy](https://ntfy.sh), que leva o alerta ao
+celular sem conta: o app assina um tópico e recebe a notificação push.
+
+```json
+{
+  "server": "https://ntfy.sh",
+  "topic": "upwatch-alertas-x7k2",
+  "token": "tk_…"
+}
+```
+
+Sem `server`, vale o público. `token` é opcional, para servidor próprio
+com controle de acesso, e vai como `Authorization: Bearer`. No servidor
+público, quem souber o nome do tópico recebe os avisos — escolha um
+difícil de adivinhar.
+
+A queda chega com prioridade 5, a máxima; a volta e o degradado, com
+prioridade 3. A mesma urgência para tudo ensinaria a ignorar tudo. O título é
+`<monitor>: <estado>`, e cada estado tem seu ícone.
+
+A senha do SMTP e o token do ntfy, como a URL dos webhooks, nunca voltam
+nas leituras da API. Para trocá-los, o `PUT /api/v1/channels/{id}` leva
+a configuração inteira de novo.
 
 ## Página pública de estado
 

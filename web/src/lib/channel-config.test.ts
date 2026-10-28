@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { montarConfig, type LinhaCabecalho } from "./channel-config";
+import {
+  montarConfig,
+  montarConfigEmail,
+  montarConfigNtfy,
+  type EntradaEmail,
+  type LinhaCabecalho,
+} from "./channel-config";
 
 /**
  * A montagem da configuração do canal.
@@ -123,5 +129,105 @@ describe("montarConfig", () => {
     });
 
     expect(r.config?.headers).toEqual({ "X-Key": "segundo" });
+  });
+});
+
+const email = (parcial: Partial<EntradaEmail> = {}): EntradaEmail => ({
+  host: "smtp.exemplo.com",
+  porta: "",
+  seguranca: "starttls",
+  usuario: "",
+  senha: "",
+  remetente: "UpWatch <alertas@exemplo.com>",
+  destinatarios: "plantao@exemplo.com",
+  ...parcial,
+});
+
+describe("montarConfigEmail", () => {
+  it("monta o mínimo sem campos opcionais vazios", () => {
+    const r = montarConfigEmail(email());
+
+    expect(r.erro).toBeUndefined();
+    expect(r.config).toEqual({
+      host: "smtp.exemplo.com",
+      security: "starttls",
+      from: "UpWatch <alertas@exemplo.com>",
+      to: ["plantao@exemplo.com"],
+    });
+  });
+
+  // Lista de distribuição costuma ser colada de outro lugar, com vírgula,
+  // ponto e vírgula ou uma por linha. Exigir um formato só faria a pessoa
+  // reformatar à mão a lista que já tem.
+  it("aceita destinatários separados por vírgula, ponto e vírgula ou linha", () => {
+    const r = montarConfigEmail(
+      email({ destinatarios: " a@exemplo.com, b@exemplo.com;c@exemplo.com\n\n d@exemplo.com ," }),
+    );
+
+    expect(r.config?.to).toEqual(["a@exemplo.com", "b@exemplo.com", "c@exemplo.com", "d@exemplo.com"]);
+  });
+
+  it("recusa sem destinatário, apontando o campo", () => {
+    const r = montarConfigEmail(email({ destinatarios: " , ; " }));
+
+    expect(r.config).toBeUndefined();
+    expect(r.erro?.campo).toBe("destinatarios");
+  });
+
+  // Porta em branco segue o modo (587, 465 ou 25); mandar 0 ou "" faria
+  // o servidor tentar interpretar algo que ninguém escolheu.
+  it("só manda a porta quando preenchida, como número", () => {
+    expect(montarConfigEmail(email()).config).not.toHaveProperty("port");
+    expect(montarConfigEmail(email({ porta: "2525" })).config?.port).toBe(2525);
+  });
+
+  it("recusa porta que não é número de porta", () => {
+    for (const porta of ["abc", "0", "70000", "25.5"]) {
+      const r = montarConfigEmail(email({ porta }));
+      expect(r.erro?.campo, `aceitou ${porta}`).toBe("porta");
+    }
+  });
+
+  it("manda usuário e senha quando preenchidos", () => {
+    const r = montarConfigEmail(email({ usuario: "alertas", senha: "s3nha" }));
+
+    expect(r.config?.username).toBe("alertas");
+    expect(r.config?.password).toBe("s3nha");
+  });
+
+  // Senha com espaço nas pontas é senha válida; aparar trocaria a
+  // credencial e o erro de autenticação não teria explicação aparente.
+  it("não apara a senha", () => {
+    const r = montarConfigEmail(email({ usuario: "u", senha: " com espaço " }));
+
+    expect(r.config?.password).toBe(" com espaço ");
+  });
+});
+
+describe("montarConfigNtfy", () => {
+  it("monta só o tópico quando o resto está vazio", () => {
+    const r = montarConfigNtfy({ servidor: "", topico: "upwatch-alertas", token: "" });
+
+    expect(r.erro).toBeUndefined();
+    expect(r.config).toEqual({ topic: "upwatch-alertas" });
+  });
+
+  it("manda servidor e token quando preenchidos", () => {
+    const r = montarConfigNtfy({
+      servidor: " https://ntfy.exemplo.com ",
+      topico: " infra ",
+      token: "tk_abc",
+    });
+
+    expect(r.config).toEqual({ server: "https://ntfy.exemplo.com", topic: "infra", token: "tk_abc" });
+  });
+
+  // O celular assina o tópico pelo nome exato. Barra ou espaço publicariam
+  // em outro caminho, e o aviso não chegaria a ninguém.
+  it("recusa tópico com caractere que o ntfy não aceita", () => {
+    for (const topico of ["", "a/b", "meu topico", "ação"]) {
+      const r = montarConfigNtfy({ servidor: "", topico, token: "" });
+      expect(r.erro?.campo, `aceitou ${JSON.stringify(topico)}`).toBe("topico");
+    }
   });
 });

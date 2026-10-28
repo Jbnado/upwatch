@@ -1,5 +1,7 @@
 /** Tipos do contrato da API, espelhando internal/api/openapi.yaml. */
 
+import type { ConfigCanal, ConfigEmail, ConfigNtfy } from "../lib/channel-config";
+
 export type Status = "up" | "down" | "degraded" | "unknown";
 
 export type MonitorType = "http" | "tcp" | "icmp" | "dns" | "tls" | "push";
@@ -113,11 +115,12 @@ export type APIToken = {
 /** CreatedToken traz o segredo, que só aparece nesta resposta. */
 export type CreatedToken = APIToken & { token: string };
 
-export type ChannelType = "webhook" | "discord" | "slack";
+export type ChannelType = "webhook" | "discord" | "slack" | "email" | "ntfy";
 
 /**
- * A configuração nunca vem do servidor: ela contém a URL do webhook, que
- * é a credencial de quem pode publicar no canal.
+ * A configuração nunca vem do servidor: ela contém a URL do webhook, a
+ * senha do SMTP ou o token do ntfy — credenciais de quem pode publicar no
+ * canal.
  */
 export type Channel = {
   id: number;
@@ -132,11 +135,7 @@ export type ChannelInput = {
   name: string;
   type: ChannelType;
   enabled?: boolean;
-  config: {
-    url: string;
-    headers?: Record<string, string>;
-    template?: string;
-  };
+  config: ConfigCanal | ConfigEmail | ConfigNtfy;
 };
 
 export type Incident = {

@@ -685,15 +685,16 @@ paths:
                 properties:
                   items:
                     type: array
-                    items: { type: string, enum: [webhook, discord, slack] }
+                    items: { type: string, enum: [webhook, discord, slack, email, ntfy] }
 
   /api/v1/channels:
     get:
       tags: [alerts]
       summary: Lista os destinos de aviso
       description: |
-        A configuração nunca é devolvida: ela contém a URL do webhook, que
-        é a credencial de quem pode publicar no canal.
+        A configuração nunca é devolvida: ela contém a URL do webhook, a
+        senha do SMTP ou o token do ntfy - credenciais de quem pode
+        publicar no canal.
       responses:
         "200":
           description: Canais cadastrados
@@ -1510,11 +1511,12 @@ components:
       type: object
       description: |
         A configuração nunca aparece nesta representação: ela contém a URL
-        do webhook, que é a credencial de quem pode publicar no canal.
+        do webhook, a senha do SMTP ou o token do ntfy - credenciais de
+        quem pode publicar no canal.
       properties:
         id: { type: integer, format: int64 }
         name: { type: string }
-        type: { type: string, enum: [webhook, discord, slack] }
+        type: { type: string, enum: [webhook, discord, slack, email, ntfy] }
         enabled: { type: boolean }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
@@ -1524,52 +1526,124 @@ components:
       required: [name, type, config]
       properties:
         name: { type: string, maxLength: 80 }
-        type: { type: string, enum: [webhook, discord, slack] }
+        type: { type: string, enum: [webhook, discord, slack, email, ntfy] }
         enabled: { type: boolean, default: true }
         config:
+          description: |
+            A forma depende de type. webhook, discord e slack usam
+            WebhookChannelConfig; email usa EmailChannelConfig; ntfy usa
+            NtfyChannelConfig.
+
+            Senha, token e URL de webhook são credenciais e nunca voltam
+            nas leituras.
+          oneOf:
+            - $ref: "#/components/schemas/WebhookChannelConfig"
+            - $ref: "#/components/schemas/EmailChannelConfig"
+            - $ref: "#/components/schemas/NtfyChannelConfig"
+
+    WebhookChannelConfig:
+      type: object
+      description: Canais webhook, discord e slack.
+      required: [url]
+      properties:
+        url:
+          type: string
+          description: Destino da entrega
+        headers:
           type: object
-          required: [url]
-          properties:
-            url:
-              type: string
-              description: Destino da entrega
-            headers:
-              type: object
-              additionalProperties: { type: string }
-              description: Cabeçalhos extras, para destinos que exigem token próprio
-            template:
-              type: string
-              description: |
-                Modelo próprio da mensagem, compilado no cadastro para o
-                erro aparecer aqui e não durante o incidente.
+          additionalProperties: { type: string }
+          description: Cabeçalhos extras, para destinos que exigem token próprio
+        template:
+          type: string
+          description: |
+            Modelo próprio da mensagem, compilado no cadastro para o
+            erro aparecer aqui e não durante o incidente.
 
-                Campos disponíveis - Monitor, Status, Message, Duration,
-                At e Text.
-            body_template:
-              description: |
-                Forma do corpo inteiro, e não só da frase. Só no canal
-                webhook - discord e slack têm corpo ditado pelo destino e
-                recusam este campo no cadastro.
+            Campos disponíveis - Monitor, Status, Message, Duration,
+            At e Text.
+        body_template:
+          description: |
+            Forma do corpo inteiro, e não só da frase. Só no canal
+            webhook - discord e slack têm corpo ditado pelo destino e
+            recusam este campo no cadastro.
 
-                Qualquer objeto ou lista JSON. Em qualquer texto dentro
-                dele, os marcadores são substituídos - $monitor,
-                $monitor_id, $target, $status, $previous_status, $message,
-                $at, $duration_seconds e $text. Também vale ${nome}, e $$
-                escreve um cifrão literal.
+            Qualquer objeto ou lista JSON. Em qualquer texto dentro
+            dele, os marcadores são substituídos - $monitor,
+            $monitor_id, $target, $status, $previous_status, $message,
+            $at, $duration_seconds e $text. Também vale ${nome}, e $$
+            escreve um cifrão literal.
 
-                Sozinho, o marcador entrega o valor com o tipo dele, de
-                modo que $duration_seconds chega como número. Dentro de um
-                texto, compõe a frase.
+            Sozinho, o marcador entrega o valor com o tipo dele, de
+            modo que $duration_seconds chega como número. Dentro de um
+            texto, compõe a frase.
 
-                Sem este campo, o corpo é o envelope padrão com todos os
-                campos - quem já integrou contra ele não muda.
-              oneOf:
-                - type: object
-                - type: array
-              example:
-                event: $status
-                service: $monitor
-                outage_seconds: $duration_seconds
+            Sem este campo, o corpo é o envelope padrão com todos os
+            campos - quem já integrou contra ele não muda.
+          oneOf:
+            - type: object
+            - type: array
+          example:
+            event: $status
+            service: $monitor
+            outage_seconds: $duration_seconds
+
+    EmailChannelConfig:
+      type: object
+      description: |
+        Canal email, por SMTP. O assunto é sempre
+        "[UpWatch] <monitor>: <estado>" - fora do ar, no ar, degradado ou
+        sem medição - para agrupar no cliente de e-mail e casar com regra
+        de caixa de entrada. O corpo vai em texto e HTML, com causa,
+        horário e, na volta, quanto tempo durou a queda.
+      required: [host, from, to]
+      properties:
+        host: { type: string, example: smtp.exemplo.com }
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+          description: Vazia segue o modo - 587 em starttls, 465 em tls, 25 em none.
+        security:
+          type: string
+          enum: [starttls, tls, none]
+          default: starttls
+          description: |
+            starttls exige que o servidor ofereça STARTTLS - sem ele, a
+            entrega falha em vez de seguir em claro. tls é o TLS implícito
+            da porta 465. none só é aceito sem usuário e senha, para relé
+            local.
+        username: { type: string }
+        password:
+          type: string
+          writeOnly: true
+          description: Segredo. Nunca volta nas leituras.
+        from: { type: string, example: "UpWatch <alertas@exemplo.com>" }
+        to:
+          type: array
+          minItems: 1
+          items: { type: string, example: plantao@exemplo.com }
+
+    NtfyChannelConfig:
+      type: object
+      description: |
+        Canal ntfy, para alerta push no celular sem conta. A queda chega
+        com prioridade 5 e a volta e o degradado com 3; o título é
+        "<monitor>: <estado>".
+      required: [topic]
+      properties:
+        server:
+          type: string
+          default: https://ntfy.sh
+          description: Servidor público ou próprio, http ou https.
+        topic:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{1,64}$"
+        token:
+          type: string
+          writeOnly: true
+          description: |
+            Token de acesso, para servidor com controle de acesso. Vai
+            como Authorization Bearer. Segredo - nunca volta nas leituras.
 
     Incident:
       type: object

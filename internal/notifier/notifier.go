@@ -41,22 +41,42 @@ type Notifier interface {
 	Send(ctx context.Context, n Notification) error
 }
 
+// canais é o registro de tipos atendidos, na ordem em que a interface os
+// oferece.
+//
+// Build e Types leem daqui: com duas listas, um tipo acabaria oferecido na
+// tela e recusado ao salvar, ou aceito pela API e inalcançável pela tela.
+// Um canal novo é uma linha aqui e um construtor.
+var canais = []struct {
+	tipo string
+	novo func(json.RawMessage) (Notifier, error)
+}{
+	{"webhook", NewWebhook},
+	{"discord", NewDiscord},
+	{"slack", NewSlack},
+	{"email", NewEmail},
+	{"ntfy", NewNtfy},
+}
+
 // Build monta o notificador do tipo pedido.
 func Build(kind string, config json.RawMessage) (Notifier, error) {
-	switch strings.ToLower(strings.TrimSpace(kind)) {
-	case "webhook":
-		return NewWebhook(config)
-	case "discord":
-		return NewDiscord(config)
-	case "slack":
-		return NewSlack(config)
-	default:
-		return nil, fmt.Errorf("notifier: tipo de canal desconhecido %q", kind)
+	tipo := strings.ToLower(strings.TrimSpace(kind))
+	for _, c := range canais {
+		if c.tipo == tipo {
+			return c.novo(config)
+		}
 	}
+	return nil, fmt.Errorf("notifier: tipo de canal desconhecido %q", kind)
 }
 
 // Types lista os canais atendidos, para a interface montar a escolha.
-func Types() []string { return []string{"webhook", "discord", "slack"} }
+func Types() []string {
+	tipos := make([]string, 0, len(canais))
+	for _, c := range canais {
+		tipos = append(tipos, c.tipo)
+	}
+	return tipos
+}
 
 // ---------- mensagem ----------
 
@@ -90,6 +110,23 @@ func Render(n Notification) string {
 			return fmt.Sprintf("%s voltou depois de %s", nome, humanDuration(n.Event.Duration))
 		}
 		return fmt.Sprintf("%s voltou", nome)
+	}
+}
+
+// statusLabel é o estado em português, para título e assunto.
+//
+// Um lugar só: e-mail e ntfy dizendo o mesmo estado com palavras
+// diferentes fariam uma regra de caixa de entrada pegar um e não o outro.
+func statusLabel(s domain.Status) string {
+	switch s {
+	case domain.StatusDown:
+		return "fora do ar"
+	case domain.StatusUp:
+		return "no ar"
+	case domain.StatusDegraded:
+		return "degradado"
+	default:
+		return "sem medição"
 	}
 }
 
@@ -172,17 +209,29 @@ func renderWith(t *template.Template, n Notification) string {
 
 // ---------- transporte HTTP ----------
 
-// post entrega o corpo e trata a resposta.
-//
-// Status de erro vira erro de verdade para a fila poder repetir; engolir
-// faria a notificação sumir em silêncio, que é o pior desfecho possível
-// num sistema de alerta.
+// post entrega o corpo em JSON e trata a resposta.
 func post(ctx context.Context, url string, headers map[string]string, payload any) error {
 	corpo, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("notifier: preparando payload: %w", err)
 	}
+	return postRaw(ctx, url, headers, "application/json", corpo)
+}
 
+// statusError é a recusa do destino, com o código para quem quiser
+// explicá-la melhor que "respondeu 403".
+type statusError struct{ Code int }
+
+func (e *statusError) Error() string {
+	return fmt.Sprintf("notifier: o canal respondeu %d", e.Code)
+}
+
+// postRaw entrega um corpo já pronto e trata a resposta.
+//
+// Status de erro vira erro de verdade para a fila poder repetir; engolir
+// faria a notificação sumir em silêncio, que é o pior desfecho possível
+// num sistema de alerta.
+func postRaw(ctx context.Context, url string, headers map[string]string, contentType string, corpo []byte) error {
 	ctx, cancel := context.WithTimeout(ctx, sendTimeout)
 	defer cancel()
 
@@ -190,7 +239,7 @@ func post(ctx context.Context, url string, headers map[string]string, payload an
 	if err != nil {
 		return fmt.Errorf("notifier: montando requisição: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", contentType)
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
@@ -202,7 +251,7 @@ func post(ctx context.Context, url string, headers map[string]string, payload an
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("notifier: o canal respondeu %d", resp.StatusCode)
+		return &statusError{Code: resp.StatusCode}
 	}
 	return nil
 }

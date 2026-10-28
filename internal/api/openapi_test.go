@@ -11,6 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/Jbnado/upwatch/internal/api"
+	"github.com/Jbnado/upwatch/internal/notifier"
 )
 
 // spec é a parte da especificação que o teste examina.
@@ -160,6 +161,62 @@ func TestOpenAPIDefinesCoreSchemas(t *testing.T) {
 	for _, name := range []string{"Error", "User", "APIToken", "Monitor", "MonitorInput", "Heartbeat", "Rollup"} {
 		if _, ok := parsed.Comps.Schemas[name]; !ok {
 			t.Errorf("the spec has no %q schema", name)
+		}
+	}
+}
+
+// O tipo de canal está enumerado em três lugares da especificação, e quem
+// gera cliente a partir dela recusa o valor que não estiver lá. Canal novo
+// no notificador sem a especificação acompanhar seria um tipo que a API
+// aceita e o cliente gerado não consegue mandar.
+func TestOpenAPIChannelTypesFollowTheNotifier(t *testing.T) {
+	s := newServer(t)
+
+	resp := s.do(t, http.MethodGet, "/api/v1/openapi.yaml", nil)
+	raw, _ := io.ReadAll(resp.Body)
+
+	var doc struct {
+		Paths map[string]struct {
+			Get struct {
+				Responses map[string]struct {
+					Content map[string]struct {
+						Schema struct {
+							Properties map[string]struct {
+								Items struct {
+									Enum []string `yaml:"enum"`
+								} `yaml:"items"`
+							} `yaml:"properties"`
+						} `yaml:"schema"`
+					} `yaml:"content"`
+				} `yaml:"responses"`
+			} `yaml:"get"`
+		} `yaml:"paths"`
+		Components struct {
+			Schemas map[string]struct {
+				Properties map[string]struct {
+					Enum []string `yaml:"enum"`
+				} `yaml:"properties"`
+			} `yaml:"schemas"`
+		} `yaml:"components"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("the served spec is not valid YAML: %v", err)
+	}
+
+	want := append([]string(nil), notifier.Types()...)
+	sort.Strings(want)
+
+	enums := map[string][]string{
+		"GET /channel-types": doc.Paths["/api/v1/channel-types"].Get.Responses["200"].
+			Content["application/json"].Schema.Properties["items"].Items.Enum,
+		"Channel.type":      doc.Components.Schemas["Channel"].Properties["type"].Enum,
+		"ChannelInput.type": doc.Components.Schemas["ChannelInput"].Properties["type"].Enum,
+	}
+	for onde, got := range enums {
+		got = append([]string(nil), got...)
+		sort.Strings(got)
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("%s enum = %v, want %v", onde, got, want)
 		}
 	}
 }

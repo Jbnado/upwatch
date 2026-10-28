@@ -298,3 +298,50 @@ func TestBuildRejectsUnknownType(t *testing.T) {
 		t.Fatal("Build with an unknown type returned nil error, want an error")
 	}
 }
+
+func TestBuildResolvesEmailAndNtfy(t *testing.T) {
+	casos := map[string]string{
+		"email": `{"host":"smtp.exemplo.com","from":"a@exemplo.com","to":["b@exemplo.com"]}`,
+		"ntfy":  `{"topic":"upwatch-alertas"}`,
+	}
+	for tipo, cfg := range casos {
+		t.Run(tipo, func(t *testing.T) {
+			n, err := notifier.Build(tipo, json.RawMessage(cfg))
+			if err != nil {
+				t.Fatalf("Build(%q) returned unexpected error: %v", tipo, err)
+			}
+			if n == nil {
+				t.Fatalf("Build(%q) returned nil", tipo)
+			}
+		})
+	}
+}
+
+// A interface monta a escolha a partir de Types, e o cadastro passa por
+// Build. Um tipo listado que Build não conhece seria oferecido na tela e
+// recusado ao salvar; um que Build conhece e Types omite ficaria
+// inalcançável pela interface. Os dois saem da mesma lista.
+func TestTypesAndBuildAgree(t *testing.T) {
+	tipos := notifier.Types()
+	for _, esperado := range []string{"webhook", "discord", "slack", "email", "ntfy"} {
+		if !contem(tipos, esperado) {
+			t.Errorf("Types() = %v, missing %q", tipos, esperado)
+		}
+	}
+
+	for _, tipo := range tipos {
+		_, err := notifier.Build(tipo, json.RawMessage(`{}`))
+		if err != nil && strings.Contains(err.Error(), "desconhecido") {
+			t.Errorf("Types() lists %q but Build does not know it: %v", tipo, err)
+		}
+	}
+}
+
+func contem(lista []string, alvo string) bool {
+	for _, v := range lista {
+		if v == alvo {
+			return true
+		}
+	}
+	return false
+}
