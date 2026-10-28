@@ -149,6 +149,9 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 		checker.NewDNS(),
 		checker.NewICMP(),
 		checker.NewPush(st, real),
+		checker.NewRedis(),
+		checker.NewPostgres(),
+		checker.NewMySQL(),
 	)
 	if err != nil {
 		return nil, err

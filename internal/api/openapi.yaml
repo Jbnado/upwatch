@@ -1464,10 +1464,13 @@ components:
         name: { type: string }
         type:
           type: string
-          enum: [http, tcp, icmp, dns, tls, push]
+          enum: [http, tcp, icmp, dns, tls, push, redis, postgres, mysql]
         target:
           type: string
-          description: URL, host&#58;porta ou nome, conforme o tipo. Vazio para push.
+          description: |
+            URL, host:porta ou nome, conforme o tipo. Vazio para push.
+            Para redis, postgres e mysql é host:porta; a credencial vai
+            em config, nunca no endereço.
         interval_seconds:
           type: integer
           minimum: 5
@@ -1489,7 +1492,16 @@ components:
           type: object
           description: |
             Configuração específica do tipo, validada no cadastro pelo
-            checker correspondente.
+            checker correspondente e gravada na grafia canônica dos campos.
+            Para os tipos de protocolo, ver RedisConfig, PostgresConfig e
+            MySQLConfig: a senha é aceita na escrita e nunca devolvida;
+            numa edição, omiti-la mantém a guardada, desde que o endereço
+            não mude e o TLS não fique mais fraco. No tipo http vale o
+            mesmo para basic_auth_pass (a leitura traz
+            basic_auth_pass_set), e os cabeçalhos de credencial
+            (Authorization, Cookie e nomes com auth, token, key, secret,
+            password, session ou credential) voltam com o valor "***";
+            reenviar "***" mantém o valor guardado.
           additionalProperties: true
         parent_id: { type: integer, format: int64 }
         enabled: { type: boolean, default: true }
@@ -1505,6 +1517,93 @@ components:
             id: { type: integer, format: int64 }
             created_at: { type: string, format: date-time }
             updated_at: { type: string, format: date-time }
+
+    RedisConfig:
+      type: object
+      description: |
+        Configuração do monitor redis. Envia PING e avalia as asserções.
+        Recomenda-se um usuário de ACL só com os comandos usados
+        (+ping +info e os das asserções).
+      properties:
+        username: { type: string, description: Usuário de ACL (Redis 6+) }
+        password:
+          type: string
+          writeOnly: true
+          description: Nunca devolvida; a leitura traz password_set.
+        password_set:
+          type: boolean
+          readOnly: true
+          description: Existe senha guardada.
+        db: { type: integer, minimum: 0 }
+        tls: { type: boolean }
+        skip_tls_verify: { type: boolean }
+        max_used_memory_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Acusa queda quando used_memory passa disto. Zero desliga.
+        assertions:
+          type: array
+          maxItems: 10
+          items: { $ref: "#/components/schemas/RedisAssertion" }
+
+    RedisAssertion:
+      type: object
+      description: |
+        Condição numérica sobre um comando de leitura. Só a lista fechada
+        de comandos é aceita; o monitor não executa comando arbitrário.
+        Exemplo: SCARD rq:workers:default gte 1.
+      required: [command, op, value]
+      properties:
+        command:
+          type: string
+          enum: [SCARD, LLEN, GET, EXISTS, HGET, ZCARD, DBSIZE, INFO]
+        key: { type: string, description: Obrigatória exceto em DBSIZE e INFO }
+        field: { type: string, description: Campo do HGET ou do INFO }
+        section: { type: string, description: Seção do INFO (memory, clients...) }
+        op: { type: string, enum: [eq, ne, lt, lte, gt, gte] }
+        value: { type: number }
+
+    PostgresConfig:
+      type: object
+      description: |
+        Configuração do monitor postgres. Abre sessão e executa a consulta
+        numa transação somente leitura; a latência é a duração da consulta.
+        Recomenda-se um usuário somente leitura e sem acesso a dados.
+      required: [username]
+      properties:
+        username: { type: string }
+        password:
+          type: string
+          writeOnly: true
+          description: Nunca devolvida; a leitura traz password_set.
+        password_set: { type: boolean, readOnly: true }
+        database: { type: string }
+        sslmode:
+          type: string
+          enum: [disable, allow, prefer, require, verify-ca, verify-full]
+          default: prefer
+        query: { type: string, maxLength: 4096, default: SELECT 1 }
+
+    MySQLConfig:
+      type: object
+      description: |
+        Configuração do monitor mysql (MySQL ou MariaDB). Mesmo
+        comportamento do postgres.
+      required: [username]
+      properties:
+        username: { type: string }
+        password:
+          type: string
+          writeOnly: true
+          description: Nunca devolvida; a leitura traz password_set.
+        password_set: { type: boolean, readOnly: true }
+        database: { type: string }
+        tls:
+          type: string
+          enum: ["false", "true", skip-verify, preferred]
+          default: "false"
+        query: { type: string, maxLength: 4096, default: SELECT 1 }
 
     Channel:
       type: object

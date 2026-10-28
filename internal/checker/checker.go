@@ -40,6 +40,12 @@ type Checker interface {
 	ValidateConfig(cfg json.RawMessage) error
 }
 
+// TargetValidator é implementado pelo checker que tem regra própria
+// para o alvo, conferida no cadastro junto da configuração.
+type TargetValidator interface {
+	ValidateTarget(target string) error
+}
+
 // NetworkProbe informa se a rede do próprio host de monitoramento está
 // funcional.
 type NetworkProbe interface {
@@ -102,6 +108,11 @@ func (r *Registry) Validate(m domain.Monitor) error {
 	c, err := r.Get(m.Type)
 	if err != nil {
 		return err
+	}
+	if tv, ok := c.(TargetValidator); ok {
+		if err := tv.ValidateTarget(m.Target); err != nil {
+			return err
+		}
 	}
 	return c.ValidateConfig(m.Config)
 }

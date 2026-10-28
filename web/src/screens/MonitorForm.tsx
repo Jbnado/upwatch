@@ -3,6 +3,8 @@ import { api } from "../api/client";
 import { ApiError, type MonitorInput, type MonitorType } from "../api/types";
 import { Alert, Button, Field, Input, NumberInput, Select, TextLink } from "../components/ui";
 import { navigate } from "../lib/router";
+import { ehProtocolo, lerProtocolo, montarProtocolo, protocoloVazio } from "../lib/protocol-config";
+import { ProtocolFields } from "./ProtocolFields";
 
 /**
  * Cadastro e edição de alvo.
@@ -67,6 +69,27 @@ const TIPOS: Tipo[] = [
     ajuda: "O serviço avisa que está vivo. Para tarefas agendadas e processos sem porta exposta.",
     formato: "",
   },
+  {
+    value: "redis",
+    label: "Redis",
+    alvo: "cache.interno:6379",
+    ajuda: "Conecta e envia PING; pode conferir filas, conjuntos e memória.",
+    formato: "Máquina e porta, separadas por dois-pontos.",
+  },
+  {
+    value: "postgres",
+    label: "PostgreSQL",
+    alvo: "banco.interno:5432",
+    ajuda: "Entra no banco e executa uma consulta somente leitura.",
+    formato: "Máquina e porta, separadas por dois-pontos.",
+  },
+  {
+    value: "mysql",
+    label: "MySQL ou MariaDB",
+    alvo: "banco.interno:3306",
+    ajuda: "Entra no banco e executa uma consulta somente leitura.",
+    formato: "Máquina e porta, separadas por dois-pontos.",
+  },
 ];
 
 const VAZIO: MonitorInput = {
@@ -85,6 +108,7 @@ export function MonitorForm({ id }: { id?: number }) {
   const [campoErro, setCampoErro] = useState<string | null>(null);
   const [enviando, setEnviando] = useState(false);
   const [pushToken, setPushToken] = useState("");
+  const [protocolo, setProtocolo] = useState(protocoloVazio);
   // Texto livre separado por vírgula, não uma lista de fichas: digitar
   // "produção, api" e sair do campo é mais rápido que apertar Enter a
   // cada etiqueta, e o servidor normaliza o que chegar.
@@ -108,6 +132,7 @@ export function MonitorForm({ id }: { id?: number }) {
         config: m.config,
       });
       setPushToken(String(m.config?.["token"] ?? ""));
+      if (ehProtocolo(m.type)) setProtocolo(lerProtocolo(m.type, m.config));
       setTags((m.tags ?? []).join(", "));
     });
   }, [id]);
@@ -129,10 +154,22 @@ export function MonitorForm({ id }: { id?: number }) {
     setErro(null);
     setCampoErro(null);
 
+    let config = form.type === "push" ? { token: pushToken } : form.config;
+    if (ehProtocolo(form.type)) {
+      const r = montarProtocolo(form.type, protocolo);
+      if (r.erro) {
+        setErro(r.erro.msg);
+        setCampoErro(r.erro.campo);
+        setEnviando(false);
+        return;
+      }
+      config = r.config;
+    }
+
     const payload: MonitorInput = {
       ...form,
       tags: tags.split(",").map((t) => t.trim()).filter(Boolean),
-      config: form.type === "push" ? { token: pushToken } : form.config,
+      config,
     };
 
     try {
@@ -164,7 +201,9 @@ export function MonitorForm({ id }: { id?: number }) {
         {editando ? "Editar monitor" : "Novo monitor"}
       </h1>
 
-      {erro && !campoErro && <Alert>{erro}</Alert>}
+      {/* Erro de config não tem campo próprio na tela: a configuração é
+          montada a partir de vários. */}
+      {erro && (!campoErro || campoErro === "config") && <Alert>{erro}</Alert>}
 
       <form onSubmit={enviar} className="flex flex-col gap-4">
         <Field label="nome" hint="Como este alvo aparece no painel." error={erroDe("name")}>
@@ -211,6 +250,15 @@ export function MonitorForm({ id }: { id?: number }) {
               {`${location.origin}/api/v1/push/${pushToken}`}
             </code>
           </Field>
+        )}
+
+        {ehProtocolo(form.type) && (
+          <ProtocolFields
+            tipo={form.type}
+            valor={protocolo}
+            onChange={setProtocolo}
+            erroDe={erroDe}
+          />
         )}
 
         <div className="grid grid-cols-2 gap-4">

@@ -21,9 +21,10 @@ conta criada sem autenticação; depois dela, o cadastro fecha.
 
 ## O que ele faz
 
-**Verifica** por HTTP, TCP, ICMP, DNS, TLS e sinal do próprio serviço
-(push, para tarefas agendadas e processos sem porta exposta). O intervalo
-vai de cinco segundos em diante, por monitor.
+**Verifica** por HTTP, TCP, ICMP, DNS, TLS, sinal do próprio serviço
+(push, para tarefas agendadas e processos sem porta exposta) e pelo
+protocolo de Redis, PostgreSQL e MySQL. O intervalo vai de cinco segundos
+em diante, por monitor.
 
 **Guarda meses sem guardar meses de dados crus.** As batidas duram uma
 semana; depois viram agregado horário e diário, com percentis exatos
@@ -207,6 +208,66 @@ corpo deles é ditado pelo destino.
 Os campos avançados também estão na interface, em Ajustes → Canais de
 aviso, atrás de "cabeçalhos e formato do corpo".
 
+## Redis, PostgreSQL e MySQL
+
+Um Redis sem memória ou um PostgreSQL sem conexões livres aceitam TCP e,
+na prática, estão fora do ar. Os monitores desses tipos entram de verdade:
+
+- **Redis** envia `PING` (com usuário de ACL, senha e TLS opcionais) e,
+  se configurado, acusa quando `used_memory` passa de um limite. Aceita
+  também condições sobre comandos de leitura — só `SCARD`, `LLEN`, `GET`,
+  `EXISTS`, `HGET`, `ZCARD`, `DBSIZE` e `INFO`, nunca comando livre. Para
+  vigiar workers do RQ, por exemplo:
+
+  ```json
+  {"assertions": [
+    {"command": "SCARD", "key": "rq:workers:default", "op": "gte", "value": 1},
+    {"command": "LLEN",  "key": "rq:queue:default",   "op": "lt",  "value": 500}
+  ]}
+  ```
+
+  Sem worker, a causa do alerta diz `SCARD rq:workers:default = 0,
+  esperado >= 1`.
+
+- **PostgreSQL e MySQL** abrem sessão e executam uma consulta (padrão
+  `SELECT 1`) numa transação somente leitura; a latência é a duração da
+  consulta. A consulta começa com `SELECT`, `WITH`, `SHOW`, `VALUES` ou
+  `EXPLAIN`, só as 100 primeiras linhas são lidas, e o servidor recebe um
+  limite de tempo um pouco abaixo do timeout do monitor, para nada dela
+  seguir rodando lá depois. A causa de uma falha diz a etapa e o código
+  (`consulta: erro do servidor (SQLSTATE 22P02)`), nunca o texto do
+  servidor, que pode repetir dado lido; o texto vai para o log.
+
+**Use um usuário com o mínimo de acesso.** O UpWatch guarda a senha para
+verificar a cada minuto; ela não volta pela API nem aparece na causa de
+uma falha, mas o melhor segredo é o que não abre nada:
+
+```sql
+-- PostgreSQL: entra e não lê tabela nenhuma
+CREATE ROLE upwatch LOGIN PASSWORD '...';
+-- MySQL: só o direito de conectar
+CREATE USER 'upwatch'@'%' IDENTIFIED BY '...';
+```
+
+```
+# Redis: só os comandos que o monitor usa
+ACL SETUSER upwatch on >... ~rq:* -@all +ping +info +scard +llen
+```
+
+Ao editar o monitor, deixar a senha em branco mantém a guardada — exceto
+quando o endereço muda ou o TLS fica mais fraco: aí ela precisa ser
+informada de novo, para que a edição não sirva para levá-la a outro
+servidor ou a quem estiver no caminho. O mesmo vale para a senha do basic
+auth e para os cabeçalhos de credencial do monitor HTTP, que voltam pela
+API com o valor `***`.
+
+No PostgreSQL, um superusuário só roda a consulta padrão (`SELECT 1`);
+com consulta personalizada, o monitor cai com a causa "o usuário do
+monitor é superusuário". A transação somente leitura não o segura: ele
+grava arquivo no servidor com `SELECT lo_export(...)` mesmo dentro dela.
+O usuário acima, só com `LOGIN`, roda a consulta personalizada
+normalmente.
+
 ## Página pública de estado
 
 Em Ajustes → Páginas de estado. Marque uma como padrão e ela responde em
@@ -278,6 +339,10 @@ impede "banco plugável" de virar fachada. Para rodar contra PostgreSQL:
 ```bash
 UPWATCH_TEST_POSTGRES_DSN='postgres://...?sslmode=disable' go test ./internal/store/sqlstore/
 ```
+
+Os checkers de Redis, PostgreSQL e MySQL têm testes contra servidor real,
+ligados por `UPWATCH_TEST_REDIS_ADDR`, `UPWATCH_TEST_POSTGRES_DSN` e
+`UPWATCH_TEST_MYSQL_DSN` (ver [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 **Os testes de invasão da página pública** atacam a única superfície sem
 credencial: travessia de caminho em nove formas, injeção de SQL no slug,
