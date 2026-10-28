@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Jbnado/upwatch/internal/notifier"
 	"github.com/Jbnado/upwatch/internal/notifier/smtptest"
@@ -373,5 +374,50 @@ func TestEmailConnectionFailureIsTransient(t *testing.T) {
 	}
 	if notifier.IsPermanent(err) {
 		t.Errorf("IsPermanent(%v) = true, want a refused connection to be retried", err)
+	}
+}
+
+// net/mail aceita parte local entre aspas com espaço, < e >. O endereço
+// vai cru no envelope — RCPT TO:<...> —, e um ">" ali fecha o endereço
+// e deixa o resto da linha virar parâmetro do comando. Nenhum endereço de
+// plantão real precisa disso.
+func TestEmailRejectsLocalPartWithSpaceOrAngleBrackets(t *testing.T) {
+	enderecos := []string{`"a b"@exemplo.com`, `"a<b"@exemplo.com`, `"a>b"@exemplo.com`}
+	for _, e := range enderecos {
+		para := fmt.Sprintf(`{"host":"smtp.exemplo.com","from":"a@exemplo.com","to":[%q]}`, e)
+		if _, err := notifier.NewEmail(json.RawMessage(para)); err == nil {
+			t.Errorf("NewEmail accepted the recipient %s", e)
+		}
+		de := fmt.Sprintf(`{"host":"smtp.exemplo.com","from":%q,"to":["b@exemplo.com"]}`, e)
+		if _, err := notifier.NewEmail(json.RawMessage(de)); err == nil {
+			t.Errorf("NewEmail accepted the sender %s", e)
+		}
+	}
+}
+
+// Nome de monitor longo não pode virar assunto de mil caracteres: cliente
+// de e-mail corta no meio, servidor recusa linha acima de 998 bytes, e o
+// estado — a parte que importa — é o que sumiria. O nome é cortado, com
+// reticências, e o estado fica.
+func TestEmailSubjectStaysShortWithALongMonitorName(t *testing.T) {
+	srv := smtptest.NewServer(t, smtptest.Options{Mode: smtptest.StartTLS})
+	e := newEmail(t, emailConfig(srv, "starttls", ""), srv.RootCAs)
+
+	n := outage()
+	n.Monitor.Name = strings.Repeat("ção-", 200)
+	if err := send(t, e, n); err != nil {
+		t.Fatalf("Send returned unexpected error: %v", err)
+	}
+
+	msg, _, _ := partes(t, srv.Messages()[0].Data)
+	got := assunto(t, msg)
+	if n := utf8.RuneCountInString(got); n > 160 {
+		t.Errorf("Subject has %d characters, want at most 160: %q", n, got)
+	}
+	if !strings.HasSuffix(got, "…: fora do ar") {
+		t.Errorf("Subject = %q, want the name cut with an ellipsis and the state kept", got)
+	}
+	if !utf8.ValidString(got) {
+		t.Errorf("Subject = %q is not valid UTF-8; the cut split a character", got)
 	}
 }

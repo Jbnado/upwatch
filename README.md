@@ -260,7 +260,9 @@ AUTH LOGIN, como o Microsoft 365, ele é usado no lugar de PLAIN.
 
 O assunto é sempre `[UpWatch] <monitor>: <estado>` — `fora do ar`,
 `no ar`, `degradado` ou `sem medição` —, para o cliente de e-mail agrupar
-e uma regra de caixa de entrada reconhecer o alerta. O corpo vai em texto
+e uma regra de caixa de entrada reconhecer o alerta. Nome de monitor com
+mais de 100 caracteres é cortado com reticências, para o estado não sumir
+no fim de um assunto longo demais. O corpo vai em texto
 e em HTML, com a causa, o alvo, o horário e, na volta, quanto tempo a
 queda durou. Nome e causa são escapados no HTML: o que o alvo devolve
 não vira marcação no e-mail.
@@ -268,6 +270,10 @@ não vira marcação no e-mail.
 Um destinatário recusado pelo servidor — a pessoa saiu da empresa, a
 lista foi apagada — não cala o aviso para os outros: basta um endereço
 aceito para a mensagem seguir, e os recusados aparecem no log.
+
+Endereço com espaço, `<` ou `>` na parte local é recusado no cadastro,
+mesmo entre aspas: o endereço vai cru no envelope SMTP, e um `>` ali
+encerraria o endereço no meio do comando.
 
 O botão de teste diz por extenso o que deu errado — usuário e senha
 recusados, certificado não confiável, porta que esperava outro modo de
@@ -300,7 +306,9 @@ token.
 
 A queda chega com prioridade 5, a máxima; a volta e o degradado, com
 prioridade 3. A mesma urgência para tudo ensinaria a ignorar tudo. O título é
-`<monitor>: <estado>`, e cada estado tem seu ícone.
+`<monitor>: <estado>`, e cada estado tem seu ícone. A mensagem é cortada em
+4096 bytes, o limite acima do qual o ntfy a entrega como anexo; o corte cai
+na causa, e o alvo continua no fim.
 
 A senha do SMTP e o token do ntfy, como a URL dos webhooks, nunca voltam
 nas leituras da API. Também não aparecem no log nem no erro do botão de

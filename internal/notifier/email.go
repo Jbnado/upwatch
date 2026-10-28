@@ -101,7 +101,7 @@ func newEmail(raw json.RawMessage, roots *x509.CertPool) (Notifier, error) {
 	}
 
 	from, err := mail.ParseAddress(cfg.From)
-	if err != nil {
+	if err != nil || !envelopeSeguro(from.Address) {
 		return nil, fmt.Errorf("notifier: remetente (from) inválido: %q", cfg.From)
 	}
 
@@ -111,13 +111,27 @@ func newEmail(raw json.RawMessage, roots *x509.CertPool) (Notifier, error) {
 	to := make([]*mail.Address, 0, len(cfg.To))
 	for _, bruto := range cfg.To {
 		addr, err := mail.ParseAddress(bruto)
-		if err != nil {
+		if err != nil || !envelopeSeguro(addr.Address) {
 			return nil, fmt.Errorf("notifier: destinatário inválido: %q", bruto)
 		}
 		to = append(to, addr)
 	}
 
 	return &email{cfg: cfg, from: from, to: to, roots: roots}, nil
+}
+
+// envelopeSeguro recusa parte local com espaço, < ou >.
+//
+// net/mail aceita tudo isso entre aspas, mas o endereço vai cru no
+// envelope — RCPT TO:<...> —, e um ">" ali fecha o endereço e deixa o
+// resto da linha virar parâmetro do comando. Nenhum endereço de plantão
+// real precisa disso.
+func envelopeSeguro(endereco string) bool {
+	arroba := strings.LastIndexByte(endereco, '@')
+	if arroba < 0 {
+		return false
+	}
+	return !strings.ContainsAny(endereco[:arroba], " \t<>")
 }
 
 func (e *email) Send(ctx context.Context, n Notification) error {
@@ -333,12 +347,17 @@ func explainAuth(err error) error {
 
 // ---------- mensagem ----------
 
+// emailNomeMaximo é o maior nome de monitor que entra inteiro no assunto.
+const emailNomeMaximo = 100
+
 // emailSubject é o assunto, curto e estável.
 //
 // Sempre "[UpWatch] <monitor>: <estado>": é o que o cliente de e-mail
 // agrupa e o que regra de caixa de entrada ou sistema de chamado
 // reconhece. Caractere de controle no nome vira espaço, para uma quebra
-// de linha não abrir um cabeçalho novo.
+// de linha não abrir um cabeçalho novo. Nome longo demais é cortado com
+// reticências: cliente de e-mail corta assunto comprido no fim, e o fim é
+// o estado, a parte que importa.
 func emailSubject(n Notification) string {
 	nome := strings.Map(func(r rune) rune {
 		if r < 0x20 || r == 0x7f {
@@ -346,6 +365,9 @@ func emailSubject(n Notification) string {
 		}
 		return r
 	}, n.Monitor.Name)
+	if runas := []rune(nome); len(runas) > emailNomeMaximo {
+		nome = string(runas[:emailNomeMaximo-1]) + "…"
+	}
 	return fmt.Sprintf("[UpWatch] %s: %s", nome, statusLabel(n.Event.To))
 }
 

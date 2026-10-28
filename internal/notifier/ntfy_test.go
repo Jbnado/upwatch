@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Jbnado/upwatch/internal/domain"
 	"github.com/Jbnado/upwatch/internal/notifier"
@@ -288,5 +289,31 @@ func TestNtfyRejectsTokenWithControlCharacters(t *testing.T) {
 		if _, err := notifier.NewNtfy(json.RawMessage(cfg)); err == nil {
 			t.Errorf("NewNtfy accepted the token %s", token)
 		}
+	}
+}
+
+// O ntfy transforma em anexo a mensagem acima de 4096 bytes, e no celular
+// chega um arquivo em vez do texto. A causa vem do alvo e pode ser uma
+// página de erro inteira. O corte respeita o UTF-8: um caractere partido
+// ao meio vira lixo no fim da notificação.
+func TestNtfyMessageFitsTheNtfyLimit(t *testing.T) {
+	cap, url := newCapture(t)
+	n := newNtfy(t, `{"server":"`+url+`","topic":"t"}`)
+
+	note := outage()
+	note.Message = strings.Repeat("ç", 5000)
+	if err := send(t, n, note); err != nil {
+		t.Fatalf("Send returned unexpected error: %v", err)
+	}
+
+	corpo := cap.body(0)
+	if len(corpo) > 4096 {
+		t.Errorf("the message has %d bytes, want at most 4096", len(corpo))
+	}
+	if !utf8.ValidString(corpo) {
+		t.Error("the cut split a UTF-8 character")
+	}
+	if !strings.HasPrefix(corpo, "api de produção está fora do ar") {
+		t.Errorf("the message lost its beginning: %q", corpo[:60])
 	}
 }

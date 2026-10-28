@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/Jbnado/upwatch/internal/domain"
 )
@@ -110,10 +111,13 @@ func loopback(host string) bool {
 func (n *ntfy) Send(ctx context.Context, note Notification) error {
 	prioridade, tags := ntfyUrgencia(note.Event.To)
 
-	texto := Render(note)
+	alvo := ""
 	if note.Monitor.Target != "" {
-		texto += "\n" + note.Monitor.Target
+		alvo = "\n" + note.Monitor.Target
 	}
+	// O corte cai na frase, e não no alvo: a causa é o que pode vir
+	// enorme — uma página de erro inteira —, e o alvo diz onde olhar.
+	texto := truncarUTF8(truncarUTF8(Render(note), ntfyLimite-len(alvo))+alvo, ntfyLimite)
 
 	headers := map[string]string{
 		// RFC 2047 porque nome de monitor tem acento, e byte fora do ASCII
@@ -135,6 +139,29 @@ func (n *ntfy) Send(ctx context.Context, note Notification) error {
 			"e se ele tem permissão de escrita", recusa.Code))
 	}
 	return err
+}
+
+// ntfyLimite é o maior corpo que o ntfy entrega como mensagem.
+//
+// Acima disso o servidor transforma o corpo em anexo, e no celular chega
+// um arquivo em vez do texto do alerta.
+const ntfyLimite = 4096
+
+// truncarUTF8 corta s em até max bytes, com reticências, sem partir um
+// caractere ao meio — o que viraria lixo no fim da notificação.
+func truncarUTF8(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	const reticencias = "…"
+	corte := max - len(reticencias)
+	if corte <= 0 {
+		return ""
+	}
+	for corte > 0 && !utf8.RuneStart(s[corte]) {
+		corte--
+	}
+	return s[:corte] + reticencias
 }
 
 // ntfyUrgencia decide prioridade e ícone pelo estado novo.

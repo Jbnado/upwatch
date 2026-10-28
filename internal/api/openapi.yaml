@@ -1596,8 +1596,13 @@ components:
         Canal email, por SMTP. O assunto é sempre
         "[UpWatch] <monitor>: <estado>" - fora do ar, no ar, degradado ou
         sem medição - para agrupar no cliente de e-mail e casar com regra
-        de caixa de entrada. O corpo vai em texto e HTML, com causa,
-        horário e, na volta, quanto tempo durou a queda.
+        de caixa de entrada; nome de monitor acima de 100 caracteres é
+        cortado com reticências. O corpo vai em texto e HTML, com causa,
+        horário e, na volta, quanto tempo durou a queda. Um destinatário
+        recusado pelo servidor não impede a entrega aos outros.
+
+        Endereço com espaço, < ou > na parte local é recusado, mesmo
+        entre aspas.
       required: [host, from, to]
       properties:
         host: { type: string, example: smtp.exemplo.com }
@@ -1631,7 +1636,8 @@ components:
       description: |
         Canal ntfy, para alerta push no celular sem conta. A queda chega
         com prioridade 5 e a volta e o degradado com 3; o título é
-        "<monitor>: <estado>".
+        "<monitor>: <estado>". A mensagem é cortada em 4096 bytes, o
+        limite acima do qual o ntfy a entrega como anexo.
       required: [topic]
       properties:
         server:
