@@ -607,3 +607,35 @@ func TestEmptyGroupSummaryIsEmpty(t *testing.T) {
 		t.Errorf("grupo com monitor nunca medido = %q, want unknown", c.Status)
 	}
 }
+
+// O monitor pai (dependência) de fora do escopo responde igual ao que não
+// existe. Aceitar o de fora e recusar o inexistente ensinava a quem chuta
+// ids quais existem, e pendurava o monitor numa dependência que a conta
+// nem enxerga; o inexistente chegava ao banco e virava erro interno.
+func TestMonitorParentOutsideTheScopeIsNotFound(t *testing.T) {
+	c := novoCenarioEscopo(t)
+	adm := c.s.como(c.retAdmin)
+
+	for nome, pai := range map[string]int64{"fora do escopo": c.foraAgrupado, "sem grupo": c.foraSolto, "inexistente": 99999} {
+		t.Run(nome, func(t *testing.T) {
+			corpo := monitorNoGrupo("filho "+nome, &c.retProd)
+			corpo["parent_id"] = pai
+			assertStatus(t, adm.do(t, http.MethodPost, "/api/v1/monitors", corpo), http.StatusNotFound)
+
+			corpo = monitorNoGrupo("bff", &c.retProd)
+			corpo["parent_id"] = pai
+			assertStatus(t, adm.do(t, http.MethodPut, "/api/v1/monitors/"+itoa(c.dentro), corpo), http.StatusNotFound)
+		})
+	}
+
+	t.Run("inexistente com escopo total", func(t *testing.T) {
+		corpo := newMonitorBody("filho")
+		corpo["parent_id"] = 99999
+		assertStatus(t, c.s.como(c.admin).do(t, http.MethodPost, "/api/v1/monitors", corpo), http.StatusNotFound)
+	})
+
+	// Controle positivo: o pai de dentro do escopo serve.
+	corpo := monitorNoGrupo("filho", &c.retProd)
+	corpo["parent_id"] = c.dentro
+	assertStatus(t, adm.do(t, http.MethodPost, "/api/v1/monitors", corpo), http.StatusCreated)
+}

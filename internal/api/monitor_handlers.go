@@ -171,6 +171,10 @@ func (a *API) handleCreateMonitor(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	if err := a.checkMonitorParent(r.Context(), viewerFrom(r), m.ParentID); err != nil {
+		writeStoreError(w, err)
+		return
+	}
 	if err := a.checkTargetReach(r.Context(), viewerFrom(r), m, nil); err != nil {
 		writeStoreError(w, err)
 		return
@@ -217,6 +221,10 @@ func (a *API) handleUpdateMonitor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := viewerFrom(r).checkMonitorPlacement(m.GroupID); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if err := a.checkMonitorParent(r.Context(), viewerFrom(r), m.ParentID); err != nil {
 		writeStoreError(w, err)
 		return
 	}

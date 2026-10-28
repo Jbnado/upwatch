@@ -385,6 +385,26 @@ func (v viewer) checkMonitorPlacement(groupID *int64) error {
 	return nil
 }
 
+// checkMonitorParent decide se a conta pode pôr o monitor sob o pai
+// (dependência) pedido.
+//
+// O pai de fora do escopo responde como o inexistente: aceitar um e
+// recusar o outro ensinaria a quem chuta ids quais existem, e penduraria
+// o monitor numa dependência que a conta nem enxerga.
+func (a *API) checkMonitorParent(ctx context.Context, v viewer, parentID *int64) error {
+	if parentID == nil {
+		return nil
+	}
+	pai, err := a.store.Monitors().Get(ctx, *parentID)
+	if err != nil {
+		return err
+	}
+	if !v.sees(pai) {
+		return errOutOfScope
+	}
+	return nil
+}
+
 // checkGroupPlacement decide se a conta pode criar ou mover o grupo para
 // onde pediu. anterior é nulo na criação.
 //
