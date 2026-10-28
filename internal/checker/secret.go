@@ -2,7 +2,7 @@ package checker
 
 import (
 	"encoding/json"
-	"errors"
+	"fmt"
 	"net/url"
 	"strings"
 
@@ -32,46 +32,123 @@ func scrubSecret(msg, secret string) string {
 	return msg
 }
 
-// passwordField é o campo de Config que guarda a credencial nos tipos
-// que a têm, e passwordSetField o marcador que a substitui na saída.
-const (
-	passwordField    = "password"
-	passwordSetField = "password_set"
-)
+// secretHolder é a configuração de um tipo que guarda credencial, lida na
+// struct do próprio checker.
+type secretHolder interface {
+	// secretField aponta para a senha.
+	secretField() *string
+	// transportLevel ordena a proteção da conexão que leva a senha: maior
+	// é mais forte.
+	transportLevel() int
+}
 
-// secretTypes são os tipos cuja configuração carrega credencial. A lista
+// secretKind descreve como cada tipo guarda a credencial.
+type secretKind struct {
+	// field é o nome canônico da senha na configuração, e marker o campo
+	// que a substitui na saída.
+	field, marker string
+	decode        func(json.RawMessage) (secretHolder, error)
+}
+
+// decodeAs lê a configuração na struct do checker, com as mesmas regras
+// do encoding/json que o checker usa ao verificar.
+//
+// É o que fecha a brecha da grafia: o json casa "Password", "PASSWORD" e
+// até "paſſword" com o campo password, e só olhar a grafia canônica num
+// mapa deixava as outras passarem inteiras pelo GET. Lendo na struct, o
+// que a ocultação vê é exatamente o que a verificação usa.
+func decodeAs[T any, P interface {
+	*T
+	secretHolder
+}](raw json.RawMessage) (secretHolder, error) {
+	var v T
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil, err
+	}
+	return P(&v), nil
+}
+
+// secretKinds são os tipos cuja configuração carrega credencial. A lista
 // mora aqui, e não em cada handler, para a omissão no GET e a preservação
 // na edição nunca divergirem.
-var secretTypes = map[domain.MonitorType]bool{
-	domain.MonitorRedis:    true,
-	domain.MonitorPostgres: true,
-	domain.MonitorMySQL:    true,
+var secretKinds = map[domain.MonitorType]secretKind{
+	domain.MonitorRedis:    {"password", "password_set", decodeAs[RedisConfig]},
+	domain.MonitorPostgres: {"password", "password_set", decodeAs[PostgresConfig]},
+	domain.MonitorMySQL:    {"password", "password_set", decodeAs[MySQLConfig]},
 }
+
+func (c *RedisConfig) secretField() *string { return &c.Password }
+func (c *RedisConfig) transportLevel() int {
+	switch {
+	case !c.TLS:
+		return 0
+	case c.SkipTLSVerify:
+		return 1
+	}
+	return 2
+}
+
+// postgresSSLLevels ordena os sslmode do libpq; vazio é prefer.
+var postgresSSLLevels = map[string]int{
+	"disable": 0, "allow": 1, "": 2, "prefer": 2,
+	"require": 3, "verify-ca": 4, "verify-full": 5,
+}
+
+func (c *PostgresConfig) secretField() *string { return &c.Password }
+func (c *PostgresConfig) transportLevel() int  { return postgresSSLLevels[c.SSLMode] }
+
+// mysqlTLSLevels ordena os modos de TLS do driver: preferred aceita
+// conexão sem TLS, skip-verify cifra sem conferir o certificado.
+var mysqlTLSLevels = map[string]int{
+	"": 0, "false": 0, "preferred": 1, "skip-verify": 2, "true": 3,
+}
+
+func (c *MySQLConfig) secretField() *string { return &c.Password }
+func (c *MySQLConfig) transportLevel() int  { return mysqlTLSLevels[c.TLS] }
 
 // RedactConfig devolve a configuração sem a credencial, para sair pela
 // API.
 //
-// A senha é trocada por password_set: a interface precisa saber que
-// existe uma para dizer "deixe em branco para manter", sem saber qual é.
-// Uma configuração que não se consegue interpretar sai vazia, nunca
-// crua: na dúvida, não se publica o que pode conter segredo.
+// A senha é trocada pelo marcador password_set: a interface precisa saber
+// que existe uma para dizer "deixe em branco para manter", sem saber qual
+// é.
+// Uma configuração que não se consegue interpretar sai vazia, nunca crua:
+// na dúvida, não se publica o que pode conter segredo.
 func RedactConfig(t domain.MonitorType, raw json.RawMessage) json.RawMessage {
-	if !secretTypes[t] || len(raw) == 0 {
+	kind, ok := secretKinds[t]
+	if !ok || len(raw) == 0 {
 		return raw
 	}
-	fields, err := configFields(raw)
+	cfg, err := kind.decode(raw)
 	if err != nil {
 		return nil
 	}
-	if hasPassword(fields) {
-		fields[passwordSetField] = json.RawMessage("true")
+	had := *cfg.secretField() != ""
+	*cfg.secretField() = ""
+
+	out, err := json.Marshal(cfg)
+	if err != nil {
+		return nil
 	}
-	delete(fields, passwordField)
-	out, err := json.Marshal(fields)
+	if !had {
+		return out
+	}
+	fields := map[string]json.RawMessage{}
+	if err := json.Unmarshal(out, &fields); err != nil {
+		return nil
+	}
+	fields[kind.marker] = json.RawMessage("true")
+	out, err = json.Marshal(fields)
 	if err != nil {
 		return nil
 	}
 	return out
+}
+
+// CanonicalConfig prepara a configuração de um monitor novo: a mesma
+// normalização da edição, sem nada guardado para preservar.
+func CanonicalConfig(m domain.Monitor) (json.RawMessage, error) {
+	return CarrySecrets(m, domain.Monitor{})
 }
 
 // CarrySecrets prepara a configuração de uma edição, mantendo a senha
@@ -79,50 +156,63 @@ func RedactConfig(t domain.MonitorType, raw json.RawMessage) json.RawMessage {
 //
 // Como a senha não volta no GET, editar qualquer outro campo chega sem
 // ela; tratar a ausência como "sem senha" apagaria a credencial a cada
-// salvamento. Senha presente, mesmo vazia, é a nova.
+// salvamento. Senha presente, mesmo vazia e em qualquer grafia que o
+// checker aceite, é a nova.
 //
-// A senha só acompanha o monitor no mesmo endereço. Do contrário, quem
-// pode editar monitores mas não ler a senha a obteria trocando o alvo por
-// um servidor seu: o UpWatch a entregaria lá na verificação seguinte.
+// A configuração sai reescrita pela struct do checker, então só a grafia
+// canônica chega ao banco, sem o marcador nem campo desconhecido.
+//
+// A credencial só acompanha o monitor no mesmo endereço e sem TLS mais
+// fraco. Do contrário, quem pode editar monitores mas não ler a senha a
+// obteria trocando o alvo por um servidor seu, ou desligando a
+// verificação do certificado para quem estiver no caminho: o UpWatch a
+// entregaria na verificação seguinte.
 func CarrySecrets(next, prev domain.Monitor) (json.RawMessage, error) {
-	if !secretTypes[next.Type] || len(next.Config) == 0 {
+	kind, ok := secretKinds[next.Type]
+	if !ok || len(next.Config) == 0 {
 		return next.Config, nil
 	}
-	fields, err := configFields(next.Config)
+	cfg, err := kind.decode(next.Config)
 	if err != nil {
 		// A validação do checker devolve o erro com a mensagem certa.
 		return next.Config, nil
 	}
-	delete(fields, passwordSetField)
+	var old secretHolder
+	if prev.Type == next.Type && len(prev.Config) > 0 {
+		old, _ = kind.decode(prev.Config)
+	}
 
-	if _, sent := fields[passwordField]; !sent && prev.Type == next.Type {
-		prevFields, err := configFields(prev.Config)
-		if err == nil && hasPassword(prevFields) {
-			if prev.Target != next.Target {
-				return nil, errors.New("checker: informe a senha de novo ao trocar o endereço; a guardada não acompanha o monitor para outro servidor")
-			}
-			fields[passwordField] = prevFields[passwordField]
+	mayCarry := func(what string) error {
+		if prev.Target != next.Target {
+			return fmt.Errorf("checker: informe %s de novo ao trocar o endereço; o valor guardado não acompanha o monitor para outro servidor", what)
+		}
+		if cfg.transportLevel() < old.transportLevel() {
+			return fmt.Errorf("checker: informe %s de novo ao enfraquecer o TLS; o valor guardado não acompanha o monitor para uma conexão menos protegida", what)
+		}
+		return nil
+	}
+
+	if !fieldSent(next.Config, kind.field) && old != nil && *old.secretField() != "" {
+		if err := mayCarry("a senha"); err != nil {
+			return nil, err
+		}
+		*cfg.secretField() = *old.secretField()
+	}
+
+	return json.Marshal(cfg)
+}
+
+// fieldSent informa se a configuração traz o campo em alguma grafia que
+// o encoding/json casaria com ele (ver decodeAs).
+func fieldSent(raw json.RawMessage, field string) bool {
+	fields := map[string]json.RawMessage{}
+	if json.Unmarshal(raw, &fields) != nil {
+		return false
+	}
+	for k := range fields {
+		if strings.EqualFold(k, field) {
+			return true
 		}
 	}
-	return json.Marshal(fields)
-}
-
-func configFields(raw json.RawMessage) (map[string]json.RawMessage, error) {
-	fields := map[string]json.RawMessage{}
-	if len(raw) == 0 {
-		return fields, nil
-	}
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		return nil, err
-	}
-	if fields == nil {
-		fields = map[string]json.RawMessage{}
-	}
-	return fields, nil
-}
-
-func hasPassword(fields map[string]json.RawMessage) bool {
-	var p string
-	raw, ok := fields[passwordField]
-	return ok && json.Unmarshal(raw, &p) == nil && p != ""
+	return false
 }

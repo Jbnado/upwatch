@@ -104,8 +104,9 @@ func TestCarrySecretsUsesTheNewPasswordWhenSent(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CarrySecrets returned unexpected error: %v", err)
 		}
-		if m := configMap(t, got); m["password"] != tt.want {
-			t.Errorf("%s: password = %v, want %q", tt.cfg, m["password"], tt.want)
+		// Sem senha, a forma canônica omite o campo.
+		if pw, _ := configMap(t, got)["password"].(string); pw != tt.want {
+			t.Errorf("%s: password = %q, want %q", tt.cfg, pw, tt.want)
 		}
 	}
 }
@@ -138,5 +139,97 @@ func TestCarrySecretsDoesNotCrossTypes(t *testing.T) {
 	}
 	if strings.Contains(string(got), "pg") {
 		t.Errorf("password crossed from postgres to mysql: %s", got)
+	}
+}
+
+// O encoding/json casa o nome do campo sem diferenciar caixa, e até por
+// equivalência Unicode: "Password", "PASSWORD" e "paſſword" (com o s longo)
+// preenchem a mesma senha que o checker usa. A ocultação olhava só a
+// grafia canônica, então qualquer outra passava inteira pelo GET.
+func TestRedactConfigHidesThePasswordInAnySpelling(t *testing.T) {
+	for _, typ := range []domain.MonitorType{domain.MonitorRedis, domain.MonitorPostgres, domain.MonitorMySQL} {
+		for _, key := range []string{"Password", "PASSWORD", "paſſword"} {
+			raw := json.RawMessage(`{"username":"monitor","` + key + `":"segredo-de-producao"}`)
+
+			got := checker.RedactConfig(typ, raw)
+
+			if strings.Contains(string(got), "segredo-de-producao") {
+				t.Errorf("%s %q: redacted config carries the password: %s", typ, key, got)
+			}
+			if m := configMap(t, got); m["password_set"] != true {
+				t.Errorf("%s %q: password_set = %v, want true", typ, key, m["password_set"])
+			}
+		}
+	}
+}
+
+// Normalizar na entrada faz só a grafia canônica chegar ao banco: o que o
+// checker lê é exatamente o que a ocultação e a preservação olham, e uma
+// grafia alternativa conta como senha enviada.
+func TestCanonicalConfigStoresOnlyTheCanonicalSpelling(t *testing.T) {
+	m := redisWith("cache:6379", `{"PASSWORD":"segredo","Db":2,"password_set":true,"campo_inventado":1}`)
+
+	got, err := checker.CanonicalConfig(m)
+	if err != nil {
+		t.Fatalf("CanonicalConfig returned unexpected error: %v", err)
+	}
+
+	cfg := configMap(t, got)
+	if cfg["password"] != "segredo" || cfg["db"] != float64(2) {
+		t.Errorf("canonical config = %s, want password and db in canonical form", got)
+	}
+	for _, k := range []string{"PASSWORD", "Db", "password_set", "campo_inventado"} {
+		if _, ok := cfg[k]; ok {
+			t.Errorf("canonical config kept %q: %s", k, got)
+		}
+	}
+
+	// Na edição, a grafia alternativa é a senha nova, não ausência.
+	prev := redisWith("cache:6379", `{"password":"antiga"}`)
+	got, err = checker.CarrySecrets(redisWith("cache:6379", `{"Password":"nova"}`), prev)
+	if err != nil {
+		t.Fatalf("CarrySecrets returned unexpected error: %v", err)
+	}
+	if cfg := configMap(t, got); cfg["password"] != "nova" {
+		t.Errorf("password = %v, want the new one sent as Password", cfg["password"])
+	}
+}
+
+// Trocar o TLS por um modo mais fraco é outro jeito de levar a senha
+// guardada a quem não devia vê-la: sem verificação de certificado, ou sem
+// TLS nenhum, quem estiver no caminho recebe a credencial na verificação
+// seguinte. Como na troca de endereço, a senha precisa ser informada de
+// novo. Fortalecer, ou não mexer, mantém a guardada.
+func TestCarrySecretsRefusesToCarryToWeakerTLS(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		typ        domain.MonitorType
+		prev, next string
+		refuse     bool
+	}{
+		{"redis tls desligado", domain.MonitorRedis, `{"password":"p","tls":true}`, `{}`, true},
+		{"redis sem verificar", domain.MonitorRedis, `{"password":"p","tls":true}`, `{"tls":true,"skip_tls_verify":true}`, true},
+		{"redis igual", domain.MonitorRedis, `{"password":"p","tls":true}`, `{"tls":true}`, false},
+		{"redis ligando tls", domain.MonitorRedis, `{"password":"p"}`, `{"tls":true}`, false},
+		{"postgres verify-full para prefer", domain.MonitorPostgres, `{"username":"u","password":"p","sslmode":"verify-full"}`, `{"username":"u"}`, true},
+		{"postgres require para disable", domain.MonitorPostgres, `{"username":"u","password":"p","sslmode":"require"}`, `{"username":"u","sslmode":"disable"}`, true},
+		{"postgres require para verify-full", domain.MonitorPostgres, `{"username":"u","password":"p","sslmode":"require"}`, `{"username":"u","sslmode":"verify-full"}`, false},
+		{"mysql true para preferred", domain.MonitorMySQL, `{"username":"u","password":"p","tls":"true"}`, `{"username":"u","tls":"preferred"}`, true},
+		{"mysql true para skip-verify", domain.MonitorMySQL, `{"username":"u","password":"p","tls":"true"}`, `{"username":"u","tls":"skip-verify"}`, true},
+		{"mysql false para true", domain.MonitorMySQL, `{"username":"u","password":"p"}`, `{"username":"u","tls":"true"}`, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			prev := domain.Monitor{Type: tt.typ, Target: "db:5432", Config: json.RawMessage(tt.prev)}
+			next := domain.Monitor{Type: tt.typ, Target: "db:5432", Config: json.RawMessage(tt.next)}
+
+			_, err := checker.CarrySecrets(next, prev)
+
+			if tt.refuse && err == nil {
+				t.Error("CarrySecrets carried the password to a weaker TLS")
+			}
+			if !tt.refuse && err != nil {
+				t.Errorf("CarrySecrets returned unexpected error: %v", err)
+			}
+		})
 	}
 }

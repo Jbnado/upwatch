@@ -111,3 +111,25 @@ func TestUpdateMonitorRefusesToCarryThePasswordToAnotherTarget(t *testing.T) {
 		t.Errorf("the refused update changed the stored config: %s", stored)
 	}
 }
+
+// O json aceita "Password" no lugar de "password", e o checker usa a
+// senha assim enviada. Só a grafia canônica pode chegar ao banco: é ela
+// que a ocultação e a preservação conhecem, e uma grafia alternativa
+// gravada como veio passaria inteira pelo GET.
+func TestMonitorPasswordInAnotherSpellingNeverLeavesTheAPI(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+
+	id := s.createMonitor(t, redisMonitorBody("cache:6379", map[string]any{"Password": monitorSecret}))
+
+	r := s.do(t, http.MethodGet, "/api/v1/monitors/"+itoa(id), nil)
+	assertStatus(t, r, http.StatusOK)
+	body, _ := io.ReadAll(r.Body)
+	if strings.Contains(string(body), monitorSecret) {
+		t.Errorf("GET leaks the password sent as Password: %s", body)
+	}
+	stored := s.storedPassword(t, id)
+	if !strings.Contains(stored, `"password":"`+monitorSecret+`"`) || strings.Contains(stored, `"Password"`) {
+		t.Errorf("stored config = %s, want only the canonical password field", stored)
+	}
+}

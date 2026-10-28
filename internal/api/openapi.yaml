@@ -1492,10 +1492,11 @@ components:
           type: object
           description: |
             Configuração específica do tipo, validada no cadastro pelo
-            checker correspondente. Para os tipos de protocolo, ver
-            RedisConfig, PostgresConfig e MySQLConfig: a senha é aceita na
-            escrita e nunca devolvida; numa edição, omiti-la mantém a
-            guardada, desde que o endereço não mude.
+            checker correspondente e gravada na grafia canônica dos campos.
+            Para os tipos de protocolo, ver RedisConfig, PostgresConfig e
+            MySQLConfig: a senha é aceita na escrita e nunca devolvida;
+            numa edição, omiti-la mantém a guardada, desde que o endereço
+            não mude e o TLS não fique mais fraco.
           additionalProperties: true
         parent_id: { type: integer, format: int64 }
         enabled: { type: boolean, default: true }

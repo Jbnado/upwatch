@@ -160,6 +160,14 @@ func (a *API) handleCreateMonitor(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	// Só a grafia canônica da configuração é gravada: é ela que a
+	// ocultação e a preservação da senha conhecem (ver CarrySecrets).
+	cfg, err := checker.CanonicalConfig(m)
+	if err != nil {
+		writeFieldError(w, "config", err.Error())
+		return
+	}
+	m.Config = cfg
 	if !a.validateMonitor(w, &m) {
 		return
 	}
