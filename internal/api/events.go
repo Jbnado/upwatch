@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/Jbnado/upwatch/internal/domain"
 )
 
 // eventBuffer é quantos eventos um assinante lento acumula antes de
@@ -25,6 +27,31 @@ const keepAliveInterval = 25 * time.Second
 type event struct {
 	Type string `json:"type"`
 	Data any    `json:"data"`
+
+	// monitor e previous decidem quem recebe o evento: o monitor como
+	// ficou e como era antes. Evento sem nenhum dos dois só chega a quem
+	// alcança tudo — quem publica e esquece de dizer de qual monitor se
+	// trata não pode vazar para todo mundo.
+	monitor  *domain.Monitor
+	previous *domain.Monitor
+}
+
+// visibleTo devolve o que a conta pode receber deste evento.
+//
+// Quem via o monitor e deixou de ver — porque ele mudou para um grupo de
+// fora, ou foi apagado — recebe a saída dele, e só ela: o destino do
+// monitor movido é justamente o que não se pode contar.
+func (e event) visibleTo(acc domain.Access) (event, bool) {
+	if e.monitor == nil && e.previous == nil {
+		return e, acc.All()
+	}
+	if e.monitor != nil && acc.Monitor(*e.monitor) {
+		return e, true
+	}
+	if e.previous != nil && acc.Monitor(*e.previous) {
+		return event{Type: "monitor.deleted", Data: map[string]int64{"id": e.previous.ID}}, true
+	}
+	return event{}, false
 }
 
 // eventHub distribui eventos aos assinantes conectados.
@@ -103,6 +130,8 @@ func (a *API) handleEvents(w http.ResponseWriter, r *http.Request) {
 	events, unsubscribe := a.events.subscribe()
 	defer unsubscribe()
 
+	conta := mustUser(r)
+
 	keepAlive := time.NewTicker(keepAliveInterval)
 	defer keepAlive.Stop()
 
@@ -114,6 +143,21 @@ func (a *API) handleEvents(w http.ResponseWriter, r *http.Request) {
 		case e, open := <-events:
 			if !open {
 				return
+			}
+			// O escopo é relido a cada evento, e não guardado na conexão:
+			// uma concessão retirada, ou uma conta apagada, valem para o
+			// fluxo já aberto, que pode durar dias numa aba esquecida.
+			atual, err := a.store.Users().Get(r.Context(), conta.ID)
+			if err != nil {
+				return
+			}
+			v, err := a.resolveViewer(r.Context(), atual)
+			if err != nil {
+				continue
+			}
+			e, ok := e.visibleTo(v.access)
+			if !ok {
+				continue
 			}
 			payload, err := json.Marshal(e.Data)
 			if err != nil {

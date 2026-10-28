@@ -43,6 +43,11 @@ tags:
     description: Sessões, senha e tokens
   - name: monitors
     description: Cadastro de alvos monitorados
+  - name: groups
+    description: |
+      Grupos de monitores (Sistema → Ambiente) e o que a tela inicial lê
+      deles. Toda rota autenticada respeita o escopo da conta&#58; monitor
+      ou grupo fora dele responde 404, como se não existisse.
   - name: data
     description: Histórico, agregados e exportação
   - name: push
@@ -82,9 +87,19 @@ paths:
       security: []
       summary: Exposição para Prometheus
       description: |
-        Formato de texto do Prometheus, sem credencial — o coletor raspa
-        sem sessão, e exigir uma obrigaria cada instalação a inventar um
-        token só para isso.
+        Formato de texto do Prometheus, fora da sessão — o coletor raspa
+        sem ela.
+
+        Com `UPWATCH_METRICS_TOKEN` definido, exige
+        `Authorization&#58; Bearer <token>` e responde 401 sem ele. Sem a
+        variável, a exposição fica aberta, como sempre foi&#58; serve à rede
+        local, mas numa instalação exposta na internet publica o nome de
+        todos os monitores, e com eles a topologia interna.
+
+        Monitor dentro de um grupo leva também o rótulo `group` com o
+        caminho ("RPA / prod")&#58; o nome só é único dentro do grupo, e sem
+        o rótulo o "bff" de produção e o de homologação seriam a mesma
+        série.
 
         O que sai são contagens, estados e nomes de monitor. O endereço do
         alvo nunca vira rótulo&#58; além de descrever a topologia interna,
@@ -110,6 +125,11 @@ paths:
           content:
             text/plain:
               schema: { type: string }
+        "401":
+          description: Token de métricas ausente ou errado (só quando configurado)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/v1/openapi.yaml:
     get:
@@ -316,6 +336,9 @@ paths:
         Só administrador. A lista de contas é material de reconhecimento&#58;
         nomes de usuário válidos são metade do trabalho de quem tenta
         entrar.
+
+        Administrador com escopo vê só as contas cujo escopo ele poderia
+        conceder.
       responses:
         "200":
           description: Contas cadastradas
@@ -347,6 +370,13 @@ paths:
                 username: { type: string, maxLength: 64 }
                 password: { type: string, minLength: 12, maxLength: 72 }
                 role: { type: string, enum: [admin, viewer] }
+                scope:
+                  $ref: "#/components/schemas/Scope"
+                  description: |
+                    Ausente é todos os grupos. Quem tem escopo não concede
+                    mais do que tem&#58; pedir todos os grupos devolve 403, e
+                    citar grupo fora do próprio escopo devolve 400 como
+                    grupo inexistente.
       responses:
         "201":
           description: Conta criada
@@ -361,15 +391,18 @@ paths:
   /api/v1/users/{id}:
     put:
       tags: [auth]
-      summary: Troca o papel de uma conta
+      summary: Troca o papel e o escopo de uma conta
       description: |
-        Só o papel. Nome de usuário e senha não se editam por aqui&#58;
+        Só papel e escopo. Nome de usuário e senha não se editam por aqui&#58;
         trocar a senha de outra pessoa sem ela saber é poder que uma
         ferramenta de monitoramento não precisa ter, e renomear conta
         quebra o rastro de quem fez o quê.
 
-        Rebaixar o último administrador devolve 409 — a instalação
-        ficaria sem ninguém capaz de criar outro.
+        Rebaixar ou restringir o último administrador com acesso a todos
+        os grupos devolve 409 — a instalação ficaria sem ninguém capaz de
+        criar grupo de topo, canal ou página pública.
+
+        Conta com escopo maior que o de quem pede responde 404.
       parameters:
         - $ref: "#/components/parameters/PathID"
       requestBody:
@@ -381,6 +414,9 @@ paths:
               required: [role]
               properties:
                 role: { type: string, enum: [admin, viewer] }
+                scope:
+                  $ref: "#/components/schemas/Scope"
+                  description: Ausente mantém o escopo atual.
       responses:
         "200":
           description: Papel atualizado
@@ -421,8 +457,16 @@ paths:
     get:
       tags: [monitors]
       summary: Lista monitores
-      description: Paginação por keyset; as páginas seguem estáveis sob escrita concorrente.
+      description: |
+        Paginação por keyset; as páginas seguem estáveis sob escrita
+        concorrente. Só traz monitores do escopo da conta.
       parameters:
+        - name: group_id
+          in: query
+          schema: { type: integer, format: int64 }
+          description: |
+            Restringe ao grupo e aos ambientes dele. Grupo fora do escopo
+            devolve lista vazia, como um grupo sem nada.
         - name: limit
           in: query
           schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
@@ -465,7 +509,7 @@ paths:
               schema: { $ref: "#/components/schemas/Monitor" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "409":
-          description: Já existe monitor com esse nome
+          description: Já existe monitor com esse nome no mesmo grupo
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -833,6 +877,227 @@ paths:
       responses:
         "204": { description: Vínculo removido }
         "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/v1/monitors/{id}/events:
+    get:
+      tags: [data]
+      summary: Linha do tempo de falhas e mudanças de estado
+      description: |
+        Mudanças confirmadas de estado (`state`) e batidas com falha
+        (`failure`), cada uma com a causa, da mais recente para trás.
+
+        Paginação para trás&#58; passe o `next_before` da página anterior em
+        `before`. Eventos do mesmo instante nunca são separados entre
+        páginas, então uma página pode passar um pouco do `limit`.
+
+        As falhas vêm das batidas cruas e somem com a poda (7 dias por
+        padrão); as mudanças de estado ficam.
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+        - name: before
+          in: query
+          schema: { type: string, format: date-time }
+          description: Só eventos anteriores a este instante (exclusivo)
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - name: type
+          in: query
+          schema: { type: string, enum: [state, failure] }
+      responses:
+        "200":
+          description: Página de eventos
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/MonitorEvent" }
+                  has_more: { type: boolean }
+                  next_before: { type: string, format: date-time }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/groups:
+    get:
+      tags: [groups]
+      summary: Lista os grupos do escopo
+      description: Em ordem de caminho ("RPA / hml" antes de "RPA / prod").
+      responses:
+        "200":
+          description: Grupos
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/MonitorGroup" }
+    post:
+      tags: [groups]
+      summary: Cria um grupo
+      description: |
+        Dois níveis no máximo (Sistema → Ambiente). Grupo de topo só quem
+        alcança todos os grupos cria (403 para os demais); ambiente, quem
+        alcança o sistema. Criar ambiente num grupo que já tem monitores
+        devolve 409&#58; os monitores ficariam num grupo que não é mais
+        folha.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MonitorGroupInput" }
+      responses:
+        "201":
+          description: Grupo criado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MonitorGroup" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: Nome ou slug repetido entre irmãos, ou pai com monitores
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/groups/summary:
+    get:
+      tags: [groups]
+      summary: Um cartão por grupo, com o pior estado
+      description: |
+        Para a tela inicial. O sistema soma os ambientes dele. "Sem grupo"
+        (`group_id` nulo) aparece só para quem alcança tudo e só quando
+        tem monitor. Monitor pausado conta em `paused` e fica fora do pior
+        estado.
+      responses:
+        "200":
+          description: Cartões
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/GroupSummary" }
+
+  /api/v1/groups/{id}:
+    get:
+      tags: [groups]
+      summary: Devolve um grupo
+      parameters: [{ $ref: "#/components/parameters/PathID" }]
+      responses:
+        "200":
+          description: O grupo
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MonitorGroup" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [groups]
+      summary: Renomeia ou move um grupo
+      parameters: [{ $ref: "#/components/parameters/PathID" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MonitorGroupInput" }
+      responses:
+        "200":
+          description: Grupo atualizado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MonitorGroup" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Nome ou slug repetido entre irmãos, ou pai com monitores
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      tags: [groups]
+      summary: Apaga um grupo vazio
+      description: |
+        Grupo com monitores ou ambientes devolve 409&#58; apagar perderia o
+        vínculo deles em silêncio. Vínculos de canal e concessões de escopo
+        saem junto.
+      parameters: [{ $ref: "#/components/parameters/PathID" }]
+      responses:
+        "204": { description: Grupo apagado }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: O grupo ainda tem monitores ou ambientes
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/groups/{id}/channels:
+    get:
+      tags: [alerts]
+      summary: Canais vinculados ao grupo
+      description: |
+        Só os habilitados. Valem para todos os monitores do grupo e, num
+        sistema, para os dos ambientes dele — inclusive os criados depois.
+      parameters: [{ $ref: "#/components/parameters/PathID" }]
+      responses:
+        "200":
+          description: Canais
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Channel" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/groups/{id}/channels/{channelID}:
+    put:
+      tags: [alerts]
+      summary: Vincula um canal ao grupo
+      description: Idempotente. Convive com o vínculo por monitor; cada canal avisa uma vez só.
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+        - $ref: "#/components/parameters/PathChannelID"
+      responses:
+        "204": { description: Vínculo criado }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [alerts]
+      summary: Desvincula um canal do grupo
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+        - $ref: "#/components/parameters/PathChannelID"
+      responses:
+        "204": { description: Vínculo removido }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/problems:
+    get:
+      tags: [groups]
+      summary: Problemas agora
+      description: |
+        Monitores ativos fora do ar, degradados e sem medição, nessa
+        ordem; dentro de cada estado, o mais antigo primeiro. Cada linha
+        traz o grupo, desde quando e a última causa.
+      responses:
+        "200":
+          description: Problemas
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Problem" }
 
   /api/v1/incidents:
     get:
@@ -1328,6 +1593,10 @@ paths:
 
         Tipos emitidos: `monitor.created`, `monitor.updated`,
         `monitor.deleted`.
+
+        Só chegam eventos de monitores do escopo, relido a cada evento.
+        Monitor que sai do escopo (movido para grupo de fora) chega como
+        `monitor.deleted`, sem revelar para onde foi.
       responses:
         "200":
           description: Fluxo aberto
@@ -1388,7 +1657,10 @@ components:
     Forbidden:
       description: |
         A conta está autenticada, mas não tem permissão. Devolvido a um
-        observador em qualquer rota de escrita.
+        observador em qualquer rota de escrita, e a quem tem escopo ao
+        alterar canal, página pública ou relato, criar grupo de topo ou
+        conceder mais do que tem. Monitor ou grupo fora do escopo nunca dá
+        403, e sim 404, para não confirmar que existe.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -1442,6 +1714,7 @@ components:
             `admin` administra; `viewer` só lê. A separação é por verbo&#58;
             tudo que altera o estado exige administrador, tudo que só lê
             aceita observador.
+        scope: { $ref: "#/components/schemas/Scope" }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
@@ -1492,6 +1765,14 @@ components:
             checker correspondente.
           additionalProperties: true
         parent_id: { type: integer, format: int64 }
+        group_id:
+          type: integer
+          format: int64
+          nullable: true
+          description: |
+            Grupo folha do monitor; nulo é "Sem grupo", que só quem
+            alcança todos os grupos usa. O PUT sobrescreve&#58; omitir move
+            para "Sem grupo".
         enabled: { type: boolean, default: true }
         tags:
           type: array
@@ -1505,6 +1786,108 @@ components:
             id: { type: integer, format: int64 }
             created_at: { type: string, format: date-time }
             updated_at: { type: string, format: date-time }
+
+    Scope:
+      type: object
+      description: |
+        Sobre quais grupos o papel vale. Conceder um sistema concede os
+        ambientes dele, inclusive os criados depois.
+      properties:
+        all_groups:
+          type: boolean
+          description: Verdadeiro alcança tudo, inclusive monitores sem grupo.
+        group_ids:
+          type: array
+          items: { type: integer, format: int64 }
+          description: Grupos concedidos quando `all_groups` é falso. Pelo menos um.
+
+    MonitorGroupInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, maxLength: 60 }
+        slug:
+          type: string
+          description: Vazio é derivado do nome. Único entre irmãos.
+        parent_id:
+          type: integer
+          format: int64
+          description: Sistema do ambiente; ausente é grupo de topo.
+
+    MonitorGroup:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string }
+        slug: { type: string }
+        parent_id: { type: integer, format: int64, nullable: true }
+        path:
+          type: string
+          description: Nome completo, como "RPA / prod".
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    GroupSummary:
+      type: object
+      properties:
+        group_id:
+          type: integer
+          format: int64
+          nullable: true
+          description: Nulo é "Sem grupo".
+        parent_id: { type: integer, format: int64, nullable: true }
+        name: { type: string }
+        path: { type: string }
+        status:
+          type: string
+          enum: [up, degraded, down, unknown]
+          description: Pior estado entre os ativos, na ordem down, degraded, unknown, up.
+        total: { type: integer }
+        up: { type: integer }
+        degraded: { type: integer }
+        down: { type: integer }
+        unknown: { type: integer }
+        paused: { type: integer }
+        problems:
+          type: integer
+          description: down + degraded + unknown
+
+    Problem:
+      type: object
+      properties:
+        monitor_id: { type: integer, format: int64 }
+        name: { type: string }
+        type: { type: string }
+        group_id: { type: integer, format: int64, nullable: true }
+        group_path:
+          type: string
+          description: Vazio é "Sem grupo".
+        status: { type: string, enum: [down, degraded, unknown] }
+        since:
+          type: string
+          format: date-time
+          description: Desde quando o estado vale; para monitor nunca medido, o cadastro.
+        cause:
+          type: string
+          description: Mensagem da última verificação com falha, ou a causa da queda em curso.
+        last_check_at: { type: string, format: date-time, nullable: true }
+
+    MonitorEvent:
+      type: object
+      properties:
+        type: { type: string, enum: [state, failure] }
+        at: { type: string, format: date-time }
+        status:
+          type: string
+          enum: [up, degraded, down, unknown]
+          description: Estado novo (state) ou resultado da batida (failure).
+        from:
+          type: string
+          description: Estado anterior; só em `state`.
+        message: { type: string }
+        latency_ms: { type: integer, description: Só em `failure`. }
+        probe_id: { type: string, description: Só em `failure`. }
+
 
     Channel:
       type: object

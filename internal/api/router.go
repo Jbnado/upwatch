@@ -43,6 +43,15 @@ type Options struct {
 	// não precisar varrer a tabela de batidas a cada raspagem.
 	Counters *metrics.Counters
 
+	// MetricsToken, quando preenchido, passa a ser exigido em /metrics
+	// como "Authorization: Bearer <token>".
+	//
+	// Vazio mantém a exposição aberta, que é o caso da rede local onde o
+	// Prometheus raspa sem configurar nada. Numa instalação exposta na
+	// internet, a exposição aberta publica o nome de todos os monitores, e
+	// com eles a topologia interna.
+	MetricsToken string
+
 	// PublicURL é o endereço externo da instalação, como
 	// "https://status.exemplo.com".
 	//
@@ -74,6 +83,7 @@ type API struct {
 	secureCookies bool
 	sessionTTL    time.Duration
 	publicURL     string
+	metricsToken  string
 	version       string
 	counters      *metrics.Counters
 
@@ -101,6 +111,7 @@ func New(opts Options) http.Handler {
 		secureCookies: opts.SecureCookies,
 		sessionTTL:    opts.SessionTTL,
 		publicURL:     opts.PublicURL,
+		metricsToken:  opts.MetricsToken,
 		version:       opts.Version,
 		counters:      opts.Counters,
 		events:        newEventHub(),
@@ -116,9 +127,8 @@ func (a *API) routes() http.Handler {
 	// antes de existir credencial alguma.
 	r.Get("/healthz", a.handleHealth)
 
-	// Exposição para Prometheus. Sem credencial porque o coletor raspa
-	// sem sessão, e exigir uma obrigaria cada instalação a inventar um
-	// token só para isso.
+	// Exposição para Prometheus. Fora da sessão porque o coletor raspa sem
+	// ela; o token próprio é opcional (ver handleMetrics).
 	r.Get("/metrics", a.handleMetrics)
 
 	r.Route("/api/v1", func(r chi.Router) {
@@ -151,11 +161,16 @@ func (a *API) routes() http.Handler {
 
 		// Leitura: administrador e observador entram igual.
 		//
-		// O observador enxerga tudo o que o administrador enxerga,
-		// inclusive endereço de alvo e causa de falha. Ele é de dentro;
-		// quem não é vê a página pública, que tem outras regras.
+		// O observador enxerga tudo o que o administrador enxerga dentro
+		// do escopo dele, inclusive endereço de alvo e causa de falha. Ele
+		// é de dentro; quem não é vê a página pública, que tem outras
+		// regras.
+		//
+		// O escopo é aplicado pelo grupo de rotas, como o papel: a guarda
+		// barra o monitor ou grupo do caminho que estiver fora, e uma rota
+		// nova aqui dentro nasce protegida.
 		r.Group(func(r chi.Router) {
-			r.Use(a.authenticate)
+			r.Use(a.authenticate, a.withViewer, a.scopeGuard)
 
 			r.Post("/auth/logout", a.handleLogout)
 			r.Get("/auth/me", a.handleMe)
@@ -175,6 +190,17 @@ func (a *API) routes() http.Handler {
 			r.Get("/monitors/{id}/rollups", a.handleRollups)
 			r.Get("/monitors/{id}/export", a.handleExport)
 			r.Get("/monitors/{id}/channels", a.handleListMonitorChannels)
+			// Linha do tempo de falhas e mudanças de estado, cada uma com
+			// a causa.
+			r.Get("/monitors/{id}/events", a.handleMonitorEvents)
+
+			// Grupos e o que a tela inicial lê: o resumo por grupo e o que
+			// está errado agora, já recortados pelo escopo.
+			r.Get("/groups", a.handleListGroups)
+			r.Get("/groups/summary", a.handleGroupSummary)
+			r.Get("/groups/{id}", a.handleGetMonitorGroup)
+			r.Get("/groups/{id}/channels", a.handleListGroupChannels)
+			r.Get("/problems", a.handleProblems)
 
 			r.Get("/channel-types", a.handleListChannelTypes)
 			r.Get("/channels", a.handleListChannels)
@@ -198,7 +224,7 @@ func (a *API) routes() http.Handler {
 		// mais provável de a permissão vazar; aqui o esquecimento é
 		// impossível, porque a rota nasce dentro do grupo.
 		r.Group(func(r chi.Router) {
-			r.Use(a.authenticate, a.requireAdmin)
+			r.Use(a.authenticate, a.requireAdmin, a.withViewer, a.scopeGuard)
 
 			// Token de API faz tudo o que a interface faz, então criá-lo
 			// é operação de administrador — senão o observador emitiria
@@ -218,6 +244,14 @@ func (a *API) routes() http.Handler {
 
 			r.Put("/monitors/{id}/channels/{channelID}", a.handleLinkChannel)
 			r.Delete("/monitors/{id}/channels/{channelID}", a.handleUnlinkChannel)
+
+			r.Post("/groups", a.handleCreateMonitorGroup)
+			r.Put("/groups/{id}", a.handleUpdateMonitorGroup)
+			r.Delete("/groups/{id}", a.handleDeleteMonitorGroup)
+			// Canal no grupo vale para todos os monitores dele, inclusive
+			// os criados depois.
+			r.Put("/groups/{id}/channels/{channelID}", a.handleLinkGroupChannel)
+			r.Delete("/groups/{id}/channels/{channelID}", a.handleUnlinkGroupChannel)
 
 			r.Post("/channels", a.handleCreateChannel)
 			r.Put("/channels/{id}", a.handleUpdateChannel)

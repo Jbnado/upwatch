@@ -51,7 +51,7 @@ var (
 	//
 	// Sem esta guarda, um clique deixaria a instalação sem ninguém capaz
 	// de administrar, e a única saída seria mexer no banco à mão.
-	ErrLastAdmin = errors.New("auth: é preciso manter ao menos um administrador")
+	ErrLastAdmin = errors.New("auth: é preciso manter ao menos um administrador com acesso a todos os grupos")
 
 	// ErrSetupComplete indica que o assistente de primeiro acesso já foi
 	// usado.
@@ -388,13 +388,17 @@ func (s *Service) clearFailures(username string) {
 	delete(s.failures, username)
 }
 
-// CreateUser cadastra uma conta com o papel indicado.
+// CreateUser cadastra uma conta com o papel e o escopo indicados.
 //
 // Separado de CreateInitialAdmin de propósito: aquele é o assistente de
 // primeiro acesso e recusa a segunda chamada; este exige que já exista
-// alguém administrando, e é chamado por essa pessoa.
-func (s *Service) CreateUser(ctx context.Context, username, password string, role domain.Role) (domain.User, error) {
-	u := domain.User{Username: strings.TrimSpace(username), Role: role}
+// alguém administrando, e é chamado por essa pessoa. Se quem chama pode
+// conceder o escopo pedido é decidido antes, por quem conhece o escopo
+// dela (ver domain.Access.Grants).
+func (s *Service) CreateUser(
+	ctx context.Context, username, password string, role domain.Role, scope domain.Scope,
+) (domain.User, error) {
+	u := domain.User{Username: strings.TrimSpace(username), Role: role, Scope: scope.Normalize()}
 	if err := u.Validate(); err != nil {
 		return domain.User{}, err
 	}
@@ -407,55 +411,77 @@ func (s *Service) CreateUser(ctx context.Context, username, password string, rol
 	return u, nil
 }
 
-// SetRole troca o papel de uma conta.
+// SetAccess troca o papel e, quando informado, o escopo de uma conta.
 //
-// Recusa rebaixar o último administrador. Sem esta guarda, um clique
-// deixaria a instalação sem ninguém capaz de criar contas, cadastrar
-// alvos ou publicar página — e a única saída seria mexer no banco à mão.
-func (s *Service) SetRole(ctx context.Context, id int64, role domain.Role) (domain.User, error) {
+// Escopo nulo mantém o atual: trocar o papel não pode alargar o que a
+// conta alcança porque um campo ficou de fora do pedido.
+//
+// Recusa tirar do último administrador com escopo total o papel ou o
+// escopo. Administrador restrito não cria grupo de topo nem mexe em canal
+// ou página pública; sem ninguém com escopo total, a instalação ficaria
+// sem quem faça isso, e a única saída seria mexer no banco à mão.
+func (s *Service) SetAccess(ctx context.Context, id int64, role domain.Role, scope *domain.Scope) (domain.User, error) {
 	u, err := s.store.Users().Get(ctx, id)
 	if err != nil {
 		return domain.User{}, err
 	}
-	if u.Role == role {
-		return u, nil
+
+	novo := u
+	novo.Role = role
+	if scope != nil {
+		novo.Scope = scope.Normalize()
+	}
+	if err := novo.Validate(); err != nil {
+		return domain.User{}, err
 	}
 
-	if u.Role == domain.RoleAdmin {
-		if err := s.requireAnotherAdmin(ctx); err != nil {
+	if fullAdmin(u) && !fullAdmin(novo) {
+		if err := s.requireAnotherFullAdmin(ctx); err != nil {
 			return domain.User{}, err
 		}
 	}
 
-	u.Role = role
-	if err := u.Validate(); err != nil {
+	if err := s.store.Users().Update(ctx, novo); err != nil {
 		return domain.User{}, err
 	}
-	if err := s.store.Users().Update(ctx, u); err != nil {
-		return domain.User{}, err
-	}
-	return u, nil
+	return novo, nil
 }
 
-// DeleteUser remove a conta, recusando o último administrador.
+// DeleteUser remove a conta, recusando o último administrador com escopo
+// total.
 func (s *Service) DeleteUser(ctx context.Context, id int64) error {
 	u, err := s.store.Users().Get(ctx, id)
 	if err != nil {
 		return err
 	}
-	if u.Role == domain.RoleAdmin {
-		if err := s.requireAnotherAdmin(ctx); err != nil {
+	if fullAdmin(u) {
+		if err := s.requireAnotherFullAdmin(ctx); err != nil {
 			return err
 		}
 	}
 	return s.store.Users().Delete(ctx, id)
 }
 
-// requireAnotherAdmin confere que sobra alguém administrando.
-func (s *Service) requireAnotherAdmin(ctx context.Context) error {
-	n, err := s.store.Users().CountByRole(ctx, domain.RoleAdmin)
+// fullAdmin é a conta que administra a instalação inteira.
+func fullAdmin(u domain.User) bool {
+	return u.Role == domain.RoleAdmin && !u.Scope.Restricted
+}
+
+// requireAnotherFullAdmin confere que sobra alguém administrando tudo.
+//
+// Varre a lista em vez de contar no banco: contas são poucas, e a regra
+// "administrador com escopo total" fica escrita aqui uma vez, em vez de
+// repetida em SQL.
+func (s *Service) requireAnotherFullAdmin(ctx context.Context) error {
+	contas, err := s.store.Users().List(ctx)
 	if err != nil {
 		return err
+	}
+	n := 0
+	for _, c := range contas {
+		if fullAdmin(c) {
+			n++
+		}
 	}
 	if n <= 1 {
 		return ErrLastAdmin

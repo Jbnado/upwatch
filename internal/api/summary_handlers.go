@@ -74,7 +74,8 @@ func (a *API) handleSummaries(w http.ResponseWriter, r *http.Request) {
 	}
 
 	page, err := a.store.Monitors().List(r.Context(), store.MonitorFilter{
-		Page: store.PageFilter{Limit: store.MaxPageSize},
+		Page:   store.PageFilter{Limit: store.MaxPageSize},
+		Groups: viewerFrom(r).monitorSelection(),
 	})
 	if err != nil {
 		writeStoreError(w, err)

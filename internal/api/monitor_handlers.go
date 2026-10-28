@@ -33,6 +33,9 @@ type monitorRequest struct {
 	ParentID *int64          `json:"parent_id,omitempty"`
 	Enabled  *bool           `json:"enabled,omitempty"`
 	Tags     []string        `json:"tags,omitempty"`
+	// GroupID nulo é "Sem grupo". Como o resto do corpo, o PUT sobrescreve:
+	// omitir move o monitor para "Sem grupo".
+	GroupID *int64 `json:"group_id,omitempty"`
 }
 
 // toDomain converte o corpo recebido, aplicando os padrões.
@@ -63,6 +66,7 @@ func (req monitorRequest) toDomain() (domain.Monitor, error) {
 		DegradedLatency:       time.Duration(req.DegradedLatencyMillis) * time.Millisecond,
 		Config:                req.Config,
 		ParentID:              req.ParentID,
+		GroupID:               req.GroupID,
 		Enabled:               enabled,
 		// Normalizada na entrada, não na leitura: "Produção" e "produção"
 		// digitadas em momentos diferentes viram o mesmo grupo, e quem
@@ -83,6 +87,7 @@ type monitorResponse struct {
 	DegradedLatencyMillis int             `json:"degraded_latency_ms"`
 	Config                json.RawMessage `json:"config,omitempty"`
 	ParentID              *int64          `json:"parent_id,omitempty"`
+	GroupID               *int64          `json:"group_id"`
 	Enabled               bool            `json:"enabled"`
 	Tags                  []string        `json:"tags"`
 	CreatedAt             time.Time       `json:"created_at"`
@@ -102,7 +107,7 @@ func toMonitorResponse(m domain.Monitor) monitorResponse {
 		ConfirmationThreshold: m.ConfirmationThreshold,
 		DegradedLatencyMillis: int(m.DegradedLatency.Milliseconds()),
 		Config:                m.Config, ParentID: m.ParentID,
-		Enabled: m.Enabled, Tags: tags,
+		GroupID: m.GroupID, Enabled: m.Enabled, Tags: tags,
 		CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt,
 	}
 }
@@ -114,11 +119,17 @@ func (a *API) handleListMonitors(w http.ResponseWriter, r *http.Request) {
 			AfterID: queryInt64(r, "after_id", 0),
 			Limit:   int(queryInt64(r, "limit", 0)),
 		},
-		Tag: r.URL.Query().Get("tag"),
+		Tag:    r.URL.Query().Get("tag"),
+		Groups: viewerFrom(r).monitorSelection(),
 	}
 	if raw := r.URL.Query().Get("enabled"); raw != "" {
 		enabled := raw == "true"
 		filter.Enabled = &enabled
+	}
+	if groupID := queryInt64(r, "group_id", 0); groupID > 0 {
+		// O grupo pedido é recortado pelo escopo: pedir explicitamente o
+		// grupo dos outros devolve lista vazia, como um grupo sem nada.
+		filter.Groups = viewerFrom(r).selectGroup(groupID)
 	}
 
 	page, err := a.store.Monitors().List(r.Context(), filter)
@@ -156,6 +167,10 @@ func (a *API) handleCreateMonitor(w http.ResponseWriter, r *http.Request) {
 	if !a.validateMonitor(w, &m) {
 		return
 	}
+	if err := viewerFrom(r).checkMonitorPlacement(m.GroupID); err != nil {
+		writeStoreError(w, err)
+		return
+	}
 
 	if err := a.store.Monitors().Create(r.Context(), &m); err != nil {
 		writeStoreError(w, err)
@@ -163,23 +178,17 @@ func (a *API) handleCreateMonitor(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.notifyScheduler(m)
-	a.events.publish(event{Type: "monitor.created", Data: toMonitorResponse(m)})
+	a.events.publish(event{Type: "monitor.created", Data: toMonitorResponse(m), monitor: &m})
 	writeJSON(w, http.StatusCreated, toMonitorResponse(m))
 }
 
-// handleGetMonitor devolve um monitor.
+// handleGetMonitor devolve um monitor, já lido e conferido pela guarda
+// de escopo.
 func (a *API) handleGetMonitor(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(w, r)
-	if !ok {
+	if _, ok := pathID(w, r); !ok {
 		return
 	}
-
-	m, err := a.store.Monitors().Get(r.Context(), id)
-	if err != nil {
-		writeStoreError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, toMonitorResponse(m))
+	writeJSON(w, http.StatusOK, toMonitorResponse(monitorFrom(r)))
 }
 
 // handleUpdateMonitor sobrescreve um monitor.
@@ -203,14 +212,19 @@ func (a *API) handleUpdateMonitor(w http.ResponseWriter, r *http.Request) {
 	if !a.validateMonitor(w, &m) {
 		return
 	}
+	if err := viewerFrom(r).checkMonitorPlacement(m.GroupID); err != nil {
+		writeStoreError(w, err)
+		return
+	}
 
 	if err := a.store.Monitors().Update(r.Context(), m); err != nil {
 		writeStoreError(w, err)
 		return
 	}
 
+	anterior := monitorFrom(r)
 	a.notifyScheduler(m)
-	a.events.publish(event{Type: "monitor.updated", Data: toMonitorResponse(m)})
+	a.events.publish(event{Type: "monitor.updated", Data: toMonitorResponse(m), monitor: &m, previous: &anterior})
 	writeJSON(w, http.StatusOK, toMonitorResponse(m))
 }
 
@@ -229,7 +243,8 @@ func (a *API) handleDeleteMonitor(w http.ResponseWriter, r *http.Request) {
 	if a.scheduler != nil {
 		a.scheduler.Remove(id)
 	}
-	a.events.publish(event{Type: "monitor.deleted", Data: map[string]int64{"id": id}})
+	anterior := monitorFrom(r)
+	a.events.publish(event{Type: "monitor.deleted", Data: map[string]int64{"id": id}, previous: &anterior})
 	w.WriteHeader(http.StatusNoContent)
 }
 

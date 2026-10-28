@@ -244,6 +244,9 @@ func (a *API) handleListIncidents(w http.ResponseWriter, r *http.Request) {
 		},
 		MonitorID: queryInt64(r, "monitor_id", 0),
 		OnlyOpen:  r.URL.Query().Get("open") == "true",
+		// Pedir o monitor de fora pelo parâmetro devolve lista vazia, como
+		// um monitor sem quedas: nada confirma que ele existe.
+		Groups: viewerFrom(r).monitorSelection(),
 	}
 
 	page, err := a.store.Incidents().List(r.Context(), filter)
