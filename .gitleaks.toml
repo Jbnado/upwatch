@@ -28,4 +28,7 @@ regexes = [
   # Senha do PostgreSQL descartável dos testes (CONTRIBUTING e CI): o
   # contêiner nasce e morre com a suíte.
   '''^upwatch$''',
+  # Placeholder dos exemplos de DSN na documentação
+  # ("postgres://usuario:senha@host").
+  '''^senha$''',
 ]
