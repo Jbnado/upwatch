@@ -42,6 +42,11 @@ const TIPOS: Record<ChannelType, { label: string; ajuda: string; exemplo: string
   },
 };
 
+/** channelTypeLabel é o nome do tipo de canal como a interface o escreve. */
+export function channelTypeLabel(type: ChannelType): string {
+  return TIPOS[type]?.label ?? type;
+}
+
 export function Channels() {
   const [canais, setCanais] = useState<Channel[] | null>(null);
   const [erro, setErro] = useState<string | null>(null);
@@ -88,8 +93,8 @@ export function Channels() {
       <div className="flex flex-col gap-1.5">
         <h2 className="text-lead font-medium">Canais de aviso</h2>
         <p className="text-body text-ink-2">
-          Para onde o UpWatch manda o alerta quando um alvo cai. Vincule cada canal aos
-          monitores na tela do próprio monitor.
+          Para onde o UpWatch manda o alerta quando um alvo cai. Vincule cada canal a um grupo,
+          em Grupos, ou a um monitor, na aba Avisos dele.
         </p>
       </div>
 
@@ -410,7 +415,14 @@ function Avancado({
  * Vive na tela do monitor porque a pergunta é "quem quero que saiba quando
  * este alvo cair?" — não "quais canais existem?".
  */
-export function MonitorChannels({ monitorID }: { monitorID: number }) {
+export function MonitorChannels({
+  monitorID,
+  onChange,
+}: {
+  monitorID: number;
+  /** Avisado depois de cada vínculo, para quem mostra a lista resolvida. */
+  onChange?: () => void;
+}) {
   const [todos, setTodos] = useState<Channel[]>([]);
   const [vinculados, setVinculados] = useState<Set<number>>(new Set());
   const [carregando, setCarregando] = useState(true);
@@ -445,6 +457,7 @@ export function MonitorChannels({ monitorID }: { monitorID: number }) {
     try {
       if (ligado) await api.unlinkChannel(monitorID, canal.id);
       else await api.linkChannel(monitorID, canal.id);
+      onChange?.();
     } catch {
       // Falhou: recarrega para a tela voltar a refletir o servidor em vez
       // de mostrar um estado que não existe.

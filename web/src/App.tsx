@@ -80,7 +80,14 @@ export function App() {
 
       <main>
         {route.name === "board" && <Board podeEscrever={session.user.role === "admin"} />}
-        {route.name === "monitor" && <MonitorDetail id={route.id} />}
+        {route.name === "monitor" && (
+          <MonitorDetail
+            id={route.id}
+            tab={route.tab ?? "eventos"}
+            anchor={route.anchor}
+            eu={session.user}
+          />
+        )}
         {route.name === "monitor-new" && <MonitorForm />}
         {route.name === "monitor-edit" && <MonitorForm id={route.id} />}
         {route.name === "settings" && (
