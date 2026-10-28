@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
 import type { GroupSummary, Problem } from "../api/types";
 import { Alert, Button, Empty, Loading, RowLink, StatusDot } from "../components/ui";
+import { explainCause } from "../lib/cause";
 import { elapsed } from "../lib/format";
 import { problemRoute } from "../lib/events";
 import { cardWord, crumb, hasGroups, organizeCards, problemWord } from "../lib/groups";
@@ -195,6 +196,11 @@ const PROBLEM_TONE: Record<Problem["status"], string> = {
 };
 
 function ProblemRow({ problem: p }: { problem: Problem }) {
+  const causa = p.cause ? explainCause(p.cause) : null;
+  // "worker default sem sinal" seguido de "sem sinal" repetiria a mesma
+  // palavra; aí só o texto técnico acrescenta alguma coisa.
+  const repete = causa?.summary === problemWord(p.status, p.type);
+
   return (
     <RowLink
       to={problemRoute(p)}
@@ -217,9 +223,17 @@ function ProblemRow({ problem: p }: { problem: Problem }) {
         </span>
       </span>
 
-      {p.cause && (
-        <span className="col-span-2 truncate pl-[15px] text-small text-ink-2 sm:col-start-2 sm:pl-0">
-          {p.cause}
+      {causa && (
+        <span className="col-span-2 flex min-w-0 flex-col pl-[15px] sm:col-start-2 sm:pl-0">
+          {!repete && <span className="truncate text-small text-ink-2">{causa.summary}</span>}
+          {/* O texto técnico fica discreto e cortado, inteiro no title: a
+              linha é um link, e um botão de expandir dentro dele seria
+              controle dentro de controle. O detalhe mostra inteiro. */}
+          {causa.known && (
+            <span className="tabular truncate text-micro text-ink-3" title={causa.raw}>
+              {causa.raw}
+            </span>
+          )}
         </span>
       )}
     </RowLink>

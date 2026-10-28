@@ -84,7 +84,9 @@ describe("Home", () => {
     expect(link).toHaveTextContent("RPA · prod");
     expect(link).toHaveTextContent("fora do ar");
     expect(link).toHaveTextContent("há 12 min");
-    expect(link).toHaveTextContent("connection refused");
+    // Resumo legível na frente, o texto técnico inteiro no title.
+    expect(link).toHaveTextContent("conexão recusada");
+    expect(within(link).getByTitle("connection refused")).toBeInTheDocument();
   });
 
   it("dá um cartão por ambiente, cada um um link inteiro com a palavra do estado", async () => {
