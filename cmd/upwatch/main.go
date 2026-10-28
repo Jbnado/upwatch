@@ -180,6 +180,14 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 
 	authSvc := auth.New(st, auth.Options{Clock: real, SessionTTL: cfg.SessionTTL})
 
+	// Sem token e com conta restrita, /metrics recusa toda raspagem. Avisar
+	// no início poupa quem opera de descobrir pelo alerta de coleta parada.
+	if aviso, err := api.MetricsExposureWarning(context.Background(), st, cfg.MetricsToken); err != nil {
+		slog.Warn("não foi possível conferir a exposição de /metrics", "erro", err)
+	} else if aviso != "" {
+		slog.Warn(aviso)
+	}
+
 	apiHandler := api.New(api.Options{
 		Store:         st,
 		Auth:          authSvc,

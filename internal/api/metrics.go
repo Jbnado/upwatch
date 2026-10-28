@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -30,24 +31,77 @@ import (
 // corte é anunciado numa métrica própria, não escondido.
 const metricsMaxMonitors = 2000
 
+// metricsNeedTokenMsg explica a recusa de /metrics aberto.
+const metricsNeedTokenMsg = "há contas com acesso restrito a grupos, e /metrics sem token " +
+	"publicaria a todos os nomes de monitores e grupos que o escopo delas esconde; " +
+	"defina UPWATCH_METRICS_TOKEN e configure o Prometheus para enviá-lo como Bearer"
+
+// hasScopedAccount informa se alguma conta tem escopo restrito.
+//
+// Consultado a cada raspagem, e não só no início: a primeira conta
+// restrita pode nascer com o processo no ar. Contas são poucas, e a
+// leitura é a mesma que a tela de contas faz.
+func hasScopedAccount(ctx context.Context, st store.Store) (bool, error) {
+	contas, err := st.Users().List(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, c := range contas {
+		if c.Scope.Restricted {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// MetricsExposureWarning devolve o aviso de início para /metrics aberto
+// numa instalação com contas restritas, ou vazio quando não há o que
+// avisar.
+//
+// É o mesmo critério da recusa em handleMetrics, para o log e a resposta
+// não discordarem.
+func MetricsExposureWarning(ctx context.Context, st store.Store, token string) (string, error) {
+	if token != "" {
+		return "", nil
+	}
+	restrita, err := hasScopedAccount(ctx, st)
+	if err != nil || !restrita {
+		return "", err
+	}
+	return "/metrics vai responder 403: " + metricsNeedTokenMsg, nil
+}
+
 // handleMetrics publica o estado atual em texto.
 //
 // Fora da sessão: o Prometheus raspa sem ela. O token é opcional — sem
 // ele, a exposição fica aberta, como sempre foi, para quem raspa na rede
 // local não precisar configurar nada; com ele, a instalação exposta deixa
-// de publicar o nome de todos os monitores para qualquer um. O que sai
+// de publicar o nome de todos os monitores para qualquer um. Aberta só
+// enquanto nenhuma conta tiver escopo restrito: a partir da primeira, a
+// exposição sem credencial seria o atalho dela para ver o que o escopo
+// esconde, e a resposta passa a ser 403 explicando como definir o token. O que sai
 // aqui são contagens, nomes de monitor e de grupo — nunca endereço de
 // alvo, que descreveria a topologia e ainda traria cardinalidade alta.
 func (a *API) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	if a.metricsToken != "" {
 		segredo, ok := bearerToken(r)
 		if !ok || !subtleEqual(segredo, a.metricsToken) {
 			writeError(w, http.StatusUnauthorized, codeUnauthorized, "token de métricas inválido")
 			return
 		}
+	} else {
+		restrita, err := hasScopedAccount(ctx, a.store)
+		if err != nil {
+			writeStoreError(w, err)
+			return
+		}
+		if restrita {
+			writeError(w, http.StatusForbidden, codeForbidden, "%s", metricsNeedTokenMsg)
+			return
+		}
 	}
 
-	ctx := r.Context()
 	var b strings.Builder
 
 	family(&b, "upwatch_build_info", "gauge",

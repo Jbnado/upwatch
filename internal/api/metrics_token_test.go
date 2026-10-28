@@ -85,3 +85,59 @@ func TestMetricsLabelTheGroup(t *testing.T) {
 		}
 	}
 }
+
+// Sem token, /metrics publica nome de monitor e de grupo de toda a
+// instalação, fora de qualquer sessão. Enquanto todas as contas veem tudo
+// isso não muda nada; a partir da primeira conta restrita, a exposição
+// aberta passa a ser o caminho para ela ver o que o escopo esconde. A
+// resposta diz o que fazer, em vez de só recusar.
+func TestMetricsWithoutTokenRefusesOnceAScopedAccountExists(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+	s.createMonitor(t, newMonitorBody("api-interna"))
+
+	assertStatus(t, s.metricasCom(t, ""), http.StatusOK)
+
+	g := s.criarGrupo(t, "Retaguarda", nil)
+	resp := s.do(t, http.MethodPost, "/api/v1/users", map[string]any{
+		"username": "restrita", "password": "senha-de-teste-12345", "role": "viewer",
+		"scope": map[string]any{"all_groups": false, "group_ids": []int64{g}},
+	})
+	assertStatus(t, resp, http.StatusCreated)
+
+	resp = s.metricasCom(t, "")
+	assertStatus(t, resp, http.StatusForbidden)
+	corpo := readBody(t, resp)
+	if !strings.Contains(corpo, "UPWATCH_METRICS_TOKEN") {
+		t.Errorf("a recusa não orienta a definir o token: %s", corpo)
+	}
+	if strings.Contains(corpo, "api-interna") {
+		t.Error("a recusa vazou o nome do monitor")
+	}
+}
+
+// O aviso de início diz a mesma coisa no log, antes de alguém raspar e
+// receber 403 sem entender.
+func TestMetricsExposureWarning(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+	ctx := context.Background()
+
+	if msg, err := api.MetricsExposureWarning(ctx, s.store, ""); err != nil || msg != "" {
+		t.Fatalf("sem conta restrita: aviso = %q, %v; want nenhum", msg, err)
+	}
+
+	g := s.criarGrupo(t, "Retaguarda", nil)
+	assertStatus(t, s.do(t, http.MethodPost, "/api/v1/users", map[string]any{
+		"username": "restrita", "password": "senha-de-teste-12345", "role": "viewer",
+		"scope": map[string]any{"all_groups": false, "group_ids": []int64{g}},
+	}), http.StatusCreated)
+
+	msg, err := api.MetricsExposureWarning(ctx, s.store, "")
+	if err != nil || !strings.Contains(msg, "UPWATCH_METRICS_TOKEN") {
+		t.Fatalf("com conta restrita e sem token: aviso = %q, %v", msg, err)
+	}
+	if msg, _ := api.MetricsExposureWarning(ctx, s.store, "um-token"); msg != "" {
+		t.Errorf("com token definido não há o que avisar, veio %q", msg)
+	}
+}
