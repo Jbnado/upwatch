@@ -52,7 +52,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.25'
+          go-version-file: go.mod
           cache: true
 
       # A interface é embarcada por go:embed, então construí-la é
