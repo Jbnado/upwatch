@@ -24,9 +24,13 @@ linters:
         - (*database/sql.DB).Close
         - (io.Closer).Close
         # Conexão de sonda sendo descartada: o alvo já respondeu ou não,
-        # e o resultado da verificação não muda pelo fechamento.
+        # e o resultado da verificação não muda pelo fechamento. Vale
+        # também para a sessão dos checkers de banco e para o cliente do
+        # Redis, que abrem uma conexão por verificação e a jogam fora.
         - (*crypto/tls.Conn).Close
         - (net.Conn).Close
+        - (*database/sql.Conn).Close
+        - (*github.com/redis/go-redis/v9.Client).Close
 
   exclusions:
     rules:
