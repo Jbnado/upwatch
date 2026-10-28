@@ -1614,7 +1614,13 @@ components:
         primeira execução prevista mais a folga) e cai depois dela.
       required: [token]
       properties:
-        token: { type: string, minLength: 16 }
+        token:
+          type: string
+          minLength: 16
+          description: |
+            Credencial do endpoint, única entre os monitores. Só o
+            administrador a recebe de volta; para o observador e no fluxo de
+            eventos ela sai como `***`.
         grace_period_seconds:
           type: integer
           minimum: 0

@@ -97,7 +97,17 @@ type monitorResponse struct {
 	NextExpectedPush *time.Time `json:"next_expected_push,omitempty"`
 }
 
-func toMonitorResponse(m domain.Monitor) monitorResponse {
+// toMonitorResponse monta a resposta de um monitor.
+//
+// reveal diz se a configuração sai com os segredos — hoje, o token do
+// push. Só o administrador os recebe, porque é quem cadastra a rotina e
+// precisa copiar o endereço; o padrão, e o que vai no fluxo de eventos
+// para todo mundo conectado, é mascarado.
+func toMonitorResponse(m domain.Monitor, reveal bool) monitorResponse {
+	config := m.Config
+	if !reveal {
+		config = checker.RedactPushToken(m.Type, m.Config)
+	}
 	tags := m.Tags
 	if tags == nil {
 		// Lista vazia em vez de null: o cliente pode iterar sem checar.
@@ -109,7 +119,7 @@ func toMonitorResponse(m domain.Monitor) monitorResponse {
 		TimeoutSeconds:        int(m.Timeout.Seconds()),
 		ConfirmationThreshold: m.ConfirmationThreshold,
 		DegradedLatencyMillis: int(m.DegradedLatency.Milliseconds()),
-		Config:                m.Config, ParentID: m.ParentID,
+		Config:                config, ParentID: m.ParentID,
 		Enabled: m.Enabled, Tags: tags,
 		CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt,
 	}
@@ -117,8 +127,8 @@ func toMonitorResponse(m domain.Monitor) monitorResponse {
 
 // detailResponse é a resposta de um monitor isolado, com o que só faz
 // sentido calcular para um de cada vez.
-func (a *API) detailResponse(m domain.Monitor) monitorResponse {
-	resp := toMonitorResponse(m)
+func (a *API) detailResponse(m domain.Monitor, reveal bool) monitorResponse {
+	resp := toMonitorResponse(m, reveal)
 	if m.Type != domain.MonitorPush {
 		return resp
 	}
@@ -150,9 +160,10 @@ func (a *API) handleListMonitors(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	reveal := canSeeSecrets(r)
 	items := make([]monitorResponse, 0, len(page.Items))
 	for _, m := range page.Items {
-		items = append(items, toMonitorResponse(m))
+		items = append(items, toMonitorResponse(m, reveal))
 	}
 
 	body := map[string]any{"items": items, "has_more": page.HasMore}
@@ -186,8 +197,8 @@ func (a *API) handleCreateMonitor(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.notifyScheduler(m)
-	a.events.publish(event{Type: "monitor.created", Data: toMonitorResponse(m)})
-	writeJSON(w, http.StatusCreated, a.detailResponse(m))
+	a.events.publish(event{Type: "monitor.created", Data: toMonitorResponse(m, false)})
+	writeJSON(w, http.StatusCreated, a.detailResponse(m, true))
 }
 
 // handleGetMonitor devolve um monitor.
@@ -202,7 +213,7 @@ func (a *API) handleGetMonitor(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, a.detailResponse(m))
+	writeJSON(w, http.StatusOK, a.detailResponse(m, canSeeSecrets(r)))
 }
 
 // handleUpdateMonitor sobrescreve um monitor.
@@ -243,8 +254,8 @@ func (a *API) handleUpdateMonitor(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.notifyScheduler(m)
-	a.events.publish(event{Type: "monitor.updated", Data: toMonitorResponse(m)})
-	writeJSON(w, http.StatusOK, a.detailResponse(m))
+	a.events.publish(event{Type: "monitor.updated", Data: toMonitorResponse(m, false)})
+	writeJSON(w, http.StatusOK, a.detailResponse(m, true))
 }
 
 // handleDeleteMonitor remove um monitor e seu histórico.
@@ -288,6 +299,14 @@ func (a *API) validateMonitor(w http.ResponseWriter, m *domain.Monitor) bool {
 		return false
 	}
 	return true
+}
+
+// canSeeSecrets diz se quem pede pode receber os segredos da
+// configuração. Criação e edição nem perguntam: as rotas já são só de
+// administrador.
+func canSeeSecrets(r *http.Request) bool {
+	u, ok := userFrom(r.Context())
+	return ok && u.Role.CanWrite()
 }
 
 // pushTokenFree recusa o token de push que já pertence a outro monitor.

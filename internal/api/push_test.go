@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"net/http"
@@ -447,4 +448,89 @@ func TestPushIsRateLimitedPerClient(t *testing.T) {
 	// E passa com o tempo, sem precisar reiniciar nada.
 	s.clock.Advance(time.Minute)
 	assertStatus(t, s.do(t, http.MethodPost, "/api/v1/push/"+pushToken, nil), http.StatusOK)
+}
+
+// ---------- token fora do alcance de quem só lê ----------
+
+// O token do push é a credencial do endpoint: quem o tem mantém o monitor
+// verde com o serviço parado, ou o derruba com um "down" falso. O
+// observador lê tudo o que o administrador lê, menos isso — ele não
+// cadastra a rotina, então não precisa do endereço completo.
+func TestViewerDoesNotSeePushToken(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+	body := pushMonitorBody("backup noturno", pushToken)
+	body["config"] = map[string]any{
+		"token": pushToken, "schedule": "2 9 * * *", "timezone": "America/Sao_Paulo",
+	}
+	id := s.createMonitor(t, body)
+
+	// Controle positivo: o administrador vê o token, porque precisa
+	// copiar o endereço para a rotina. Sem isto o teste passaria também
+	// se o token simplesmente não fosse devolvido a ninguém.
+	resp := s.do(t, http.MethodGet, "/api/v1/monitors/"+itoa(id), nil)
+	assertStatus(t, resp, http.StatusOK)
+	if !strings.Contains(readBody(t, resp), pushToken) {
+		t.Fatal("the admin does not see the token; the check below would be vacuous")
+	}
+
+	s.comoObservador(t)
+	for _, caminho := range []string{"/api/v1/monitors/" + itoa(id), "/api/v1/monitors"} {
+		resp := s.do(t, http.MethodGet, caminho, nil)
+		assertStatus(t, resp, http.StatusOK)
+		corpo := readBody(t, resp)
+		if strings.Contains(corpo, pushToken) {
+			t.Errorf("%s revealed the push token to a viewer:\n%s", caminho, corpo)
+		}
+		// O resto da configuração continua visível: é o que o observador
+		// usa para entender por que o monitor caiu.
+		if !strings.Contains(corpo, "America/Sao_Paulo") {
+			t.Errorf("%s hid the rest of the config from a viewer:\n%s", caminho, corpo)
+		}
+	}
+}
+
+// O fluxo de eventos vai para todo mundo conectado, observador incluído,
+// então não carrega o token de ninguém.
+func TestEventStreamDoesNotCarryPushToken(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.URL+"/api/v1/events", nil)
+	if err != nil {
+		t.Fatalf("NewRequest returned unexpected error: %v", err)
+	}
+	req.AddCookie(s.cookie)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("opening the stream returned unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		s.do(t, http.MethodPost, "/api/v1/monitors", pushMonitorBody("cron", pushToken)) //nolint:errcheck
+	}()
+
+	scanner := bufio.NewScanner(resp.Body)
+	evento := false
+	for scanner.Scan() {
+		linha := scanner.Text()
+		if strings.Contains(linha, "monitor.created") {
+			evento = true
+			continue
+		}
+		if evento && strings.HasPrefix(linha, "data:") {
+			if strings.Contains(linha, pushToken) {
+				t.Errorf("the event stream carried the push token: %s", linha)
+			}
+			if !strings.Contains(linha, `"cron"`) {
+				t.Errorf("event data = %s, want the created monitor", linha)
+			}
+			return
+		}
+	}
+	t.Fatal("the stream never delivered the monitor.created event")
 }
