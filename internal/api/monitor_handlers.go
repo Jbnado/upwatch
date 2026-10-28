@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Jbnado/upwatch/internal/checker"
 	"github.com/Jbnado/upwatch/internal/domain"
 	"github.com/Jbnado/upwatch/internal/store"
 )
@@ -87,6 +88,12 @@ type monitorResponse struct {
 	Tags                  []string        `json:"tags"`
 	CreatedAt             time.Time       `json:"created_at"`
 	UpdatedAt             time.Time       `json:"updated_at"`
+
+	// NextExpectedPush é a próxima execução prevista de um push com
+	// agenda. Só aparece no detalhe, na criação e na edição: é ali que um
+	// fuso ou uma expressão errados precisam ficar visíveis, e não na
+	// primeira madrugada em que o aviso deveria ter chegado.
+	NextExpectedPush *time.Time `json:"next_expected_push,omitempty"`
 }
 
 func toMonitorResponse(m domain.Monitor) monitorResponse {
@@ -105,6 +112,21 @@ func toMonitorResponse(m domain.Monitor) monitorResponse {
 		Enabled: m.Enabled, Tags: tags,
 		CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt,
 	}
+}
+
+// detailResponse é a resposta de um monitor isolado, com o que só faz
+// sentido calcular para um de cada vez.
+func (a *API) detailResponse(m domain.Monitor) monitorResponse {
+	resp := toMonitorResponse(m)
+	if m.Type != domain.MonitorPush {
+		return resp
+	}
+	// Configuração que não interpreta aqui já foi recusada no cadastro;
+	// se aparecer, a falta do campo é a resposta menos enganosa.
+	if next, ok, err := checker.NextPushRun(m.Config, a.clock.Now()); err == nil && ok {
+		resp.NextExpectedPush = &next
+	}
+	return resp
 }
 
 // handleListMonitors devolve uma página de monitores.
@@ -164,7 +186,7 @@ func (a *API) handleCreateMonitor(w http.ResponseWriter, r *http.Request) {
 
 	a.notifyScheduler(m)
 	a.events.publish(event{Type: "monitor.created", Data: toMonitorResponse(m)})
-	writeJSON(w, http.StatusCreated, toMonitorResponse(m))
+	writeJSON(w, http.StatusCreated, a.detailResponse(m))
 }
 
 // handleGetMonitor devolve um monitor.
@@ -179,7 +201,7 @@ func (a *API) handleGetMonitor(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toMonitorResponse(m))
+	writeJSON(w, http.StatusOK, a.detailResponse(m))
 }
 
 // handleUpdateMonitor sobrescreve um monitor.
@@ -209,9 +231,19 @@ func (a *API) handleUpdateMonitor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Relido do banco: o corpo da edição não traz a data de criação, e o
+	// push conta dela a primeira janela. Entregar ao agendador o monitor
+	// montado do pedido deixaria um push sem sinal "aguardando" para
+	// sempre só porque alguém mudou o nome.
+	m, err = a.store.Monitors().Get(r.Context(), id)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+
 	a.notifyScheduler(m)
 	a.events.publish(event{Type: "monitor.updated", Data: toMonitorResponse(m)})
-	writeJSON(w, http.StatusOK, toMonitorResponse(m))
+	writeJSON(w, http.StatusOK, a.detailResponse(m))
 }
 
 // handleDeleteMonitor remove um monitor e seu histórico.

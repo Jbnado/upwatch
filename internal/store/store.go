@@ -352,10 +352,14 @@ type TimeseriesStore interface {
 	// batida a cada verificação, então ler a última batida seria ler a
 	// que ele próprio acabou de escrever, e o monitor pareceria
 	// eternamente saudável.
-	RecordPush(ctx context.Context, monitorID int64, at time.Time) error
+	//
+	// Guarda só o último sinal, inteiro: status, causa e latência
+	// substituem os do anterior, para uma causa velha não grudar num sinal
+	// saudável.
+	RecordPush(ctx context.Context, monitorID int64, sig domain.PushSignal) error
 
-	// LastPush devolve o instante do último sinal, e se houve algum.
-	LastPush(ctx context.Context, monitorID int64) (time.Time, bool, error)
+	// LastPush devolve o último sinal, e se houve algum.
+	LastPush(ctx context.Context, monitorID int64) (domain.PushSignal, bool, error)
 
 	// LatestHeartbeats devolve a batida mais recente de cada monitor.
 	//

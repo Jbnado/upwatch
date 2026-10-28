@@ -643,6 +643,28 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
 
   /api/v1/push/{token}:
+    get:
+      tags: [push]
+      summary: Registra o sinal de um monitor push
+      description: |
+        Mesmo efeito do POST. Existe porque muito agendador e muito
+        healthcheck só sabem fazer `curl URL`, e o push é justamente
+        para eles.
+
+        Sem parâmetros o sinal significa `up`, como sempre significou.
+      security: []
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+        - $ref: "#/components/parameters/PushStatus"
+        - $ref: "#/components/parameters/PushMsg"
+        - $ref: "#/components/parameters/PushLatency"
+      responses:
+        "200": { $ref: "#/components/responses/PushAccepted" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
     post:
       tags: [push]
       summary: Registra o sinal de um monitor push
@@ -650,22 +672,46 @@ paths:
         O segredo viaja no caminho porque quem reporta é um cron ou um
         worker, que não tem sessão de interface nem deve precisar de uma.
 
-        Token inválido e monitor inexistente devolvem a mesma resposta.
+        Token inválido e monitor inexistente devolvem a mesma resposta, e
+        o token é conferido antes dos parâmetros.
+
+        Status, causa e latência são opcionais e podem vir na query string
+        ou num corpo JSON (só com `Content-Type: application/json`; outro
+        corpo é ignorado, como sempre foi). Quando o mesmo campo vem nos
+        dois, vale a query string. Campos desconhecidos no corpo são
+        tolerados.
+
+        Um `down` explícito não abre incidente na hora: vira uma
+        verificação com falha e passa pela confirmação de N falhas como
+        qualquer outra. A causa vai para o incidente e para o aviso, e
+        nunca para a página pública.
       security: []
       parameters:
         - name: token
           in: path
           required: true
           schema: { type: string }
+        - $ref: "#/components/parameters/PushStatus"
+        - $ref: "#/components/parameters/PushMsg"
+        - $ref: "#/components/parameters/PushLatency"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status: { type: string, enum: [up, down, degraded], default: up }
+                msg:
+                  type: string
+                  description: Causa curta. Cortada em 200 caracteres.
+                latency_ms:
+                  type: integer
+                  minimum: 0
+                  description: Duração medida pelo próprio serviço
       responses:
-        "200":
-          description: Sinal registrado
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status: { type: string, example: ok }
+        "200": { $ref: "#/components/responses/PushAccepted" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /api/v1/channel-types:
@@ -1347,6 +1393,26 @@ components:
       scheme: bearer
 
   parameters:
+    PushStatus:
+      name: status
+      in: query
+      description: |
+        Estado informado pelo próprio serviço. Ausente vale `up`.
+        `unknown` é recusado: é o que o UpWatch diz quando não sabe.
+      schema: { type: string, enum: [up, down, degraded], default: up }
+    PushMsg:
+      name: msg
+      in: query
+      description: |
+        Causa curta, que vai para o incidente e para o aviso. Cortada em
+        200 caracteres; caracteres de controle viram espaço. Nunca aparece
+        na página pública.
+      schema: { type: string, maxLength: 200 }
+    PushLatency:
+      name: latency_ms
+      in: query
+      description: Duração medida pelo próprio serviço, em milissegundos inteiros.
+      schema: { type: integer, minimum: 0 }
     PathID:
       name: id
       in: path
@@ -1392,6 +1458,14 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    PushAccepted:
+      description: Sinal registrado
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              status: { type: string, example: ok }
     BadRequest:
       description: Requisição inválida
       content:
@@ -1489,7 +1563,7 @@ components:
           type: object
           description: |
             Configuração específica do tipo, validada no cadastro pelo
-            checker correspondente.
+            checker correspondente. Para push, ver PushConfig.
           additionalProperties: true
         parent_id: { type: integer, format: int64 }
         enabled: { type: boolean, default: true }
@@ -1505,6 +1579,38 @@ components:
             id: { type: integer, format: int64 }
             created_at: { type: string, format: date-time }
             updated_at: { type: string, format: date-time }
+            next_expected_push:
+              type: string
+              format: date-time
+              description: |
+                Próxima execução prevista de um push com agenda. Vem no
+                detalhe, na criação e na edição, nunca na listagem; ausente
+                sem agenda.
+
+    PushConfig:
+      type: object
+      description: |
+        Configuração de um monitor push. Sem `schedule`, o sinal é esperado
+        a cada `interval_seconds` mais a folga. Com `schedule`, o monitor só
+        cai quando falta o sinal de uma execução prevista até a folga
+        terminar. Um monitor que nunca recebeu sinal fica desconhecido
+        durante a primeira janela depois da criação (com agenda, até a
+        primeira execução prevista mais a folga) e cai depois dela.
+      required: [token]
+      properties:
+        token: { type: string, minLength: 16 }
+        grace_period_seconds:
+          type: integer
+          minimum: 0
+          description: Folga além do intervalo ou da execução prevista. Zero usa o próprio intervalo.
+        schedule:
+          type: string
+          example: "2 9,18 * * *"
+          description: Expressão cron de 5 campos (minuto hora dia mês dia-da-semana).
+        timezone:
+          type: string
+          example: America/Sao_Paulo
+          description: Fuso IANA da agenda. Obrigatório com `schedule`.
 
     Channel:
       type: object

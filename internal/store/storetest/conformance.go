@@ -102,6 +102,7 @@ func monitoringCases() []conformanceCase {
 
 		{"PushStateStartsEmpty", testPushStateStartsEmpty},
 		{"PushStateRoundTrips", testPushStateRoundTrips},
+		{"PushStateKeepsStatusMessageAndLatency", testPushStateKeepsStatusMessageAndLatency},
 		{"PushStateIsPerMonitor", testPushStateIsPerMonitor},
 		{"PushStateCascadesOnMonitorDelete", testPushStateCascadesOnMonitorDelete},
 		{"LatestHeartbeatsOnEmptyStore", testLatestHeartbeatsOnEmptyStore},
@@ -1256,28 +1257,71 @@ func testPushStateRoundTrips(t *testing.T, newStore Factory) {
 	ctx := context.Background()
 	id := mustCreateMonitor(t, s, "cron noturno")
 
-	if err := s.RecordPush(ctx, id, epoch); err != nil {
+	if err := s.RecordPush(ctx, id, upSignal(epoch)); err != nil {
 		t.Fatalf("RecordPush returned unexpected error: %v", err)
 	}
 	got, ok, err := s.LastPush(ctx, id)
 	if err != nil {
 		t.Fatalf("LastPush returned unexpected error: %v", err)
 	}
-	if !ok || !got.Equal(epoch) {
-		t.Fatalf("LastPush = (%v, %v), want (%v, true)", got, ok, epoch)
+	if !ok || !got.At.Equal(epoch) {
+		t.Fatalf("LastPush = (%v, %v), want (%v, true)", got.At, ok, epoch)
 	}
 
 	later := epoch.Add(time.Hour)
-	if err := s.RecordPush(ctx, id, later); err != nil {
+	if err := s.RecordPush(ctx, id, upSignal(later)); err != nil {
 		t.Fatalf("second RecordPush returned unexpected error: %v", err)
 	}
 	got, _, err = s.LastPush(ctx, id)
 	if err != nil {
 		t.Fatalf("LastPush returned unexpected error: %v", err)
 	}
-	if !got.Equal(later) {
-		t.Errorf("LastPush = %v, want %v", got, later)
+	if !got.At.Equal(later) {
+		t.Errorf("LastPush = %v, want %v", got.At, later)
 	}
+}
+
+// O sinal carrega o que o serviço sabe sobre si. Se o banco guardasse só
+// o instante, a causa informada pelo script se perderia entre o endpoint e
+// o checker, e o aviso voltaria a dizer apenas "silêncio".
+func testPushStateKeepsStatusMessageAndLatency(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	id := mustCreateMonitor(t, s, "fila de pedidos")
+
+	want := domain.PushSignal{
+		At: epoch, Status: domain.StatusDown, Message: "fila sem worker", LatencyMS: 1234,
+	}
+	if err := s.RecordPush(ctx, id, want); err != nil {
+		t.Fatalf("RecordPush returned unexpected error: %v", err)
+	}
+
+	got, ok, err := s.LastPush(ctx, id)
+	if err != nil || !ok {
+		t.Fatalf("LastPush = (%+v, %v, %v), want the recorded signal", got, ok, err)
+	}
+	if got.Status != want.Status || got.Message != want.Message || got.LatencyMS != want.LatencyMS {
+		t.Errorf("LastPush = %+v, want %+v", got, want)
+	}
+
+	// O sinal seguinte substitui o anterior por inteiro: uma causa velha
+	// grudada num sinal saudável faria o operador procurar um problema que
+	// já passou.
+	if err := s.RecordPush(ctx, id, upSignal(epoch.Add(time.Minute))); err != nil {
+		t.Fatalf("second RecordPush returned unexpected error: %v", err)
+	}
+	got, _, err = s.LastPush(ctx, id)
+	if err != nil {
+		t.Fatalf("LastPush returned unexpected error: %v", err)
+	}
+	if got.Status != domain.StatusUp || got.Message != "" || got.LatencyMS != 0 {
+		t.Errorf("LastPush after a healthy signal = %+v, want the old cause gone", got)
+	}
+}
+
+// upSignal é o sinal sem parâmetros, como um cron que só diz "estou vivo".
+func upSignal(at time.Time) domain.PushSignal {
+	return domain.PushSignal{At: at, Status: domain.StatusUp}
 }
 
 func testPushStateIsPerMonitor(t *testing.T, newStore Factory) {
@@ -1286,7 +1330,7 @@ func testPushStateIsPerMonitor(t *testing.T, newStore Factory) {
 	first := mustCreateMonitor(t, s, "cron A")
 	second := mustCreateMonitor(t, s, "cron B")
 
-	if err := s.RecordPush(ctx, first, epoch); err != nil {
+	if err := s.RecordPush(ctx, first, upSignal(epoch)); err != nil {
 		t.Fatalf("RecordPush returned unexpected error: %v", err)
 	}
 
@@ -1300,7 +1344,7 @@ func testPushStateCascadesOnMonitorDelete(t *testing.T, newStore Factory) {
 	ctx := context.Background()
 	id := mustCreateMonitor(t, s, "cron noturno")
 
-	if err := s.RecordPush(ctx, id, epoch); err != nil {
+	if err := s.RecordPush(ctx, id, upSignal(epoch)); err != nil {
 		t.Fatalf("RecordPush returned unexpected error: %v", err)
 	}
 	if err := s.Monitors().Delete(ctx, id); err != nil {

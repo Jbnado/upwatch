@@ -134,7 +134,9 @@ func (a *API) routes() http.Handler {
 
 		// Endpoint de push: o segredo está no caminho, então a sessão não
 		// se aplica. É como um cron reporta sem carregar credencial de
-		// interface.
+		// interface. GET também, porque muito agendador só sabe fazer
+		// `curl URL`.
+		r.Get("/push/{token}", a.handlePush)
 		r.Post("/push/{token}", a.handlePush)
 
 		// Página pública de estado. É a única superfície de leitura sem

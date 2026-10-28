@@ -314,30 +314,47 @@ func (s *Store) PruneRollups(ctx context.Context, res domain.Resolution, before 
 // Sobrescreve em vez de acumular: um cron que bate a cada minuto criaria
 // milhares de linhas por dia sem que nenhuma delas fosse útil depois da
 // seguinte.
-func (s *Store) RecordPush(ctx context.Context, monitorID int64, at time.Time) error {
+func (s *Store) RecordPush(ctx context.Context, monitorID int64, sig domain.PushSignal) error {
 	const q = `
-		INSERT INTO push_state (monitor_id, last_push) VALUES (?, ?)
-		ON CONFLICT (monitor_id) DO UPDATE SET last_push = excluded.last_push`
+		INSERT INTO push_state (monitor_id, last_push, status, message, latency_ms)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT (monitor_id) DO UPDATE SET
+			last_push = excluded.last_push,
+			status = excluded.status,
+			message = excluded.message,
+			latency_ms = excluded.latency_ms`
 
-	if _, err := s.db.ExecContext(ctx, q, monitorID, toMillis(at)); err != nil {
+	_, err := s.db.ExecContext(ctx, q, monitorID, toMillis(sig.At),
+		sig.Status.String(), sig.Message, sig.LatencyMS)
+	if err != nil {
 		return fmt.Errorf("sqlstore: registrando push do monitor %d: %w", monitorID, err)
 	}
 	return nil
 }
 
-// LastPush devolve o instante do último sinal recebido.
-func (s *Store) LastPush(ctx context.Context, monitorID int64) (time.Time, bool, error) {
-	var ms int64
+// LastPush devolve o último sinal recebido.
+func (s *Store) LastPush(ctx context.Context, monitorID int64) (domain.PushSignal, bool, error) {
+	var (
+		ms     int64
+		status string
+		sig    domain.PushSignal
+	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT last_push FROM push_state WHERE monitor_id = ?`, monitorID).Scan(&ms)
+		`SELECT last_push, status, message, latency_ms FROM push_state WHERE monitor_id = ?`,
+		monitorID).Scan(&ms, &status, &sig.Message, &sig.LatencyMS)
 
 	switch {
 	case err == sql.ErrNoRows:
-		return time.Time{}, false, nil
+		return domain.PushSignal{}, false, nil
 	case err != nil:
-		return time.Time{}, false, fmt.Errorf("sqlstore: lendo push do monitor %d: %w", monitorID, err)
+		return domain.PushSignal{}, false, fmt.Errorf("sqlstore: lendo push do monitor %d: %w", monitorID, err)
 	}
-	return fromMillis(ms), true, nil
+
+	sig.At = fromMillis(ms)
+	if sig.Status, err = domain.ParseStatus(status); err != nil {
+		return domain.PushSignal{}, false, fmt.Errorf("sqlstore: push do monitor %d: %w", monitorID, err)
+	}
+	return sig, true, nil
 }
 
 // LatestHeartbeats devolve a batida mais recente de cada monitor.
