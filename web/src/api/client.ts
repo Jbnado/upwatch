@@ -7,7 +7,9 @@ import {
   type ChannelInput,
   type ChannelType,
   type CreatedToken,
+  type EventPage,
   type Group,
+  type GroupSummary,
   type Heartbeat,
   type Incident,
   type IncidentImpact,
@@ -15,6 +17,7 @@ import {
   type Monitor,
   type MonitorInput,
   type Page,
+  type Problem,
   type PublicView,
   type Role,
   type Rollup,
@@ -114,7 +117,7 @@ export const api = {
 
   // ---------- monitores ----------
 
-  listMonitors: (params: { limit?: number; after_id?: number } = {}) =>
+  listMonitors: (params: { limit?: number; after_id?: number; group_id?: number } = {}) =>
     request<Page<Monitor>>(`/monitors${query(params)}`),
 
   getMonitor: (id: number) => request<Monitor>(`/monitors/${id}`),
@@ -149,6 +152,16 @@ export const api = {
     id: number,
     params: { from?: string; to?: string; resolution?: "hourly" | "daily" },
   ) => request<{ items: Rollup[]; resolution: string }>(`/monitors/${id}/rollups${query(params)}`),
+
+  /**
+   * events é a linha do tempo do monitor: mudanças de estado e falhas,
+   * da mais recente para trás. A próxima página começa em next_before.
+   */
+  events: (id: number, params: { before?: string; limit?: number; type?: "state" | "failure" } = {}) =>
+    request<EventPage>(`/monitors/${id}/events${query(params)}`),
+
+  /** problems é o que está errado agora, já ordenado pelo servidor. */
+  problems: () => request<{ items: Problem[] }>("/problems"),
 
   exportUrl: (id: number, params: { from?: string; to?: string; format: "csv" | "json" }) =>
     `${BASE}/monitors/${id}/export${query(params)}`,
@@ -208,7 +221,21 @@ export const api = {
   createMonitorGroup: (input: { name: string; parent_id?: number }) =>
     request<Group>("/groups", { method: "POST", body: JSON.stringify(input) }),
 
+  updateMonitorGroup: (id: number, input: { name: string; parent_id?: number }) =>
+    request<Group>(`/groups/${id}`, { method: "PUT", body: JSON.stringify(input) }),
+
   deleteMonitorGroup: (id: number) => request<void>(`/groups/${id}`, { method: "DELETE" }),
+
+  /** Um cartão por grupo do escopo, com o pior estado e as contagens. */
+  groupSummary: () => request<{ items: GroupSummary[] }>("/groups/summary"),
+
+  groupChannels: (groupID: number) => request<{ items: Channel[] }>(`/groups/${groupID}/channels`),
+
+  linkGroupChannel: (groupID: number, channelID: number) =>
+    request<void>(`/groups/${groupID}/channels/${channelID}`, { method: "PUT" }),
+
+  unlinkGroupChannel: (groupID: number, channelID: number) =>
+    request<void>(`/groups/${groupID}/channels/${channelID}`, { method: "DELETE" }),
 
   deleteUser: (id: number) => request<void>(`/users/${id}`, { method: "DELETE" }),
 

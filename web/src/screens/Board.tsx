@@ -4,8 +4,19 @@ import type { Monitor, Status, Summary as SummaryDTO } from "../api/types";
 import { Pulse } from "../components/Pulse";
 import type { PulseSample } from "../components/pulse-bars";
 import { RangePicker } from "../components/RangePicker";
-import { Alert, Button, Empty, Loading, RowLink, StatusDot } from "../components/ui";
+import {
+  Alert,
+  Button,
+  Empty,
+  Input,
+  Loading,
+  Nothing,
+  RowLink,
+  StatusDot,
+  TextLink,
+} from "../components/ui";
 import { ago, latency, uptime } from "../lib/format";
+import { byProblem, crumb, matches, shortName, type StateFilter } from "../lib/groups";
 import { DEFAULT_RANGE, windowFor, type Range } from "../lib/ranges";
 import { navigate } from "../lib/router";
 import { isStale } from "../lib/series";
@@ -20,12 +31,16 @@ import { isStale } from "../lib/series";
 const PONTOS_DA_FAIXA = 60;
 
 /**
- * O painel.
+ * O painel em lista.
  *
  * Uma lista densa em vez de cartões: cartões com sombra e respiro são o
  * visual padrão de painel, e desperdiçam a tela justamente onde ela mais
  * serve — comparar dezenas de alvos de relance. Aqui cada linha é um
  * canal do instrumento.
+ *
+ * É a tela de um grupo e, numa instalação sem grupos, a tela inicial.
+ * Os problemas vêm primeiro: em ordem de cadastro, um alvo vermelho no
+ * meio de sessenta verdes some.
  */
 
 type Reading = {
@@ -38,34 +53,48 @@ type Reading = {
   lastCheckAt?: string | null;
 };
 
-export function Board({ podeEscrever }: { podeEscrever: boolean }) {
+/** O grupo que a lista mostra; id nulo é "Sem grupo". */
+export type BoardGroup = { id: number | null; path: string };
+
+export function Board({
+  podeEscrever,
+  group,
+}: {
+  podeEscrever: boolean;
+  /** Ausente é a instalação inteira, como antes dos grupos. */
+  group?: BoardGroup;
+}) {
   const [range, setRange] = useState<Range>(DEFAULT_RANGE);
   const [readings, setReadings] = useState<Reading[] | null>(null);
   const [erro, setErro] = useState<string | null>(null);
   const [agrupamento, setAgrupamento] = useState<string | null>(null);
+  const [busca, setBusca] = useState("");
+  const [estado, setEstado] = useState<StateFilter>("todos");
+
+  const grupoID = group?.id;
 
   const carregar = useCallback(async () => {
     try {
       const { from, to } = windowFor(range);
 
-      // Duas requisições para a lista inteira, e nenhum cálculo aqui. Antes
-      // era uma por monitor, com o painel somando disponibilidade e
-      // percentil por conta própria — e a tela de detalhe fazendo o mesmo
-      // numa cópia separada, que discordava sobre ausência de medição sem
-      // que nada acusasse.
+      // Duas requisições para a lista inteira, e nenhum cálculo aqui. O
+      // filtro do grupo é do servidor, que já inclui os ambientes de um
+      // sistema; "Sem grupo" não tem id, e quem o vê alcança tudo.
       const [page, resumos] = await Promise.all([
-        api.listMonitors({ limit: 200 }),
+        api.listMonitors({ limit: 500, group_id: grupoID ?? undefined }),
         api.summaries({ from, to, buckets: PONTOS_DA_FAIXA }),
       ]);
 
       const porID = new Map(resumos.items.map((s) => [s.monitor_id, s]));
+      const monitores =
+        grupoID === null ? page.items.filter((m) => m.group_id == null) : page.items;
 
-      setReadings(page.items.map((m) => leitura(m, porID.get(m.id))));
+      setReadings(monitores.map((m) => leitura(m, porID.get(m.id))));
       setErro(null);
     } catch (e) {
       setErro(e instanceof Error ? e.message : "Não foi possível carregar os monitores.");
     }
-  }, [range]);
+  }, [range, grupoID]);
 
   useEffect(() => {
     void carregar();
@@ -79,10 +108,6 @@ export function Board({ podeEscrever }: { podeEscrever: boolean }) {
   }, [carregar]);
 
   const resumo = useMemo(() => summarise(readings ?? []), [readings]);
-
-  // As etiquetas vêm dos próprios monitores, não de um cadastro à parte:
-  // uma lista separada exigiria manter dois lugares em dia, e etiqueta
-  // sem alvo nenhum não tem o que agrupar.
   const etiquetas = useMemo(() => etiquetasDe(readings ?? []), [readings]);
 
   // O agrupamento escolhido some se a etiqueta deixar de existir —
@@ -92,36 +117,58 @@ export function Board({ podeEscrever }: { podeEscrever: boolean }) {
     if (agrupamento && !etiquetas.includes(agrupamento)) setAgrupamento(null);
   }, [etiquetas, agrupamento]);
 
+  const ordenadas = useMemo(
+    () =>
+      byProblem(readings ?? [], (r) => ({
+        status: r.status,
+        name: r.monitor.name,
+        paused: !r.monitor.enabled,
+      })),
+    [readings],
+  );
+
+  const visiveis = ordenadas.filter((r) =>
+    matches(
+      {
+        name: r.monitor.name,
+        target: r.monitor.target,
+        status: r.status,
+        paused: !r.monitor.enabled,
+      },
+      busca,
+      estado,
+    ),
+  );
+
+  const novo = () =>
+    navigate({ name: "monitor-new", group: grupoID === null ? undefined : grupoID });
+
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-6 px-5 py-6">
-      <header className="flex flex-wrap items-baseline justify-between gap-4">
-        <Summary {...resumo} total={readings?.length ?? 0} />
-        <div className="flex items-center gap-3">
+      {group && (
+        <nav>
+          <TextLink onClick={() => navigate({ name: "board" })}>← painel</TextLink>
+        </nav>
+      )}
+
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        {group ? (
+          <div className="flex min-w-0 flex-col gap-1.5">
+            <GroupTitle path={group.path} />
+            <Summary {...resumo} total={readings?.length ?? 0} quiet />
+          </div>
+        ) : (
+          <Summary {...resumo} total={readings?.length ?? 0} />
+        )}
+        <div className="flex flex-wrap items-center gap-3">
           <RangePicker value={range} onChange={setRange} />
           {podeEscrever && (
-            <Button variant="primary" onClick={() => navigate({ name: "monitor-new" })}>
+            <Button variant="primary" onClick={novo}>
               Novo monitor
             </Button>
           )}
         </div>
       </header>
-
-      {/* O agrupamento só aparece quando há etiqueta cadastrada: numa
-          instalação sem elas, o controle seria uma escolha entre uma
-          opção só. */}
-      {etiquetas.length > 0 && (
-        <div className="-mt-2 flex flex-wrap items-center gap-2">
-          <span className="eyebrow mr-1">agrupar por</span>
-          <Chip ativo={agrupamento === null} onClick={() => setAgrupamento(null)}>
-            nada
-          </Chip>
-          {etiquetas.map((t) => (
-            <Chip key={t} ativo={agrupamento === t} onClick={() => setAgrupamento(t)}>
-              {t}
-            </Chip>
-          ))}
-        </div>
-      )}
 
       {erro && <Alert>{erro}</Alert>}
 
@@ -129,55 +176,179 @@ export function Board({ podeEscrever }: { podeEscrever: boolean }) {
         <Loading what="monitores" />
       ) : readings.length === 0 ? (
         <Empty
-          title="Nenhum alvo sendo vigiado"
+          title={group ? "Nenhum monitor neste grupo" : "Nenhum alvo sendo vigiado"}
           description="Cadastre o primeiro serviço para começar a acompanhar disponibilidade e latência."
           action={
             podeEscrever ? (
-              <Button variant="primary" onClick={() => navigate({ name: "monitor-new" })}>
+              <Button variant="primary" onClick={novo}>
                 Cadastrar monitor
               </Button>
             ) : undefined
           }
         />
       ) : (
-        <div>
-          {/* Rótulos de coluna uma vez só. Repeti-los em cada linha
-              encheria a lista de texto que não muda e competiria com os
-              números, que são o que se lê. */}
-          {/* O cabeçalho usa exatamente a mesma grade da linha, para
-              rótulo e valor caírem na mesma coluna. */}
-          <div className="flex items-center gap-4 border-y border-line px-1 py-1.5">
-            <span className="eyebrow flex-1">alvo</span>
-            {/* À direita, como as barras: a faixa cresce a partir de agora
-                encostada na borda direita, e um rótulo à esquerda ficaria
-                apontando para o espaço vazio do período ainda não medido. */}
-            <span className="eyebrow w-[196px] shrink-0 text-right">
-              {range.label} de histórico
-            </span>
-            <span className="grid w-[164px] shrink-0 grid-cols-2 gap-4 text-right">
-              <span className="eyebrow">disponib.</span>
-              <span className="eyebrow">p95</span>
-            </span>
-          </div>
+        <>
+          <Filters
+            busca={busca}
+            onBusca={setBusca}
+            estado={estado}
+            onEstado={setEstado}
+            contagem={resumo}
+            total={readings.length}
+          />
 
-          {agrupar(readings, agrupamento).map((grupo) => (
-            <div key={grupo.nome}>
-              {/* O cabeçalho do grupo só aparece quando há agrupamento:
-                  numa instalação de um ambiente só, ele seria uma linha
-                  de ruído em cima de cada bloco. */}
-              {agrupamento && (
-                <div className="flex items-baseline gap-3 border-b border-line px-1 pb-1.5 pt-4">
-                  <span className="text-body font-medium">{grupo.nome}</span>
-                  <span className="eyebrow">{grupo.leituras.length}</span>
-                </div>
-              )}
-              {grupo.leituras.map((reading) => (
-                <Row key={reading.monitor.id} reading={reading} range={range} />
+          {/* O agrupamento só aparece quando há etiqueta cadastrada: numa
+              instalação sem elas, o controle seria uma escolha entre uma
+              opção só. */}
+          {etiquetas.length > 0 && (
+            <div className="-mt-2 flex flex-wrap items-center gap-2">
+              <span className="eyebrow mr-1">agrupar por</span>
+              <Chip ativo={agrupamento === null} onClick={() => setAgrupamento(null)}>
+                nada
+              </Chip>
+              {etiquetas.map((t) => (
+                <Chip key={t} ativo={agrupamento === t} onClick={() => setAgrupamento(t)}>
+                  {t}
+                </Chip>
               ))}
             </div>
-          ))}
-        </div>
+          )}
+
+          {visiveis.length === 0 ? (
+            <Nothing hint="Limpe a busca ou escolha outro estado.">
+              Nenhum monitor com esse filtro.
+            </Nothing>
+          ) : (
+            <div>
+              {/* Rótulos de coluna uma vez só, na mesma grade da linha,
+                  para rótulo e valor caírem na mesma coluna. */}
+              <div className="flex items-center gap-4 border-y border-line px-1 py-1.5">
+                <span className="eyebrow flex-1">alvo</span>
+                {/* À direita, como as barras: a faixa cresce a partir de
+                    agora encostada na borda direita. */}
+                <span className="eyebrow hidden w-[196px] shrink-0 text-right sm:block">
+                  {range.label} de histórico
+                </span>
+                <span className="grid w-[132px] shrink-0 grid-cols-2 gap-3 text-right sm:w-[164px] sm:gap-4">
+                  <span className="eyebrow">disponib.</span>
+                  <span className="eyebrow">p95</span>
+                </span>
+              </div>
+
+              {agrupar(visiveis, agrupamento).map((bloco) => (
+                <div key={bloco.nome}>
+                  {agrupamento && (
+                    <div className="flex items-baseline gap-3 border-b border-line px-1 pb-1.5 pt-4">
+                      <span className="text-body font-medium">{bloco.nome}</span>
+                      <span className="eyebrow">{bloco.leituras.length}</span>
+                    </div>
+                  )}
+                  {bloco.leituras.map((reading) => (
+                    <Row
+                      key={reading.monitor.id}
+                      reading={reading}
+                      range={range}
+                      groupPath={group?.path}
+                    />
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
+        </>
       )}
+    </div>
+  );
+}
+
+/**
+ * GroupTitle é o caminho do grupo como título: o sistema discreto, o
+ * ambiente em destaque. É o que se lê primeiro ao chegar pelo cartão.
+ */
+function GroupTitle({ path }: { path: string }) {
+  const partes = crumb(path).split(" · ");
+  const ultimo = partes.pop();
+
+  return (
+    <h1 className="text-title font-semibold tracking-tight">
+      {partes.map((p) => (
+        <span key={p} className="text-ink-3">
+          {p} ·{" "}
+        </span>
+      ))}
+      <span className="text-ink">{ultimo}</span>
+    </h1>
+  );
+}
+
+const ESTADOS: { value: StateFilter; label: string; status?: Status }[] = [
+  { value: "todos", label: "todos" },
+  { value: "down", label: "fora do ar", status: "down" },
+  { value: "degraded", label: "degradado", status: "degraded" },
+  { value: "unknown", label: "sem medição", status: "unknown" },
+  { value: "up", label: "no ar", status: "up" },
+  { value: "pausado", label: "pausados" },
+];
+
+const DOT: Record<Status, string> = {
+  up: "bg-up",
+  degraded: "bg-degraded",
+  down: "bg-down",
+  unknown: "bg-unknown",
+};
+
+/**
+ * Filters é a busca por nome e o recorte por estado.
+ *
+ * Cada ficha traz a contagem, e as de estado vazio somem: oferecer "fora
+ * do ar 0" é convidar a um clique que só confirma o que a ficha já disse.
+ */
+function Filters({
+  busca,
+  onBusca,
+  estado,
+  onEstado,
+  contagem,
+  total,
+}: {
+  busca: string;
+  onBusca: (v: string) => void;
+  estado: StateFilter;
+  onEstado: (v: StateFilter) => void;
+  contagem: Record<Status | "paused", number>;
+  total: number;
+}) {
+  const quantos = (v: StateFilter) =>
+    v === "todos" ? total : v === "pausado" ? contagem.paused : contagem[v];
+
+  const fichas = ESTADOS.filter(
+    (e) => e.value === "todos" || quantos(e.value) > 0 || estado === e.value,
+  );
+
+  return (
+    <div className="flex flex-wrap items-center gap-3">
+      <Input
+        type="search"
+        value={busca}
+        onChange={(e) => onBusca(e.target.value)}
+        placeholder="buscar por nome ou alvo"
+        aria-label="buscar por nome ou alvo"
+        className="w-full sm:w-[240px]"
+      />
+      <div role="group" aria-label="filtrar por estado" className="flex flex-wrap gap-2">
+        {fichas.map((e) => (
+          <Chip key={e.value} ativo={estado === e.value} onClick={() => onEstado(e.value)}>
+            {e.status && (
+              <span
+                className={`mr-1.5 h-[7px] w-[7px] rounded-full ${DOT[e.status]}`}
+                aria-hidden
+              />
+            )}
+            {e.label}
+            <span className="tabular ml-1.5 opacity-70">{quantos(e.value)}</span>
+          </Chip>
+        ))}
+      </div>
     </div>
   );
 }
@@ -188,26 +359,40 @@ export function Board({ podeEscrever }: { podeEscrever: boolean }) {
  * Nome e alvo à esquerda, medidas alinhadas à direita em coluna tabular,
  * e a faixa ocupando a largura restante. Os números ficam na mesma
  * posição em toda linha, então o olho desce a coluna comparando em vez de
- * caçar.
+ * caçar. No celular a faixa e o alvo saem: não cabem sem rolar de lado, e
+ * estado e números são o que se lê numa tela pequena.
  */
-function Row({ reading, range }: { reading: Reading; range: Range }) {
+function Row({
+  reading,
+  range,
+  groupPath,
+}: {
+  reading: Reading;
+  range: Range;
+  groupPath?: string;
+}) {
   const { monitor, samples, status, uptimePercent, p95 } = reading;
 
-  const stale = isStale(reading.lastCheckAt, monitor.interval_seconds);
+  const stale = monitor.enabled && isStale(reading.lastCheckAt, monitor.interval_seconds);
+  const nome = groupPath ? shortName(monitor.name, groupPath) : monitor.name;
 
   return (
-    // Link, não botão. Um button só aceita conteúdo de frase, e a div da
-    // faixa fazia o parser fechar o botão antes da hora — clicar sobre o
-    // traço não navegava, sem nada indicar o motivo. Como link, também
-    // funciona abrir em nova aba com Ctrl, que é o esperado numa lista.
+    // Link, não botão: a faixa é uma div, e dentro de um button o parser
+    // fecharia o botão antes da hora. Como link, também funciona abrir em
+    // nova aba com Ctrl, que é o esperado numa lista.
     <RowLink
       to={{ name: "monitor", id: monitor.id }}
-      className="flex items-center gap-4 border-b border-line px-1 py-2"
+      className={`flex items-center gap-4 border-b border-line px-1 py-2 ${monitor.enabled ? "" : "opacity-60"}`}
     >
       <span className="flex min-w-0 flex-1 items-baseline gap-2">
         <StatusDot status={status} />
-        <span className="truncate text-body font-medium text-ink">{monitor.name}</span>
-        <span className="tabular truncate text-small text-ink-3">{monitor.target}</span>
+        <span className="truncate text-body font-medium text-ink" title={monitor.name}>
+          {nome}
+        </span>
+        <span className="tabular hidden truncate text-small text-ink-3 sm:inline">
+          {monitor.target}
+        </span>
+        {!monitor.enabled && <span className="eyebrow shrink-0">pausado</span>}
         {stale && (
           // Monitor que parou de ser verificado é uma falha própria, não
           // do alvo; sem este aviso ela passaria por "tudo estável".
@@ -217,14 +402,14 @@ function Row({ reading, range }: { reading: Reading; range: Range }) {
         )}
       </span>
 
-      <span className="w-[196px] shrink-0">
+      <span className="hidden w-[196px] shrink-0 sm:block">
         <Pulse samples={samples} rangeLabel={range.label} height={26} />
       </span>
 
       {/* Duas colunas de largura fixa, ambas alinhadas à direita: é assim
           que os dígitos se empilham e dá para comparar latências descendo
-          a lista. Alinhar uma à esquerda quebraria justamente isso. */}
-      <span className="tabular grid w-[164px] shrink-0 grid-cols-2 gap-4 whitespace-nowrap text-right text-body">
+          a lista. */}
+      <span className="tabular grid w-[132px] shrink-0 grid-cols-2 gap-3 whitespace-nowrap text-right text-body sm:w-[164px] sm:gap-4">
         <span className={uptimePercent === null ? "text-ink-3" : undefined}>
           {uptime(uptimePercent)}
         </span>
@@ -235,7 +420,7 @@ function Row({ reading, range }: { reading: Reading; range: Range }) {
 }
 
 /**
- * Chip é um seletor de agrupamento.
+ * Chip é uma ficha de escolha.
  *
  * Fileira de fichas em vez de menu suspenso: são poucas opções, e trocar
  * de recorte é gesto frequente enquanto se investiga — cada clique a
@@ -305,40 +490,47 @@ export function agrupar<T extends { monitor: Monitor }>(
 }
 
 /**
- * Summary é o título da tela.
+ * Summary é o estado da frota em uma linha.
  *
- * É o próprio estado da frota, não a palavra "Painel": o que se quer
- * saber ao abrir a página é se há algo para resolver, e essa resposta
- * merece o lugar do cabeçalho. A marca já fica presa no topo, então
- * repeti-la aqui só gastaria a linha mais valiosa da tela.
+ * Na instalação sem grupos ele é o título da tela: o que se quer saber ao
+ * abrir a página é se há algo para resolver. Na tela do grupo o título é
+ * o grupo, e o resumo desce para baixo dele, mais discreto.
  *
  * "Tudo no ar" fica quieto de propósito; o que exige ação aparece
  * primeiro e é o único elemento colorido.
  */
-function Summary({
+export function Summary({
   up,
   degraded,
   down,
   unknown,
+  paused = 0,
   total,
+  quiet = false,
 }: {
   up: number;
   degraded: number;
   down: number;
   unknown: number;
+  paused?: number;
   total: number;
+  quiet?: boolean;
 }) {
-  const tudoBem = down === 0 && degraded === 0 && unknown === 0 && total > 0;
+  const tudoBem = down === 0 && degraded === 0 && unknown === 0 && total > paused;
+  const Tag = quiet ? "p" : "h1";
+  const tamanho = quiet ? "text-body" : "text-lead font-semibold tracking-tight";
 
   if (total === 0) {
-    return <h1 className="text-lead font-semibold tracking-tight text-ink">Monitores</h1>;
+    return quiet ? null : (
+      <h1 className="text-lead font-semibold tracking-tight text-ink">Monitores</h1>
+    );
   }
 
   return (
-    <h1 className="flex items-baseline gap-3 text-lead font-semibold tracking-tight">
+    <Tag className={`flex flex-wrap items-baseline gap-x-3 ${tamanho}`}>
       {tudoBem ? (
         <span className="text-ink">
-          <span className="tabular">{up}</span> alvos, todos no ar
+          <span className="tabular">{up}</span> alvo{up === 1 ? "" : "s"}, todos no ar
         </span>
       ) : (
         <>
@@ -354,8 +546,7 @@ function Summary({
           )}
           {/* Sem medição precisa aparecer, e discreto: sem esta parcela as
               contagens não fecham com o total e o painel parece ter
-              perdido monitores. Mas também não é alarme — é alvo que
-              ainda não reportou. */}
+              perdido monitores. */}
           {unknown > 0 && (
             <span className="text-body font-normal text-unknown">
               <span className="tabular">{unknown}</span> sem medição
@@ -368,24 +559,30 @@ function Summary({
           )}
         </>
       )}
-    </h1>
+      {paused > 0 && (
+        <span className="text-body font-normal text-ink-3">
+          <span className="tabular">{paused}</span> pausado{paused > 1 ? "s" : ""}
+        </span>
+      )}
+    </Tag>
   );
 }
 
 function summarise(readings: Reading[]) {
   return readings.reduce(
-    (acc, r) => ({ ...acc, [r.status]: acc[r.status] + 1 }),
-    { up: 0, degraded: 0, down: 0, unknown: 0 } as Record<Status, number>,
+    (acc, r) =>
+      r.monitor.enabled
+        ? { ...acc, [r.status]: acc[r.status] + 1 }
+        : { ...acc, paused: acc.paused + 1 },
+    { up: 0, degraded: 0, down: 0, unknown: 0, paused: 0 } as Record<Status | "paused", number>,
   );
 }
 
 /**
  * leitura converte o resumo do servidor no que a linha desenha.
  *
- * Converte, não calcula. Quem escolhe a camada, soma disponibilidade e
- * ordena percentil é o servidor — aqui só se traduz nome de campo. Monitor
- * sem resumo é ausência, e não zero: um alvo recém-criado ainda não disse
- * nada sobre si.
+ * Converte, não calcula. Monitor sem resumo é ausência, e não zero: um
+ * alvo recém-criado ainda não disse nada sobre si.
  */
 function leitura(monitor: Monitor, resumo: SummaryDTO | undefined): Reading {
   if (!resumo) {

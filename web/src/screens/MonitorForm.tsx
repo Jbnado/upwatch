@@ -136,7 +136,11 @@ export function MonitorForm({ id }: { id?: number }) {
       // Quem tem escopo não pode deixar em "Sem grupo", que o servidor
       // recusaria; o primeiro ambiente é um padrão que se troca fácil.
       if (id === undefined) {
-        const primeiro = items.find((g) => folha(g, items));
+        // Vindo da tela de um grupo, o cadastro já nasce nele: quem clica
+        // em "Novo monitor" olhando para "RPA · prod" quer criar ali.
+        const pedido = Number(new URLSearchParams(window.location.search).get("grupo"));
+        const doGrupo = items.find((g) => g.id === pedido && folha(g, items));
+        const primeiro = doGrupo ?? items.find((g) => folha(g, items));
         setForm((f) => (f.group_id == null && primeiro ? { ...f, group_id: primeiro.id } : f));
       }
     });

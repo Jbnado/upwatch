@@ -76,3 +76,38 @@ export function ago(iso: string, now: Date = new Date()): string {
   if (segundos < 86400) return `há ${Math.floor(segundos / 3600)} h`;
   return `há ${Math.floor(segundos / 86400)} d`;
 }
+
+/**
+ * elapsed diz há quanto tempo um estado dura, sem o "há".
+ *
+ * Duas unidades a partir da hora: numa queda longa, "2 h" e "2 h 50 min"
+ * pedem decisões diferentes. Abaixo da hora, minuto inteiro basta.
+ */
+export function elapsed(iso: string, now: Date = new Date()): string {
+  const s = Math.max(0, Math.floor((now.getTime() - new Date(iso).getTime()) / 1000));
+
+  if (s < 60) return `${s} s`;
+  if (s < 3600) return `${Math.floor(s / 60)} min`;
+  if (s < 86400) {
+    const h = Math.floor(s / 3600);
+    const min = Math.floor((s % 3600) / 60);
+    return min > 0 ? `${h} h ${min} min` : `${h} h`;
+  }
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  return h > 0 ? `${d} d ${h} h` : `${d} d`;
+}
+
+/**
+ * sinceClock escreve o "desde quando": só a hora se for hoje, com o dia
+ * se não for. "Desde 11:31" de ontem seria lido como meia hora de queda.
+ */
+export function sinceClock(iso: string, now: Date = new Date()): string {
+  const quando = new Date(iso);
+  const hoje =
+    quando.getFullYear() === now.getFullYear() &&
+    quando.getMonth() === now.getMonth() &&
+    quando.getDate() === now.getDate();
+
+  return hoje ? clockTime(iso) : stamp(iso);
+}
