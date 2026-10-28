@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Jbnado/upwatch/internal/checker"
 	"github.com/Jbnado/upwatch/internal/domain"
 	"github.com/Jbnado/upwatch/internal/store"
 )
@@ -89,6 +90,11 @@ type monitorResponse struct {
 	UpdatedAt             time.Time       `json:"updated_at"`
 }
 
+// toMonitorResponse monta a representação pública do monitor.
+//
+// A configuração sai sem credencial: é por aqui que passam o GET, a
+// listagem, a resposta da escrita e o fluxo de eventos, e omitir num lugar
+// só garante que nenhum deles a esqueça.
 func toMonitorResponse(m domain.Monitor) monitorResponse {
 	tags := m.Tags
 	if tags == nil {
@@ -101,8 +107,9 @@ func toMonitorResponse(m domain.Monitor) monitorResponse {
 		TimeoutSeconds:        int(m.Timeout.Seconds()),
 		ConfirmationThreshold: m.ConfirmationThreshold,
 		DegradedLatencyMillis: int(m.DegradedLatency.Milliseconds()),
-		Config:                m.Config, ParentID: m.ParentID,
-		Enabled: m.Enabled, Tags: tags,
+		Config:                checker.RedactConfig(m.Type, m.Config),
+		ParentID:              m.ParentID,
+		Enabled:               m.Enabled, Tags: tags,
 		CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt,
 	}
 }
@@ -200,6 +207,9 @@ func (a *API) handleUpdateMonitor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m.ID = id
+	if !a.carrySecrets(w, r, &m) {
+		return
+	}
 	if !a.validateMonitor(w, &m) {
 		return
 	}
@@ -250,6 +260,25 @@ func (a *API) validateMonitor(w http.ResponseWriter, m *domain.Monitor) bool {
 		writeFieldError(w, "config", err.Error())
 		return false
 	}
+	return true
+}
+
+// carrySecrets mantém a senha guardada quando a edição não a traz.
+//
+// A senha não volta no GET, então o formulário reenvia a configuração sem
+// ela; sem isto, salvar qualquer outro campo apagaria a credencial.
+func (a *API) carrySecrets(w http.ResponseWriter, r *http.Request, m *domain.Monitor) bool {
+	prev, err := a.store.Monitors().Get(r.Context(), m.ID)
+	if err != nil {
+		writeStoreError(w, err)
+		return false
+	}
+	cfg, err := checker.CarrySecrets(*m, prev)
+	if err != nil {
+		writeFieldError(w, "config", err.Error())
+		return false
+	}
+	m.Config = cfg
 	return true
 }
 

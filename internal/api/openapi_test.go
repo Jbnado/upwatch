@@ -11,6 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/Jbnado/upwatch/internal/api"
+	"github.com/Jbnado/upwatch/internal/domain"
 )
 
 // spec é a parte da especificação que o teste examina.
@@ -171,4 +172,57 @@ func contains(haystack []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// O enum de tipos é decidido em dois lugares, o domínio e a
+// especificação. Um tipo novo que esquece a especificação faz o cliente
+// gerado recusar monitores que o servidor aceita.
+func TestOpenAPIMonitorTypesMatchTheDomain(t *testing.T) {
+	s := newServer(t)
+	parsed := fetchSpec(t, s)
+
+	input, _ := parsed.Comps.Schemas["MonitorInput"].(map[string]any)
+	props, _ := input["properties"].(map[string]any)
+	typ, _ := props["type"].(map[string]any)
+	var documented []string
+	for _, v := range typ["enum"].([]any) {
+		documented = append(documented, v.(string))
+	}
+
+	var known []string
+	for i := 1; i < 256; i++ {
+		if mt := domain.MonitorType(i); mt.Valid() {
+			known = append(known, mt.String())
+		}
+	}
+
+	sort.Strings(documented)
+	sort.Strings(known)
+	if strings.Join(documented, ",") != strings.Join(known, ",") {
+		t.Errorf("MonitorInput.type enum = %v, want the domain types %v", documented, known)
+	}
+}
+
+// A senha dos checkers de protocolo é aceita na escrita e nunca devolvida;
+// a especificação precisa dizer isso, ou o cliente gerado a esperaria na
+// leitura.
+func TestOpenAPIProtocolConfigPasswordsAreWriteOnly(t *testing.T) {
+	s := newServer(t)
+	parsed := fetchSpec(t, s)
+
+	for _, name := range []string{"RedisConfig", "PostgresConfig", "MySQLConfig"} {
+		schema, ok := parsed.Comps.Schemas[name].(map[string]any)
+		if !ok {
+			t.Errorf("the spec has no %q schema", name)
+			continue
+		}
+		props, _ := schema["properties"].(map[string]any)
+		password, _ := props["password"].(map[string]any)
+		if password["writeOnly"] != true {
+			t.Errorf("%s.password is not writeOnly: %v", name, password)
+		}
+		if _, ok := props["password_set"]; !ok {
+			t.Errorf("%s does not document password_set", name)
+		}
+	}
 }
