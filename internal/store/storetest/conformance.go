@@ -61,6 +61,8 @@ func monitoringCases() []conformanceCase {
 		{"MonitorDuplicateNameReturnsConflict", testMonitorDuplicateNameReturnsConflict},
 		{"MonitorUpdatePersistsChanges", testMonitorUpdatePersistsChanges},
 		{"MonitorRearmsOnConfigChangeOrReactivation", testMonitorRearmsOnConfigChangeOrReactivation},
+		{"MonitorFindByPushToken", testMonitorFindByPushToken},
+		{"MonitorPushTokenIsUnique", testMonitorPushTokenIsUnique},
 		{"MonitorUpdateMissingReturnsNotFound", testMonitorUpdateMissingReturnsNotFound},
 		{"MonitorDeleteRemovesIt", testMonitorDeleteRemovesIt},
 		{"MonitorDeleteMissingReturnsNotFound", testMonitorDeleteMissingReturnsNotFound},
@@ -373,6 +375,88 @@ func testMonitorRearmsOnConfigChangeOrReactivation(t *testing.T, newStore Factor
 	if !enabled.RearmedAt.Equal(enabled.UpdatedAt) {
 		t.Errorf("reactivation: RearmedAt = %v, want the update time %v",
 			enabled.RearmedAt, enabled.UpdatedAt)
+	}
+}
+
+// pushMonitor é um monitor push com o token dado.
+func pushMonitor(name, token string) domain.Monitor {
+	m := newMonitor(name)
+	m.Type, m.Target = domain.MonitorPush, ""
+	m.Config = json.RawMessage(`{"token":"` + token + `"}`)
+	m.PushToken = token
+	return m
+}
+
+// O /push não tem login e é a superfície mais exposta da instalação. Achar
+// o dono do token percorrendo todos os monitores custava uma varredura por
+// requisição, e qualquer um podia provocá-la. A busca é pela coluna
+// indexada, e o token que não existe, ou vazio, não acha ninguém.
+func testMonitorFindByPushToken(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	mustCreateMonitor(t, s, "api sem token")
+
+	want := pushMonitor("cron noturno", "token-do-cron-noturno")
+	if err := s.Monitors().Create(ctx, &want); err != nil {
+		t.Fatalf("Create returned unexpected error: %v", err)
+	}
+
+	got, err := s.Monitors().FindByPushToken(ctx, "token-do-cron-noturno")
+	if err != nil {
+		t.Fatalf("FindByPushToken returned unexpected error: %v", err)
+	}
+	if got.ID != want.ID || got.PushToken != "token-do-cron-noturno" {
+		t.Errorf("FindByPushToken = %+v, want monitor %d", got, want.ID)
+	}
+
+	for _, token := range []string{"token-que-nao-existe", ""} {
+		if _, err := s.Monitors().FindByPushToken(ctx, token); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("FindByPushToken(%q) error = %v, want store.ErrNotFound", token, err)
+		}
+	}
+
+	// Trocar o token na edição troca o que o /push aceita: o antigo
+	// deixa de achar o monitor.
+	want.Config = json.RawMessage(`{"token":"token-novo-do-cron"}`)
+	want.PushToken = "token-novo-do-cron"
+	if err := s.Monitors().Update(ctx, want); err != nil {
+		t.Fatalf("Update returned unexpected error: %v", err)
+	}
+	if _, err := s.Monitors().FindByPushToken(ctx, "token-do-cron-noturno"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("old token still finds the monitor: %v", err)
+	}
+	if got, err := s.Monitors().FindByPushToken(ctx, "token-novo-do-cron"); err != nil || got.ID != want.ID {
+		t.Errorf("FindByPushToken(new) = (%d, %v), want monitor %d", got.ID, err, want.ID)
+	}
+}
+
+// Dois monitores com o mesmo token fariam o sinal de um cair no outro — e
+// o que ficasse sem sinal cairia por silêncio, com o serviço no ar. O
+// banco garante a unicidade; os monitores sem token não disputam nada.
+func testMonitorPushTokenIsUnique(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	mustCreateMonitor(t, s, "api um")
+	mustCreateMonitor(t, s, "api dois")
+
+	first := pushMonitor("cron A", "token-compartilhado")
+	if err := s.Monitors().Create(ctx, &first); err != nil {
+		t.Fatalf("Create returned unexpected error: %v", err)
+	}
+
+	dup := pushMonitor("cron B", "token-compartilhado")
+	if err := s.Monitors().Create(ctx, &dup); !errors.Is(err, store.ErrConflict) {
+		t.Errorf("Create with a taken token returned %v, want store.ErrConflict", err)
+	}
+
+	other := pushMonitor("cron C", "token-proprio-do-c")
+	if err := s.Monitors().Create(ctx, &other); err != nil {
+		t.Fatalf("Create returned unexpected error: %v", err)
+	}
+	other.Config = first.Config
+	other.PushToken = first.PushToken
+	if err := s.Monitors().Update(ctx, other); !errors.Is(err, store.ErrConflict) {
+		t.Errorf("Update to a taken token returned %v, want store.ErrConflict", err)
 	}
 }
 

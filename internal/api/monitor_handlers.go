@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -175,7 +176,7 @@ func (a *API) handleCreateMonitor(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	if !a.validateMonitor(w, &m) {
+	if !a.validateMonitor(w, &m) || !a.pushTokenFree(w, r, m) {
 		return
 	}
 
@@ -222,7 +223,7 @@ func (a *API) handleUpdateMonitor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m.ID = id
-	if !a.validateMonitor(w, &m) {
+	if !a.validateMonitor(w, &m) || !a.pushTokenFree(w, r, m) {
 		return
 	}
 
@@ -271,6 +272,10 @@ func (a *API) handleDeleteMonitor(w http.ResponseWriter, r *http.Request) {
 // execução: descobrir uma regex inválida só quando o monitor rodar
 // deixaria um alvo sem vigilância sem que nada avisasse.
 func (a *API) validateMonitor(w http.ResponseWriter, m *domain.Monitor) bool {
+	// O token vai para a coluna que o /push consulta. Quem o lê da
+	// configuração é o checker, o único que a interpreta.
+	m.PushToken = checker.PushTokenOf(*m)
+
 	if err := m.Validate(); err != nil {
 		writeStoreError(w, err)
 		return false
@@ -280,6 +285,29 @@ func (a *API) validateMonitor(w http.ResponseWriter, m *domain.Monitor) bool {
 	}
 	if err := a.checkers.Validate(*m); err != nil {
 		writeFieldError(w, "config", err.Error())
+		return false
+	}
+	return true
+}
+
+// pushTokenFree recusa o token de push que já pertence a outro monitor.
+//
+// O índice único do banco é a garantia; esta consulta existe para o erro
+// apontar o campo da configuração, onde o administrador sabe o que
+// corrigir, em vez de um conflito genérico.
+func (a *API) pushTokenFree(w http.ResponseWriter, r *http.Request, m domain.Monitor) bool {
+	if m.PushToken == "" {
+		return true
+	}
+	owner, err := a.store.Monitors().FindByPushToken(r.Context(), m.PushToken)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return true
+	case err != nil:
+		writeStoreError(w, err)
+		return false
+	case owner.ID != m.ID:
+		writeFieldError(w, "config", "este token já pertence a outro monitor; gere um novo")
 		return false
 	}
 	return true

@@ -78,6 +78,9 @@ type API struct {
 	counters      *metrics.Counters
 
 	events *eventHub
+
+	// pushLimit segura o /push, que não tem login.
+	pushLimit *rateLimiter
 }
 
 // New monta o roteador da API.
@@ -104,6 +107,7 @@ func New(opts Options) http.Handler {
 		version:       opts.Version,
 		counters:      opts.Counters,
 		events:        newEventHub(),
+		pushLimit:     newRateLimiter(opts.Clock, pushBurst, pushPerSecond),
 	}
 	return a.routes()
 }
@@ -135,9 +139,9 @@ func (a *API) routes() http.Handler {
 		// Endpoint de push: o segredo está no caminho, então a sessão não
 		// se aplica. É como um cron reporta sem carregar credencial de
 		// interface. GET também, porque muito agendador só sabe fazer
-		// `curl URL`.
-		r.Get("/push/{token}", a.handlePush)
-		r.Post("/push/{token}", a.handlePush)
+		// `curl URL`. Limitado por origem, justamente por não ter login.
+		r.With(a.pushLimit.limit).Get("/push/{token}", a.handlePush)
+		r.With(a.pushLimit.limit).Post("/push/{token}", a.handlePush)
 
 		// Página pública de estado. É a única superfície de leitura sem
 		// credencial, e por isso a resposta é montada num pacote próprio —

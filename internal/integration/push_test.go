@@ -86,7 +86,8 @@ func novaCadeia(t *testing.T, confirmacao int) *cadeia {
 		Name: "fila de pedidos", Type: domain.MonitorPush,
 		Interval: time.Minute, Timeout: 10 * time.Second,
 		ConfirmationThreshold: confirmacao, Enabled: true,
-		Config: json.RawMessage(`{"token":"` + pushToken + `"}`),
+		Config:    json.RawMessage(`{"token":"` + pushToken + `"}`),
+		PushToken: pushToken,
 	}
 	if err := st.Monitors().Create(ctx, &m); err != nil {
 		t.Fatalf("Create returned unexpected error: %v", err)

@@ -350,6 +350,22 @@ func reported(res Result, sig domain.PushSignal) Result {
 	return res
 }
 
+// PushTokenOf devolve o token do monitor push, ou vazio para os demais
+// tipos e para a configuração que não se lê.
+//
+// É a cópia que vai para a coluna indexada que o /push consulta. Mora
+// aqui porque o checker é o único que interpreta a configuração do push.
+func PushTokenOf(m domain.Monitor) string {
+	if m.Type != domain.MonitorPush {
+		return ""
+	}
+	cfg, err := parsePushConfig(m.Config)
+	if err != nil {
+		return ""
+	}
+	return cfg.Token
+}
+
 // GeneratePushToken cria um segredo imprevisível para o endpoint.
 func GeneratePushToken() (string, error) {
 	buf := make([]byte, 24)

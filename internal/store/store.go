@@ -132,6 +132,14 @@ type MonitorRepo interface {
 	// Delete remove o monitor e, em cascata, seu histórico.
 	Delete(ctx context.Context, id int64) error
 	List(ctx context.Context, f MonitorFilter) (Page[domain.Monitor], error)
+
+	// FindByPushToken devolve o monitor dono do token de push, ou
+	// ErrNotFound. Token vazio não acha ninguém.
+	//
+	// É o caminho do /push, que não tem login: a busca é indexada para
+	// uma requisição qualquer não custar uma varredura da tabela. O token
+	// é único entre os monitores — gravar um repetido devolve ErrConflict.
+	FindByPushToken(ctx context.Context, token string) (domain.Monitor, error)
 }
 
 // UserRepo é o CRUD de contas de acesso.

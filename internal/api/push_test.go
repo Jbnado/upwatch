@@ -361,3 +361,90 @@ func TestPublicPageDoesNotLeakPushCause(t *testing.T) {
 		}
 	}
 }
+
+// ---------- token: unicidade e abuso ----------
+
+// Dois monitores com o mesmo token fariam o sinal de um cair no outro, e o
+// que ficasse sem sinal cairia por silêncio com o serviço no ar. O
+// cadastro recusa o token repetido no campo da configuração, onde o
+// administrador sabe o que corrigir.
+func TestCreatePushMonitorRejectsTakenToken(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+	s.createMonitor(t, pushMonitorBody("cron A", pushToken))
+
+	resp := s.do(t, http.MethodPost, "/api/v1/monitors", pushMonitorBody("cron B", pushToken))
+
+	assertStatus(t, resp, http.StatusBadRequest)
+	if body := readBody(t, resp); !strings.Contains(body, "config") {
+		t.Errorf("error body = %s, want it to point at the config field", body)
+	}
+}
+
+func TestUpdatePushMonitorRejectsTakenToken(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+	s.createMonitor(t, pushMonitorBody("cron A", pushToken))
+	id := s.createMonitor(t, pushMonitorBody("cron B", "outro-token-bem-comprido"))
+
+	resp := s.do(t, http.MethodPut, "/api/v1/monitors/"+itoa(id), pushMonitorBody("cron B", pushToken))
+
+	assertStatus(t, resp, http.StatusBadRequest)
+}
+
+// Salvar o monitor sem trocar o token não pode esbarrar nele mesmo.
+func TestUpdatePushMonitorKeepsItsOwnToken(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+	id := s.createMonitor(t, pushMonitorBody("cron", pushToken))
+
+	resp := s.do(t, http.MethodPut, "/api/v1/monitors/"+itoa(id), pushMonitorBody("cron renomeado", pushToken))
+
+	assertStatus(t, resp, http.StatusOK)
+}
+
+// Trocar o token na edição troca o que o /push aceita. Se a busca pelo
+// dono olhasse uma cópia que não acompanha a edição, o token vazado
+// continuaria valendo depois de trocado.
+func TestPushFollowsTokenChange(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+	id := s.createMonitor(t, pushMonitorBody("cron", pushToken))
+	const novo = "token-novo-depois-do-vazamento"
+	resp := s.do(t, http.MethodPut, "/api/v1/monitors/"+itoa(id), pushMonitorBody("cron", novo))
+	assertStatus(t, resp, http.StatusOK)
+	s.cookie = nil
+
+	assertStatus(t, s.do(t, http.MethodPost, "/api/v1/push/"+pushToken, nil), http.StatusUnauthorized)
+	assertStatus(t, s.do(t, http.MethodPost, "/api/v1/push/"+novo, nil), http.StatusOK)
+}
+
+// O /push não tem login. Sem limite, qualquer um mantém o servidor
+// ocupado conferindo tokens — ou tenta adivinhar um. O limite é por
+// origem e generoso o bastante para uma máquina com dezenas de crons; o
+// excesso recebe 429, que diz a um cliente honesto para esperar.
+func TestPushIsRateLimitedPerClient(t *testing.T) {
+	s, _ := newPushServer(t)
+
+	limited := false
+	for range 1000 {
+		resp := s.do(t, http.MethodGet, "/api/v1/push/token-errado-mas-comprido", nil)
+		if resp.StatusCode == http.StatusTooManyRequests {
+			limited = true
+			if resp.Header.Get("Retry-After") == "" {
+				t.Error("429 without Retry-After, want a hint of when to retry")
+			}
+			break
+		}
+	}
+	if !limited {
+		t.Fatal("1000 pushes in a row were never limited")
+	}
+
+	// O limite vale também para o token certo: quem estourou espera.
+	assertStatus(t, s.do(t, http.MethodPost, "/api/v1/push/"+pushToken, nil), http.StatusTooManyRequests)
+
+	// E passa com o tempo, sem precisar reiniciar nada.
+	s.clock.Advance(time.Minute)
+	assertStatus(t, s.do(t, http.MethodPost, "/api/v1/push/"+pushToken, nil), http.StatusOK)
+}

@@ -347,31 +347,14 @@ func isJSON(contentType string) bool {
 }
 
 // findPushMonitor localiza o monitor dono do segredo apresentado.
+//
+// A busca é pela coluna indexada do token: o endpoint não tem login, e
+// percorrer os monitores a cada requisição deixaria qualquer um provocar
+// uma varredura da tabela à vontade.
 func (a *API) findPushMonitor(r *http.Request, secret string) (int64, bool) {
-	filter := store.MonitorFilter{Page: store.PageFilter{Limit: store.MaxPageSize}}
-
-	for {
-		page, err := a.store.Monitors().List(r.Context(), filter)
-		if err != nil {
-			return 0, false
-		}
-		for _, m := range page.Items {
-			if m.Type != domain.MonitorPush {
-				continue
-			}
-			var cfg struct {
-				Token string `json:"token"`
-			}
-			if err := json.Unmarshal(m.Config, &cfg); err != nil {
-				continue
-			}
-			if cfg.Token != "" && subtleEqual(cfg.Token, secret) {
-				return m.ID, true
-			}
-		}
-		if !page.HasMore || len(page.Items) == 0 {
-			return 0, false
-		}
-		filter.Page.AfterID = page.Items[len(page.Items)-1].ID
+	m, err := a.store.Monitors().FindByPushToken(r.Context(), secret)
+	if err != nil || m.Type != domain.MonitorPush {
+		return 0, false
 	}
+	return m.ID, true
 }

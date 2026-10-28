@@ -20,7 +20,7 @@ type monitorRepo struct {
 const monitorColumns = `
 	id, name, type, target, interval_ms, timeout_ms,
 	confirmation_threshold, degraded_latency_ms, config, parent_id,
-	enabled, tags, created_at, updated_at, rearmed_at`
+	enabled, tags, created_at, updated_at, rearmed_at, push_token`
 
 // emptyConfig é o que grava quando o monitor não traz configuração. Nil ou
 // string vazia quebrariam o Unmarshal que o checker faz na leitura.
@@ -47,8 +47,8 @@ func (r *monitorRepo) Create(ctx context.Context, m *domain.Monitor) error {
 		INSERT INTO monitor (
 			name, type, target, interval_ms, timeout_ms,
 			confirmation_threshold, degraded_latency_ms, config, parent_id,
-			enabled, tags, created_at, updated_at, rearmed_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+			enabled, tags, created_at, updated_at, rearmed_at, push_token
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	id, err := r.db.insertID(ctx, q,
 		m.Name, m.Type.String(), m.Target,
@@ -56,6 +56,7 @@ func (r *monitorRepo) Create(ctx context.Context, m *domain.Monitor) error {
 		m.ConfirmationThreshold, m.DegradedLatency.Milliseconds(),
 		encodeConfig(m.Config), m.ParentID,
 		boolToInt(m.Enabled), tags, toMillis(now), toMillis(now), toMillis(now),
+		nullableToken(m.PushToken),
 	)
 	if err != nil {
 		return translateWriteErr(err)
@@ -104,7 +105,7 @@ func (r *monitorRepo) Update(ctx context.Context, m domain.Monitor) error {
 			END,
 			name = ?, type = ?, target = ?, interval_ms = ?, timeout_ms = ?,
 			confirmation_threshold = ?, degraded_latency_ms = ?, config = ?, parent_id = ?,
-			enabled = ?, tags = ?, updated_at = ?
+			enabled = ?, tags = ?, updated_at = ?, push_token = ?
 		WHERE id = ?`
 
 	res, err := r.db.ExecContext(ctx, q,
@@ -113,12 +114,39 @@ func (r *monitorRepo) Update(ctx context.Context, m domain.Monitor) error {
 		intervalMS, m.Timeout.Milliseconds(),
 		m.ConfirmationThreshold, m.DegradedLatency.Milliseconds(),
 		config, m.ParentID,
-		enabled, tags, toMillis(now), m.ID,
+		enabled, tags, toMillis(now), nullableToken(m.PushToken), m.ID,
 	)
 	if err != nil {
 		return translateWriteErr(err)
 	}
 	return requireAffected(res, fmt.Sprintf("monitor %d", m.ID))
+}
+
+// FindByPushToken devolve o monitor dono do token de push.
+func (r *monitorRepo) FindByPushToken(ctx context.Context, token string) (domain.Monitor, error) {
+	if token == "" {
+		return domain.Monitor{}, fmt.Errorf("token de push vazio: %w", store.ErrNotFound)
+	}
+	row := r.db.QueryRowContext(ctx, `SELECT`+monitorColumns+` FROM monitor WHERE push_token = ?`, token)
+
+	m, err := scanMonitor(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Monitor{}, fmt.Errorf("token de push: %w", store.ErrNotFound)
+	}
+	if err != nil {
+		return domain.Monitor{}, err
+	}
+	return m, nil
+}
+
+// nullableToken grava NULL para o monitor sem token. Uma string vazia
+// contaria como valor no índice único, e só um monitor sem token
+// poderia existir.
+func nullableToken(token string) any {
+	if token == "" {
+		return nil
+	}
+	return token
 }
 
 // Delete remove o monitor. Heartbeats e rollups saem em cascata pelo
@@ -207,12 +235,13 @@ func scanMonitor(sc scanner) (domain.Monitor, error) {
 		createdMS  int64
 		updatedMS  int64
 		rearmedMS  int64
+		pushToken  sql.NullString
 	)
 
 	err := sc.Scan(
 		&m.ID, &m.Name, &typeName, &m.Target, &intervalMS, &timeoutMS,
 		&m.ConfirmationThreshold, &degradedMS, &configJSON, &parentID,
-		&enabled, &tagsJSON, &createdMS, &updatedMS, &rearmedMS,
+		&enabled, &tagsJSON, &createdMS, &updatedMS, &rearmedMS, &pushToken,
 	)
 	if err != nil {
 		return domain.Monitor{}, err
@@ -231,6 +260,7 @@ func scanMonitor(sc scanner) (domain.Monitor, error) {
 	m.CreatedAt = fromMillis(createdMS)
 	m.UpdatedAt = fromMillis(updatedMS)
 	m.RearmedAt = fromMillis(rearmedMS)
+	m.PushToken = pushToken.String
 
 	if parentID.Valid {
 		id := parentID.Int64

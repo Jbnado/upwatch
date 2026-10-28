@@ -665,6 +665,7 @@ paths:
         "200": { $ref: "#/components/responses/PushAccepted" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/PushTooManyRequests" }
     post:
       tags: [push]
       summary: Registra o sinal de um monitor push
@@ -673,7 +674,8 @@ paths:
         worker, que não tem sessão de interface nem deve precisar de uma.
 
         Token inválido e monitor inexistente devolvem a mesma resposta, e
-        o token é conferido antes dos parâmetros.
+        o token é conferido antes dos parâmetros. Cada token pertence a um
+        monitor só: o cadastro recusa o repetido.
 
         Status, causa e latência são opcionais e podem vir na query string
         ou num corpo JSON (só com `Content-Type: application/json`; outro
@@ -715,6 +717,7 @@ paths:
         "200": { $ref: "#/components/responses/PushAccepted" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/PushTooManyRequests" }
 
   /api/v1/channel-types:
     get:
@@ -1457,6 +1460,17 @@ components:
       description: |
         A conta está autenticada, mas não tem permissão. Devolvido a um
         observador em qualquer rota de escrita.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    PushTooManyRequests:
+      description: |
+        Requisições demais da mesma origem. O limite é por endereço da
+        conexão; atrás de proxy reverso, todos dividem o do proxy.
+      headers:
+        Retry-After:
+          schema: { type: integer }
+          description: Segundos até a próxima tentativa valer
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }

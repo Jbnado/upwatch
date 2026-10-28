@@ -135,6 +135,16 @@ type Monitor struct {
 	Enabled bool     `json:"enabled"`
 	Tags    []string `json:"tags,omitempty"`
 
+	// PushToken é o segredo do monitor push, copiado da configuração para
+	// uma coluna própria, indexada e única.
+	//
+	// Existe para o /push achar o dono do token sem percorrer todos os
+	// monitores — o endpoint não tem login, e cada requisição custaria uma
+	// varredura — e para o banco impedir dois monitores com o mesmo token.
+	// Quem o preenche é a API, a partir do checker, que é quem interpreta a
+	// configuração; vazio fora do push.
+	PushToken string `json:"-"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 

@@ -250,7 +250,10 @@ um Prometheus.
 
 No monitor push quem bate é o serviço: um cron, um worker, um agente
 atrás de VPN. O sinal vai para `/api/v1/push/{token}`, por `GET` ou
-`POST`, sem sessão — o token no caminho é a credencial.
+`POST`, sem sessão — o token no caminho é a credencial. Cada token
+pertence a um monitor só, e o endpoint limita a taxa por origem (300 de
+rajada, 5 por segundo depois disso; acima, 429 com `Retry-After`). Atrás de
+proxy reverso, todos os crons dividem o limite do proxy.
 
 ```bash
 # Estou vivo (o mesmo que status=up)
