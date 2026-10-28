@@ -192,3 +192,13 @@ func TestSenderErrorNeverShowsTheToken(t *testing.T) {
 		t.Errorf("connection refused should be retryable, got %+v", err)
 	}
 }
+
+// O dry-run mostra o corpo a quem confere o que sai da rede; a causa tem
+// de aparecer como foi escrita, e não com < e > escapados.
+func TestSignalBodyKeepsComparisonsReadable(t *testing.T) {
+	body := string(probe.Signal{Status: "down", Msg: "SCARD k = 0, esperado >= 1", LatencyMS: 1}.Body())
+	want := `{"status":"down","msg":"SCARD k = 0, esperado >= 1","latency_ms":1}`
+	if body != want {
+		t.Errorf("Body = %s, want %s", body, want)
+	}
+}

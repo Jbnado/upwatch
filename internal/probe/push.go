@@ -51,9 +51,16 @@ func SignalFrom(r checker.Result) Signal {
 }
 
 // Body é o corpo exato da requisição de push.
+//
+// Sem o escape de HTML do encoding/json: "esperado >= 1" sairia como
+// "esperado >= 1", que o central lê igual, mas que o dry-run
+// mostraria ilegível justamente para quem confere o que sai da rede.
 func (s Signal) Body() []byte {
-	b, _ := json.Marshal(s) // três campos simples: não há como falhar
-	return b
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(s) // três campos simples: não há como falhar
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
 }
 
 // SendError é uma entrega que não deu certo.
