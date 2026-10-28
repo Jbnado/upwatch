@@ -1,6 +1,7 @@
 package api
 
 import (
+	"net"
 	"net/http"
 	"time"
 
@@ -60,6 +61,17 @@ type Options struct {
 	// cabeçalho é controlado por quem chama. Configure atrás de proxy,
 	// quando quiser endereços absolutos no feed.
 	PublicURL string
+
+	// Resolver resolve o alvo de monitor cadastrado por conta restrita,
+	// para recusar o que aponta para a rede interna do servidor. Nulo usa
+	// o resolvedor do sistema.
+	Resolver Resolver
+
+	// AllowScopedPrivateTargets deixa conta restrita monitorar endereço
+	// interno (loopback, rede privada, metadado da nuvem). Desligado por
+	// padrão: o checker conecta a partir do servidor, e liberar faria de
+	// cada administrador de um grupo uma sonda na rede de dentro dele.
+	AllowScopedPrivateTargets bool
 }
 
 // MonitorSink recebe as alterações de monitor.
@@ -85,7 +97,11 @@ type API struct {
 	publicURL     string
 	metricsToken  string
 	version       string
-	counters      *metrics.Counters
+
+	resolver                  Resolver
+	allowScopedPrivateTargets bool
+
+	counters *metrics.Counters
 
 	events *eventHub
 
@@ -104,6 +120,9 @@ func New(opts Options) http.Handler {
 	if opts.Version == "" {
 		opts.Version = "dev"
 	}
+	if opts.Resolver == nil {
+		opts.Resolver = net.DefaultResolver
+	}
 
 	a := &API{
 		store:         opts.Store,
@@ -117,8 +136,11 @@ func New(opts Options) http.Handler {
 		metricsToken:  opts.MetricsToken,
 		version:       opts.Version,
 		counters:      opts.Counters,
-		events:        newEventHub(),
-		policies:      map[string]scopePolicy{},
+		resolver:      opts.Resolver,
+
+		allowScopedPrivateTargets: opts.AllowScopedPrivateTargets,
+		events:                    newEventHub(),
+		policies:                  map[string]scopePolicy{},
 	}
 	return a.routes()
 }

@@ -171,6 +171,10 @@ func (a *API) handleCreateMonitor(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	if err := a.checkTargetReach(r.Context(), viewerFrom(r), m, nil); err != nil {
+		writeStoreError(w, err)
+		return
+	}
 
 	if err := a.store.Monitors().Create(r.Context(), &m); err != nil {
 		writeStoreError(w, err)
@@ -216,13 +220,17 @@ func (a *API) handleUpdateMonitor(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	anterior := monitorFrom(r)
+	if err := a.checkTargetReach(r.Context(), viewerFrom(r), m, &anterior); err != nil {
+		writeStoreError(w, err)
+		return
+	}
 
 	if err := a.store.Monitors().Update(r.Context(), m); err != nil {
 		writeStoreError(w, err)
 		return
 	}
 
-	anterior := monitorFrom(r)
 	a.notifyScheduler(m)
 	a.events.publish(event{Type: "monitor.updated", Data: toMonitorResponse(m), monitor: &m, previous: &anterior})
 	writeJSON(w, http.StatusOK, toMonitorResponse(m))

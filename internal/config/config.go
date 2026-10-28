@@ -70,6 +70,14 @@ type Config struct {
 	// Vazio mantém a exposição aberta, que serve à rede local; numa
 	// instalação exposta, ela publica o nome de todos os monitores.
 	MetricsToken string `yaml:"metrics_token"`
+
+	// RestrictPrivateTargets recusa, para contas com acesso restrito a
+	// grupos, monitor cujo alvo resolva para a rede interna do servidor
+	// (loopback, rede privada, enlace local e metadado da nuvem). Contas
+	// de escopo total não são afetadas. Ligado por padrão: o checker
+	// conecta a partir do servidor, e sem isto cada administrador de grupo
+	// ganharia uma sonda na rede de dentro dele.
+	RestrictPrivateTargets bool `yaml:"restrict_private_targets"`
 }
 
 // Database identifica o armazenamento.
@@ -108,6 +116,8 @@ func Default() Config {
 		SentinelTargets: sentinel.DefaultTargets,
 		SecureCookies:   false,
 		SessionTTL:      7 * 24 * time.Hour,
+
+		RestrictPrivateTargets: true,
 	}
 }
 
@@ -173,6 +183,9 @@ func applyEnv(cfg *Config) error {
 		return err
 	}
 	if err := boolean(&cfg.SecureCookies, "SECURE_COOKIES"); err != nil {
+		return err
+	}
+	if err := boolean(&cfg.RestrictPrivateTargets, "RESTRICT_PRIVATE_TARGETS"); err != nil {
 		return err
 	}
 

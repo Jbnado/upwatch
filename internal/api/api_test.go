@@ -76,6 +76,7 @@ func newServerWith(t *testing.T, ajuste func(*api.Options)) *server {
 		Auth:     authSvc,
 		Checkers: reg,
 		Clock:    fake,
+		Resolver: resolvedorDosTestes,
 	}
 	if ajuste != nil {
 		ajuste(&opts)

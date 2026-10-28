@@ -200,6 +200,8 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 		Counters:      counters,
 		SessionTTL:    cfg.SessionTTL,
 		MetricsToken:  cfg.MetricsToken,
+
+		AllowScopedPrivateTargets: !cfg.RestrictPrivateTargets,
 	})
 
 	return &application{
