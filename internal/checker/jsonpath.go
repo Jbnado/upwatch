@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf16"
 	"unicode/utf8"
 )
 
@@ -134,6 +135,10 @@ func parseQuotedKey(s string) (pathSegment, string, error) {
 		return pathSegment{}, "", errors.New("chave entre aspas sem aspa de fechamento")
 	}
 
+	if hasLoneSurrogate(s[1:i]) {
+		return pathSegment{}, "", errors.New(
+			`chave entre aspas com surrogate \u solto; um caractere fora do plano básico usa o par inteiro`)
+	}
 	var k string
 	if err := json.Unmarshal([]byte(s[:i+1]), &k); err != nil {
 		return pathSegment{}, "", fmt.Errorf("chave entre aspas inválida: %v", err)
@@ -142,6 +147,45 @@ func parseQuotedKey(s string) (pathSegment, string, error) {
 		return pathSegment{}, "", errors.New(`chave entre aspas precisa ser seguida de "]"`)
 	}
 	return pathSegment{key: k, isKey: true}, s[i+2:], nil
+}
+
+// hasLoneSurrogate diz se o texto entre aspas, ainda com os escapes, tem
+// um \uD800–\uDFFF fora de um par alto+baixo. encoding/json troca um
+// surrogate solto por U+FFFD sem reclamar, e o caminho passaria a apontar
+// para uma chave diferente da escrita.
+func hasLoneSurrogate(quoted string) bool {
+	for i := 0; i < len(quoted); i++ {
+		if quoted[i] != '\\' {
+			continue
+		}
+		r, ok := unicodeEscape(quoted[i:])
+		if !ok {
+			i++ // pula o caractere escapado, que pode ser outra barra
+			continue
+		}
+		i += 5
+		if !utf16.IsSurrogate(r) {
+			continue
+		}
+		if r >= 0xDC00 {
+			return true
+		}
+		low, ok := unicodeEscape(quoted[i+1:])
+		if !ok || low < 0xDC00 || low > 0xDFFF {
+			return true
+		}
+		i += 6
+	}
+	return false
+}
+
+// unicodeEscape lê um \uXXXX no começo de s.
+func unicodeEscape(s string) (rune, bool) {
+	if len(s) < 6 || s[0] != '\\' || s[1] != 'u' {
+		return 0, false
+	}
+	n, err := strconv.ParseUint(s[2:6], 16, 16)
+	return rune(n), err == nil
 }
 
 // formatJSONPath escreve o caminho na forma canônica: notação de ponto
@@ -175,8 +219,11 @@ func quoteJSON(s string) string {
 	return strings.TrimSuffix(buf.String(), "\n")
 }
 
+// isKeyRune diz o que pode vir depois do ponto. Dígito só ASCII:
+// unicode.IsDigit aceita ٣ e ３, que num aviso se parecem com 3 e apontam
+// para outra chave.
 func isKeyRune(r rune) bool {
-	return r == '_' || r == '-' || unicode.IsLetter(r) || unicode.IsDigit(r)
+	return r == '_' || r == '-' || (r >= '0' && r <= '9') || unicode.IsLetter(r)
 }
 
 func firstRune(s string) string {

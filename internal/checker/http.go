@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Jbnado/upwatch/internal/domain"
@@ -89,6 +90,17 @@ type HTTP struct {
 	// carregar timeout e política de redirecionamento próprios.
 	secure   *http.Transport
 	insecure *http.Transport
+
+	// assertions guarda as asserções JSON já interpretadas por monitor,
+	// junto da configuração de onde vieram: editar o monitor troca a
+	// configuração e invalida a entrada.
+	mu         sync.Mutex
+	assertions map[int64]cachedAssertions
+}
+
+type cachedAssertions struct {
+	config   string
+	compiled []compiledAssertion
 }
 
 // NewHTTP cria o checker HTTP.
@@ -97,7 +109,7 @@ func NewHTTP() *HTTP {
 	insecure := http.DefaultTransport.(*http.Transport).Clone()
 	insecure.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // opção explícita por monitor
 
-	return &HTTP{secure: secure, insecure: insecure}
+	return &HTTP{secure: secure, insecure: insecure, assertions: map[int64]cachedAssertions{}}
 }
 
 // Type identifica o tipo de monitor atendido.
@@ -139,7 +151,7 @@ func (h *HTTP) Check(ctx context.Context, m domain.Monitor) Result {
 	if err != nil {
 		return down("configuração inválida: %v", err)
 	}
-	assertions, err := compileAssertions(cfg.JSONAssertions)
+	assertions, err := h.assertionsFor(m)
 	if err != nil {
 		return down("configuração inválida: %v", err)
 	}
@@ -213,6 +225,32 @@ func (h *HTTP) Check(ctx context.Context, m domain.Monitor) Result {
 
 	res.Status = domain.StatusUp
 	return res
+}
+
+// assertionsFor devolve as asserções JSON do monitor já interpretadas.
+// Interpretar é trabalho do cadastro; o Check roda a cada poucos segundos
+// e só repete o trabalho quando a configuração muda.
+func (h *HTTP) assertionsFor(m domain.Monitor) ([]compiledAssertion, error) {
+	h.mu.Lock()
+	cached, ok := h.assertions[m.ID]
+	h.mu.Unlock()
+	if ok && cached.config == string(m.Config) {
+		return cached.compiled, nil
+	}
+
+	cfg, err := parseHTTPConfig(m.Config)
+	if err != nil {
+		return nil, err
+	}
+	compiled, err := compileAssertions(cfg.JSONAssertions)
+	if err != nil {
+		return nil, err
+	}
+
+	h.mu.Lock()
+	h.assertions[m.ID] = cachedAssertions{config: string(m.Config), compiled: compiled}
+	h.mu.Unlock()
+	return compiled, nil
 }
 
 // client monta um cliente com o timeout e a política de redirecionamento

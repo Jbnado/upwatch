@@ -29,6 +29,10 @@ func TestParseJSONPath(t *testing.T) {
 		{"$.x-request-id", []pathSegment{key("x-request-id")}},
 		{"$.ação", []pathSegment{key("ação")}},
 		{"$.123", []pathSegment{key("123")}},
+		{`$["😀"]`, []pathSegment{key("😀")}},
+		{`$["٣"]`, []pathSegment{key("٣")}},
+		// Barra escapada seguida de "ud800" é texto, não surrogate.
+		{`$["\\ud800"]`, []pathSegment{key(`\ud800`)}},
 	}
 
 	for _, tt := range tests {
@@ -73,6 +77,19 @@ func TestParseJSONPathRejectsMalformed(t *testing.T) {
 		`$["a" ]`,
 		"$[99999999999999999999]",
 		"$ .a",
+		// encoding/json troca um surrogate solto por U+FFFD em silêncio:
+		// o caminho cadastrado apontaria para uma chave diferente da
+		// escrita, e a forma canônica mostraria um caractere que ninguém
+		// digitou.
+		`$["\ud800"]`,
+		`$["\udc00"]`,
+		`$["a\ud800b"]`,
+		`$["\ud800A"]`,
+		// Depois do ponto só dígitos ASCII. unicode.IsDigit aceita ٣ e ３,
+		// que se parecem com 3 num aviso e apontam para outra chave; quem
+		// precisa deles escreve entre aspas.
+		"$.a٣",
+		"$.３",
 	} {
 		t.Run(path, func(t *testing.T) {
 			if got, err := parseJSONPath(path); err == nil {
