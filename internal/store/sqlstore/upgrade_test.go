@@ -133,7 +133,7 @@ func checkPushSignalUpgrade(t *testing.T, s *sqlstore.Store, first, second int64
 
 func TestPushSignalMigrationUpgradesExistingRows(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "upgrade.db")
-	before, err := sqlstore.OpenSQLite(path)
+	before, err := sqlstore.OpenSQLite(path, testKeys)
 	if err != nil {
 		t.Fatalf("OpenSQLite returned unexpected error: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestPushSignalMigrationUpgradesExistingRows(t *testing.T) {
 		t.Fatalf("Close returned unexpected error: %v", err)
 	}
 
-	after, err := sqlstore.OpenSQLite(path)
+	after, err := sqlstore.OpenSQLite(path, testKeys)
 	if err != nil {
 		t.Fatalf("reopening applied the migration with error: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestPostgresPushSignalMigrationUpgradesExistingRows(t *testing.T) {
 	before := newPostgresStore(t, dsn).(*sqlstore.Store)
 	first, second := seedBeforePushSignal(t, before)
 
-	after, err := sqlstore.OpenPostgres(withSearchPath(dsn, schemaName(t)))
+	after, err := sqlstore.OpenPostgres(withSearchPath(dsn, schemaName(t)), testKeys)
 	if err != nil {
 		t.Fatalf("reopening applied the migration with error: %v", err)
 	}

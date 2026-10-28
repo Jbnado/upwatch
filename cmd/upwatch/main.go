@@ -32,7 +32,6 @@ import (
 	"github.com/Jbnado/upwatch/internal/sentinel"
 	"github.com/Jbnado/upwatch/internal/server"
 	"github.com/Jbnado/upwatch/internal/store"
-	"github.com/Jbnado/upwatch/internal/store/sqlstore"
 	"github.com/Jbnado/upwatch/internal/web"
 )
 
@@ -337,16 +336,6 @@ func (a *application) sweepSessions(ctx context.Context) {
 			}
 		}
 	}
-}
-
-// openStore abre o armazenamento configurado.
-//
-// A escolha do driver vive no sqlstore, ao lado das duas implementações,
-// e não aqui: um segundo lugar decidindo isso é um segundo lugar para
-// esquecer de atualizar — foi exatamente o que aconteceu quando o driver
-// PostgreSQL entrou e este switch continuou recusando-o.
-func openStore(cfg config.Config) (store.Store, error) {
-	return sqlstore.Open(cfg.Database.Driver, cfg.Database.DSN)
 }
 
 // setupLogging configura a saída estruturada.

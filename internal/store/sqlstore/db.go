@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Jbnado/upwatch/internal/secretbox"
 	"github.com/Jbnado/upwatch/internal/store/migrations"
 )
 
@@ -29,6 +30,9 @@ import (
 type db struct {
 	sql     *sql.DB
 	dialect migrations.Dialect
+	// secrets cifra e decifra as credenciais da configuração (ver
+	// secrets.go).
+	secrets *secretbox.Box
 }
 
 // rebind traduz "?" para o marcador do dialeto.
@@ -120,6 +124,10 @@ type tx struct {
 
 func (t *tx) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
 	return t.sql.ExecContext(ctx, rebind(t.dialect, query), args...)
+}
+
+func (t *tx) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return t.sql.QueryContext(ctx, rebind(t.dialect, query), args...)
 }
 
 func (t *tx) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {

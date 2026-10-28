@@ -94,7 +94,7 @@ func newPostgresStore(t *testing.T, dsn string) store.Store {
 		t.Fatalf("criando schema: %v", err)
 	}
 
-	s, err := sqlstore.OpenPostgres(withSearchPath(dsn, schema))
+	s, err := sqlstore.OpenPostgres(withSearchPath(dsn, schema), testKeys)
 	if err != nil {
 		t.Fatalf("OpenPostgres devolveu erro: %v", err)
 	}

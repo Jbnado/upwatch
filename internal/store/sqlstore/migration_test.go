@@ -107,7 +107,7 @@ func checkLegacyKept(t *testing.T, s store.Store) {
 func TestSQLiteMigrationKeepsLegacyInstallation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legado.db")
 
-	s, err := sqlstore.OpenSQLite(path)
+	s, err := sqlstore.OpenSQLite(path, testKeys)
 	if err != nil {
 		t.Fatalf("OpenSQLite returned unexpected error: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestSQLiteMigrationKeepsLegacyInstallation(t *testing.T) {
 	seedLegacy(t, s)
 	_ = s.Close()
 
-	migrado, err := sqlstore.OpenSQLite(path)
+	migrado, err := sqlstore.OpenSQLite(path, testKeys)
 	if err != nil {
 		t.Fatalf("reopening the legacy database returned unexpected error: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestPostgresMigrationKeepsLegacyInstallation(t *testing.T) {
 	}
 	seedLegacy(t, s)
 
-	migrado, err := sqlstore.OpenPostgres(withSearchPath(dsn, schemaName(t)))
+	migrado, err := sqlstore.OpenPostgres(withSearchPath(dsn, schemaName(t)), testKeys)
 	if err != nil {
 		t.Fatalf("reopening the legacy database returned unexpected error: %v", err)
 	}

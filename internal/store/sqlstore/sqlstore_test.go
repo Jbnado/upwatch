@@ -23,7 +23,7 @@ func newStore(t *testing.T) store.Store {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "upwatch.db")
-	s, err := sqlstore.OpenSQLite(path)
+	s, err := sqlstore.OpenSQLite(path, testKeys)
 	if err != nil {
 		t.Fatalf("OpenSQLite returned unexpected error: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestOpenSQLiteAppliesMigrations(t *testing.T) {
 // versão — justamente o pior dia para descobrir.
 func TestMigrationsRollBackCleanly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rollback.db")
-	s, err := sqlstore.OpenSQLite(path)
+	s, err := sqlstore.OpenSQLite(path, testKeys)
 	if err != nil {
 		t.Fatalf("OpenSQLite returned unexpected error: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestWALJournalModeIsEnabled(t *testing.T) {
 // manual de VACUUM.
 func TestCompactReclaimsSpaceAfterPruning(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "compact.db")
-	s, err := sqlstore.OpenSQLite(path)
+	s, err := sqlstore.OpenSQLite(path, testKeys)
 	if err != nil {
 		t.Fatalf("OpenSQLite returned unexpected error: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestOpenAcceptsEveryImplementedDriver(t *testing.T) {
 
 	for driver, dsn := range casos {
 		t.Run(driver, func(t *testing.T) {
-			s, err := sqlstore.Open(driver, dsn)
+			s, err := sqlstore.Open(driver, dsn, testKeys)
 			if s != nil {
 				t.Cleanup(func() { _ = s.Close() })
 			}
@@ -298,7 +298,7 @@ func TestOpenAcceptsEveryImplementedDriver(t *testing.T) {
 }
 
 func TestOpenRefusesUnknownDriver(t *testing.T) {
-	_, err := sqlstore.Open("mysql", "qualquer-coisa")
+	_, err := sqlstore.Open("mysql", "qualquer-coisa", testKeys)
 
 	if err == nil {
 		t.Fatal("driver desconhecido foi aceito")
