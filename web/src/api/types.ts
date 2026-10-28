@@ -19,6 +19,8 @@ export type Monitor = {
   tags: string[];
   created_at: string;
   updated_at: string;
+  /** Próxima execução prevista de um push com agenda; só no detalhe. */
+  next_expected_push?: string;
 };
 
 export type MonitorInput = {

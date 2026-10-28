@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client";
 import { ApiError, type MonitorInput, type MonitorType } from "../api/types";
 import { Alert, Button, Field, Input, NumberInput, Select, TextLink } from "../components/ui";
+import { fusoLocal, lerPush, montarPushConfig, type AgendaPush } from "../lib/push-config";
 import { navigate } from "../lib/router";
 
 /**
@@ -85,6 +86,7 @@ export function MonitorForm({ id }: { id?: number }) {
   const [campoErro, setCampoErro] = useState<string | null>(null);
   const [enviando, setEnviando] = useState(false);
   const [pushToken, setPushToken] = useState("");
+  const [agenda, setAgenda] = useState<AgendaPush>(() => lerPush(undefined, fusoLocal()).agenda);
   // Texto livre separado por vírgula, não uma lista de fichas: digitar
   // "produção, api" e sair do campo é mais rápido que apertar Enter a
   // cada etiqueta, e o servidor normaliza o que chegar.
@@ -107,7 +109,9 @@ export function MonitorForm({ id }: { id?: number }) {
         degraded_latency_ms: m.degraded_latency_ms,
         config: m.config,
       });
-      setPushToken(String(m.config?.["token"] ?? ""));
+      const push = lerPush(m.config, fusoLocal());
+      setPushToken(push.token);
+      setAgenda(push.agenda);
       setTags((m.tags ?? []).join(", "));
     });
   }, [id]);
@@ -132,7 +136,7 @@ export function MonitorForm({ id }: { id?: number }) {
     const payload: MonitorInput = {
       ...form,
       tags: tags.split(",").map((t) => t.trim()).filter(Boolean),
-      config: form.type === "push" ? { token: pushToken } : form.config,
+      config: form.type === "push" ? montarPushConfig(pushToken, agenda) : form.config,
     };
 
     try {
@@ -153,6 +157,8 @@ export function MonitorForm({ id }: { id?: number }) {
   }
 
   const erroDe = (campo: string) => (campoErro === campo ? erro ?? undefined : undefined);
+  const mudarAgenda = <K extends keyof AgendaPush>(key: K, value: AgendaPush[K]) =>
+    setAgenda((a) => ({ ...a, [key]: value }));
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-6 px-5 py-6">
@@ -211,6 +217,52 @@ export function MonitorForm({ id }: { id?: number }) {
               {`${location.origin}/api/v1/push/${pushToken}`}
             </code>
           </Field>
+        )}
+
+        {form.type === "push" && (
+          <>
+            {/* A agenda serve à rotina de horário fixo: uma tarefa das 09:02
+                e das 18:02 não cabe em intervalo nenhum. O erro de expressão
+                volta do servidor e aparece aqui, no cadastro; a próxima
+                execução esperada aparece no detalhe do monitor. */}
+            <Field
+              label="agenda (opcional)"
+              hint="Expressão cron de 5 campos, como no crontab. Vazio espera o sinal a cada intervalo."
+              error={erroDe("config")}
+            >
+              <Input
+                value={agenda.schedule}
+                onChange={(e) => mudarAgenda("schedule", e.target.value)}
+                placeholder="2 9,18 * * *"
+                className="tabular"
+              />
+            </Field>
+
+            <div className="grid grid-cols-2 gap-4">
+              <Field
+                label="fuso da agenda"
+                hint="Fuso IANA. O horário de verão desloca a execução, por isso é explícito."
+              >
+                <Input
+                  value={agenda.timezone}
+                  onChange={(e) => mudarAgenda("timezone", e.target.value)}
+                  placeholder="America/Sao_Paulo"
+                  disabled={!agenda.schedule.trim()}
+                />
+              </Field>
+
+              <Field
+                label="folga"
+                hint="segundos de atraso tolerados; zero usa o próprio intervalo"
+              >
+                <NumberInput
+                  min={0}
+                  value={agenda.folga}
+                  onChange={(e) => mudarAgenda("folga", Number(e.target.value))}
+                />
+              </Field>
+            </div>
+          </>
         )}
 
         <div className="grid grid-cols-2 gap-4">
