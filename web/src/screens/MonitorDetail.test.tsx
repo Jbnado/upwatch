@@ -131,7 +131,8 @@ describe("MonitorDetail", () => {
 
     const quadro = await screen.findByRole("region", { name: "estado atual" });
     expect(quadro).toHaveTextContent("fora do ar há 12 min");
-    expect(quadro).toHaveTextContent("connection refused");
+    expect(quadro).toHaveTextContent("conexão recusada");
+    expect(within(quadro).getByTitle("connection refused")).toBeInTheDocument();
     expect(await within(quadro).findByText(/3 falhas seguidas · desde/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /RPA · prod/ })).toBeInTheDocument();
   });
@@ -200,5 +201,74 @@ describe("MonitorDetail", () => {
       "Exportar CSV (24 h)",
       "Exportar JSON (24 h)",
     ]);
+  });
+});
+
+describe("MonitorDetail: falhas repetidas", () => {
+  const recusada = (i: number): MonitorEvent => ({
+    type: "failure",
+    at: new Date(Date.UTC(2026, 9, 28, 11, 43, 0) - i * 20_000).toISOString(),
+    status: "down",
+    message: `dial tcp 127.0.0.1:1: connectex: Nenhuma conexão pôde ser feita porque a máquina de destino as recusou ativamente. (${i})`,
+  });
+  const nove = Array.from({ length: 9 }, (_, i) => recusada(i));
+
+  it("junta falhas iguais numa linha que abre para as individuais", async () => {
+    cenario({ status: "down", problema: QUEDA, eventos: nove });
+
+    render(<MonitorDetail id={12} tab="eventos" eu={EU} />);
+
+    const linha = await screen.findByRole("button", { name: /conexão recusada.*9 vezes/ });
+    expect(linha).toHaveAttribute("aria-expanded", "false");
+    // Fechado, nenhuma das nove aparece com o texto técnico.
+    expect(screen.queryByText(/connectex/)).not.toBeInTheDocument();
+
+    fireEvent.click(linha);
+
+    expect(linha).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getAllByText(/connectex/)).toHaveLength(9);
+  });
+
+  it("abre o grupo que contém a falha do link, com ela marcada", async () => {
+    const alvo = nove[4]!;
+    const ancora = `falha-${Date.parse(alvo.at)}`;
+    cenario({ status: "down", problema: QUEDA, eventos: nove });
+
+    render(<MonitorDetail id={12} tab="eventos" anchor={ancora} eu={EU} />);
+
+    const linha = await screen.findByRole("button", { name: /9 vezes/ });
+    expect(linha).toHaveAttribute("aria-expanded", "true");
+    const marcada = document.getElementById(ancora);
+    expect(marcada).toHaveAttribute("aria-current", "true");
+    expect(marcada).toHaveTextContent("do link");
+  });
+
+  it("mostra o texto técnico de uma falha solta ao abrir a linha", async () => {
+    cenario({ status: "down", problema: QUEDA, eventos: [FALHA] });
+
+    render(<MonitorDetail id={12} tab="eventos" eu={EU} />);
+
+    const linha = await screen.findByRole("button", { name: /conexão recusada/ });
+    const painel = screen.getByRole("tabpanel");
+    expect(within(painel).queryByText("connection refused")).not.toBeInTheDocument();
+
+    fireEvent.click(linha);
+
+    expect(within(painel).getByText("connection refused")).toBeInTheDocument();
+  });
+
+  it("une o grupo que atravessa a página ao carregar os mais antigos", async () => {
+    cenario({ status: "down", problema: QUEDA, eventos: [] });
+    vi.mocked(api.events)
+      .mockResolvedValueOnce({ items: nove.slice(0, 5), has_more: true, next_before: nove[4]!.at })
+      .mockResolvedValueOnce({ items: nove.slice(5), has_more: false });
+
+    render(<MonitorDetail id={12} tab="eventos" eu={EU} />);
+
+    await screen.findByRole("button", { name: /5 vezes/ });
+    fireEvent.click(screen.getByRole("button", { name: "Carregar mais antigos" }));
+
+    expect(await screen.findByRole("button", { name: /9 vezes/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /4 vezes/ })).not.toBeInTheDocument();
   });
 });

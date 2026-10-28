@@ -27,7 +27,15 @@ import {
   TextLink,
 } from "../components/ui";
 import { duration, elapsed, latency, sinceClock, stamp, uptime } from "../lib/format";
-import { consecutiveFailures, emptyTimeline, timeline, type TimelineLine } from "../lib/events";
+import {
+  consecutiveFailures,
+  emptyTimeline,
+  groupTimeline,
+  timeline,
+  type TimelineEntry,
+  type TimelineLine,
+} from "../lib/events";
+import { explainCause } from "../lib/cause";
 import { crumb } from "../lib/groups";
 import { maskedPushAddress, pushAddress, pushSignal } from "../lib/push";
 import { DEFAULT_RANGE, windowFor, type Range } from "../lib/ranges";
@@ -318,9 +326,40 @@ function StateBox({
         {palavra}
         {problem && <> há {elapsed(problem.since)}</>}
       </p>
-      {problem?.cause && <p className="break-words text-lead font-medium text-ink">{problem.cause}</p>}
+      {problem?.cause && <BoxCause raw={problem.cause} />}
       {rodape.length > 0 && <p className="tabular text-small text-ink-2">{rodape.join(" · ")}</p>}
     </section>
+  );
+}
+
+/**
+ * BoxCause é a causa no quadro: o resumo em destaque e, quando houve
+ * tradução, o texto técnico logo abaixo, discreto e cortado, inteiro a um
+ * clique. O resumo responde "o que houve"; o técnico vai para o chamado.
+ */
+function BoxCause({ raw }: { raw: string }) {
+  const [inteiro, setInteiro] = useState(false);
+  const causa = explainCause(raw);
+
+  return (
+    <>
+      <p className="break-words text-lead font-medium text-ink">{causa.summary}</p>
+      {causa.known && (
+        <p className="flex min-w-0 items-baseline gap-2 text-small text-ink-3">
+          <span className={`tabular min-w-0 ${inteiro ? "[overflow-wrap:anywhere]" : "truncate"}`} title={raw}>
+            {raw}
+          </span>
+          <button
+            type="button"
+            aria-expanded={inteiro}
+            onClick={() => setInteiro((v) => !v)}
+            className="pressable shrink-0 rounded-sm underline decoration-line-strong hover:decoration-ink"
+          >
+            {inteiro ? "recolher" : "texto completo"}
+          </button>
+        </p>
+      )}
+    </>
   );
 }
 
@@ -457,6 +496,9 @@ function Events({
   const [proxima, setProxima] = useState<string | undefined>();
   const [paginas, setPaginas] = useState(1);
   const [carregando, setCarregando] = useState(false);
+  // A falha do link já nasce aberta: se ela estiver num grupo, o grupo
+  // abre com ela marcada.
+  const [abertos, setAbertos] = useState<Set<string>>(() => new Set(anchor ? [anchor] : []));
 
   // Recarrega a primeira página a cada rodada do detalhe, mas só enquanto
   // a pessoa não foi buscar páginas antigas: trocar o que ela está lendo
@@ -476,6 +518,10 @@ function Events({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [monitorID, filtro, rodada]);
+
+  useEffect(() => {
+    if (anchor) setAbertos((atual) => (atual.has(anchor) ? atual : new Set(atual).add(anchor)));
+  }, [anchor]);
 
   useEffect(() => {
     if (!anchor || !itens) return;
@@ -507,8 +553,22 @@ function Events({
   }
 
   const linhas = itens ? timeline(itens) : [];
+  const entradas = groupTimeline(linhas);
   const achou = !anchor || linhas.some((l) => l.anchor === anchor);
   const hoje = new Date().toDateString();
+  const ehHoje = (iso: string) => new Date(iso).toDateString() === hoje;
+
+  // Abertura guardada pelas âncoras das falhas, não por posição: o grupo
+  // cresce a cada atualização e a cada página, e continua aberto.
+  const alternar = (ancoras: string[], abrir: boolean) =>
+    setAbertos((atual) => {
+      const proximo = new Set(atual);
+      for (const a of ancoras) {
+        if (abrir) proximo.add(a);
+        else proximo.delete(a);
+      }
+      return proximo;
+    });
 
   return (
     <>
@@ -557,14 +617,27 @@ function Events({
             </p>
           )}
           <ol className="border-t border-line">
-            {linhas.map((l) => (
-              <EventRow
-                key={l.anchor + l.event.probe_id}
-                line={l}
-                destaque={l.anchor === anchor}
-                hoje={new Date(l.event.at).toDateString() === hoje}
-              />
-            ))}
+            {entradas.map((e) =>
+              e.kind === "line" ? (
+                <EventRow
+                  key={e.line.anchor + e.line.event.probe_id}
+                  line={e.line}
+                  destaque={e.line.anchor === anchor}
+                  hoje={ehHoje(e.line.event.at)}
+                  aberto={abertos.has(e.line.anchor)}
+                  onToggle={(abrir) => alternar([e.line.anchor], abrir)}
+                />
+              ) : (
+                <EventGroup
+                  key={e.lines[e.lines.length - 1]!.anchor}
+                  group={e}
+                  anchor={anchor}
+                  ehHoje={ehHoje}
+                  aberto={e.lines.some((l) => abertos.has(l.anchor))}
+                  onToggle={(abrir) => alternar(e.lines.map((l) => l.anchor), abrir)}
+                />
+              ),
+            )}
           </ol>
           {proxima && (
             <Button onClick={maisAntigos} disabled={carregando} className="self-start">
@@ -577,47 +650,161 @@ function Events({
   );
 }
 
-function EventRow({ line, destaque, hoje }: { line: TimelineLine; destaque: boolean; hoje: boolean }) {
+/** Classe da linha; a borda existe sempre para o destaque não deslocar a coluna. */
+function linhaClasse(destaque: boolean) {
+  return [
+    "flex items-baseline gap-3 border-b border-l-2 border-b-line py-2 pl-2 pr-1",
+    destaque ? "border-l-down bg-down-dim" : "border-l-transparent",
+  ].join(" ");
+}
+
+function Hora({ iso, hoje }: { iso: string; hoje: boolean }) {
+  return (
+    <time dateTime={iso} className="tabular w-[64px] shrink-0 text-small text-ink-3 sm:w-[112px]">
+      {hoje ? HORA_SEG.format(new Date(iso)) : stamp(iso)}
+    </time>
+  );
+}
+
+function Glifo({ status, glyph }: { status: Status; glyph: string }) {
+  return (
+    <span aria-hidden className={`w-3 shrink-0 text-center text-small font-bold ${GLYPH_TONE[status]}`}>
+      {glyph}
+    </span>
+  );
+}
+
+function Tecnico({ texto }: { texto: string }) {
+  return <span className="tabular mt-1 block text-small text-ink-3 [overflow-wrap:anywhere]">{texto}</span>;
+}
+
+/**
+ * EventRow é um evento solto. A falha com causa reconhecida mostra o
+ * resumo e abre, num clique, o texto técnico inteiro — é ele que vai para
+ * o chamado.
+ */
+function EventRow({
+  line,
+  destaque,
+  hoje,
+  aberto,
+  onToggle,
+}: {
+  line: TimelineLine;
+  destaque: boolean;
+  hoje: boolean;
+  aberto: boolean;
+  onToggle: (abrir: boolean) => void;
+}) {
   const { event } = line;
   const mudanca = event.type === "state";
+  const tecnico = !mudanca && line.cause?.known ? line.cause.raw : undefined;
+
+  const texto = (
+    <>
+      {!mudanca && <span className="sr-only">falha: </span>}
+      <span className={`text-body ${mudanca ? "font-medium text-ink" : "text-ink-2"}`}>{line.label}</span>
+      {line.detail && (
+        <span className="text-body text-ink-2" title={line.cause?.known ? line.cause.raw : undefined}>
+          : {line.detail}
+        </span>
+      )}
+    </>
+  );
 
   return (
-    <li
-      id={line.anchor}
-      aria-current={destaque ? "true" : undefined}
-      className={[
-        // A borda existe em toda linha, transparente fora do destaque: sem
-        // ela, a linha destacada deslocava a coluna de horário.
-        "flex items-baseline gap-3 border-b border-l-2 border-b-line py-2 pl-2 pr-1",
-        destaque ? "border-l-down bg-down-dim" : "border-l-transparent",
-      ].join(" ")}
-    >
-      <time
-        dateTime={event.at}
-        className="tabular w-[64px] shrink-0 text-small text-ink-3 sm:w-[112px]"
-      >
-        {hoje ? HORA_SEG.format(new Date(event.at)) : stamp(event.at)}
-      </time>
-      <span
-        aria-hidden
-        className={`w-3 shrink-0 text-center text-small font-bold ${GLYPH_TONE[event.status]}`}
-      >
-        {line.glyph}
-      </span>
-      {/* No celular a causa repetida de cada falha ocupa a tela inteira;
-          três linhas bastam para reconhecê-la. */}
-      <span className="line-clamp-3 min-w-0 flex-1 break-words sm:line-clamp-none">
-        {!mudanca && <span className="sr-only">falha: </span>}
-        <span className={`text-body ${mudanca ? "font-medium text-ink" : "text-ink-2"}`}>
-          {line.label}
-        </span>
-        {line.detail && <span className="text-body text-ink-2">: {line.detail}</span>}
+    <li id={line.anchor} aria-current={destaque ? "true" : undefined} className={linhaClasse(destaque)}>
+      <Hora iso={event.at} hoje={hoje} />
+      <Glifo status={event.status} glyph={line.glyph} />
+      <span className="min-w-0 flex-1 break-words">
+        {tecnico ? (
+          <button
+            type="button"
+            aria-expanded={aberto}
+            onClick={() => onToggle(!aberto)}
+            className="pressable rounded-sm text-left hover:underline"
+          >
+            {texto}
+          </button>
+        ) : (
+          <span className="line-clamp-3 sm:line-clamp-none">{texto}</span>
+        )}
+        {tecnico && aberto && <Tecnico texto={tecnico} />}
       </span>
       {destaque && <span className="eyebrow shrink-0 text-down">do link</span>}
       {!mudanca && event.latency_ms !== undefined && event.latency_ms > 0 && (
         <span className="tabular hidden shrink-0 text-small text-ink-3 sm:inline">
           {latency(event.latency_ms)}
         </span>
+      )}
+    </li>
+  );
+}
+
+/**
+ * EventGroup é uma sequência de falhas com a mesma causa: uma linha com
+ * quantas vezes e entre quando, que abre para as individuais com o texto
+ * técnico de cada uma. Abre sozinho quando a falha do link está dentro.
+ */
+function EventGroup({
+  group,
+  anchor,
+  ehHoje,
+  aberto,
+  onToggle,
+}: {
+  group: Extract<TimelineEntry, { kind: "group" }>;
+  anchor?: string;
+  ehHoje: (iso: string) => boolean;
+  aberto: boolean;
+  onToggle: (abrir: boolean) => void;
+}) {
+  const id = `grupo-${group.lines[group.lines.length - 1]!.anchor}`;
+  const primeiro = group.lines[0]!;
+  const temLink = group.lines.some((l) => l.anchor === anchor);
+  const quando = (iso: string) => (ehHoje(iso) ? HORA_SEG.format(new Date(iso)) : stamp(iso));
+
+  return (
+    <li>
+      <div className={linhaClasse(false)}>
+        <Hora iso={group.newest} hoje={ehHoje(group.newest)} />
+        <Glifo status={primeiro.event.status} glyph={primeiro.glyph} />
+        <button
+          type="button"
+          aria-expanded={aberto}
+          aria-controls={id}
+          onClick={() => onToggle(!aberto)}
+          className="pressable flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 rounded-sm text-left hover:underline"
+        >
+          <span className="sr-only">falhas seguidas: </span>
+          <span className="text-body text-ink-2">{group.summary}</span>
+          <span className="tabular text-small text-ink-3">
+            · {group.lines.length} vezes · {quando(group.oldest)}–{quando(group.newest)}
+          </span>
+          <span aria-hidden className="text-small text-ink-3">
+            {aberto ? "▾" : "▸"}
+          </span>
+        </button>
+        {temLink && !aberto && <span className="eyebrow shrink-0 text-down">do link</span>}
+      </div>
+      {aberto && (
+        <ol id={id} className="bg-sunken">
+          {group.lines.map((l) => (
+            <li
+              key={l.anchor + l.event.probe_id}
+              id={l.anchor}
+              aria-current={l.anchor === anchor ? "true" : undefined}
+              className={linhaClasse(l.anchor === anchor)}
+            >
+              <Hora iso={l.event.at} hoje={ehHoje(l.event.at)} />
+              <span aria-hidden className="w-3 shrink-0" />
+              <span className="min-w-0 flex-1 text-small text-ink-2 [overflow-wrap:anywhere]">
+                {l.cause?.raw || l.label}
+              </span>
+              {l.anchor === anchor && <span className="eyebrow shrink-0 text-down">do link</span>}
+            </li>
+          ))}
+        </ol>
       )}
     </li>
   );

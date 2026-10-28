@@ -1,4 +1,5 @@
 import type { MonitorEvent, Problem, Status } from "../api/types";
+import { causeKey, explainCause, type Cause } from "./cause";
 import { elapsed } from "./format";
 import type { Route } from "./router";
 
@@ -40,6 +41,8 @@ export type TimelineLine = {
   glyph: string;
   label: string;
   detail?: string;
+  /** A causa traduzida e a crua, quando o evento traz mensagem. */
+  cause?: Cause;
 };
 
 const MUDANCA: Record<Status, { glyph: string; label: string }> = {
@@ -58,13 +61,16 @@ export function timeline(events: MonitorEvent[]): TimelineLine[] {
   return events.map((event, i) => {
     const anchor = eventAnchor(event);
 
+    const texto = event.message?.trim();
+    const cause = texto ? explainCause(texto) : undefined;
+
     if (event.type === "failure") {
-      const texto = event.message?.trim();
       return {
         event,
         anchor,
         glyph: "✕",
-        label: texto || (event.status === "degraded" ? "resposta lenta" : "falha sem mensagem"),
+        label: cause?.summary || (event.status === "degraded" ? "resposta lenta" : "falha sem mensagem"),
+        cause,
       };
     }
 
@@ -76,8 +82,66 @@ export function timeline(events: MonitorEvent[]): TimelineLine[] {
         label = `voltou depois de ${elapsed(inicio.at, new Date(event.at))}`;
       }
     }
-    return { event, anchor, glyph: base.glyph, label, detail: event.message?.trim() || undefined };
+    return { event, anchor, glyph: base.glyph, label, detail: cause?.summary, cause };
   });
+}
+
+export type TimelineEntry =
+  | { kind: "line"; line: TimelineLine }
+  | {
+      kind: "group";
+      /** Da mais recente para a mais antiga, como a linha do tempo. */
+      lines: TimelineLine[];
+      summary: string;
+      newest: string;
+      oldest: string;
+    };
+
+/**
+ * groupTimeline junta falhas seguidas com a mesma causa numa entrada só.
+ *
+ * Dez linhas idênticas de "conexão recusada" empurram para fora da tela a
+ * única que diz outra coisa. Só falhas se juntam, e só com o mesmo estado
+ * e a mesma causa (sem contar porta efêmera e segundos); mudança de estado
+ * nunca entra e sempre quebra a sequência, porque é ela que se procura.
+ *
+ * Recebe a lista inteira já carregada, de todas as páginas: o grupo que
+ * continua na página seguinte sai inteiro, em vez de partido onde a
+ * paginação cortou.
+ */
+export function groupTimeline(lines: TimelineLine[]): TimelineEntry[] {
+  const chave = (l: TimelineLine) =>
+    l.event.type === "failure" ? `${l.event.status}|${causeKey(l.event.message?.trim() ?? "")}` : null;
+
+  const out: TimelineEntry[] = [];
+  let atual: TimelineLine[] = [];
+
+  const fechar = () => {
+    if (atual.length === 1) out.push({ kind: "line", line: atual[0]! });
+    if (atual.length > 1) {
+      out.push({
+        kind: "group",
+        lines: atual,
+        summary: atual[0]!.label,
+        newest: atual[0]!.event.at,
+        oldest: atual[atual.length - 1]!.event.at,
+      });
+    }
+    atual = [];
+  };
+
+  for (const l of lines) {
+    const k = chave(l);
+    if (k === null) {
+      fechar();
+      out.push({ kind: "line", line: l });
+      continue;
+    }
+    if (atual.length > 0 && chave(atual[0]!) !== k) fechar();
+    atual.push(l);
+  }
+  fechar();
+  return out;
 }
 
 /**
