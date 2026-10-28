@@ -37,6 +37,13 @@ services:
       # Secure ali simplesmente não é enviado — o login pareceria
       # quebrado sem explicação.
       # UPWATCH_SECURE_COOKIES: "true"
+
+      # As senhas dos monitores e as URLs dos canais ficam cifradas no
+      # banco. Sem chave configurada, o UpWatch gera uma em
+      # /data/secret.key e avisa no log; ao lado do banco ela protege
+      # pouco, porque quem copia o volume leva as duas. Leve-a para fora
+      # do volume e aponte para ela (ver "Segredos" no README):
+      # UPWATCH_SECRET_KEY_FILE: /run/secrets/upwatch_secret_key
     # Sem privilégio nenhum: o processo não precisa de root, e a imagem
     # já roda como usuário sem privilégio.
     security_opt:
