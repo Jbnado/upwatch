@@ -6,9 +6,11 @@ import {
   Button,
   Checkbox,
   Field,
+  FormActions,
   InlineLink,
   Input,
   Loading,
+  NewItem,
   Nothing,
   Select,
   Textarea,
@@ -134,14 +136,6 @@ export function Channels() {
 
       {erro && <Alert>{erro}</Alert>}
 
-      <NewChannel
-        onCreated={async () => {
-          setErro(null);
-          await carregar();
-        }}
-        onError={setErro}
-      />
-
       {canais === null ? (
         <Loading what="canais" />
       ) : canais.length === 0 ? (
@@ -185,6 +179,20 @@ export function Channels() {
           ))}
         </ul>
       )}
+
+      <NewItem label="Novo canal">
+        {(fechar) => (
+          <NewChannel
+            onCreated={async () => {
+              setErro(null);
+              fechar();
+              await carregar();
+            }}
+            onError={setErro}
+            onCancel={fechar}
+          />
+        )}
+      </NewItem>
     </section>
   );
 }
@@ -192,9 +200,11 @@ export function Channels() {
 function NewChannel({
   onCreated,
   onError,
+  onCancel,
 }: {
   onCreated: () => Promise<void>;
   onError: (msg: string) => void;
+  onCancel: () => void;
 }) {
   const [tipo, setTipo] = useState<ChannelType>("discord");
   const [nome, setNome] = useState("");
@@ -270,6 +280,7 @@ function NewChannel({
             value={nome}
             onChange={(e) => setNome(e.target.value)}
             placeholder="plantão de infra"
+            autoFocus
             required
           />
         </Field>
@@ -311,9 +322,11 @@ function NewChannel({
         />
       )}
 
-      <Button type="submit" variant="primary" disabled={enviando} className="self-start">
-        {enviando ? "Salvando" : "Adicionar canal"}
-      </Button>
+      <FormActions
+        submit={enviando ? "Salvando" : "Adicionar canal"}
+        busy={enviando}
+        onCancel={onCancel}
+      />
     </form>
   );
 }
@@ -699,7 +712,7 @@ export function MonitorChannels({
     return (
       <p className="text-body text-ink-2">
         Nenhum canal cadastrado. Crie um em{" "}
-        <InlineLink to={{ name: "settings" }}>ajustes</InlineLink> para receber alerta quando este
+        <InlineLink to={{ name: "ajustes", section: "canais" }}>ajustes</InlineLink> para receber alerta quando este
         alvo cair.
       </p>
     );

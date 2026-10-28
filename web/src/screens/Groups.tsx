@@ -1,7 +1,18 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client";
 import { ApiError, type Channel, type Group, type Scope } from "../api/types";
-import { Alert, Button, Checkbox, Field, Input, Loading, Nothing, Select } from "../components/ui";
+import {
+  Alert,
+  Button,
+  Checkbox,
+  Field,
+  FormActions,
+  Input,
+  Loading,
+  NewItem,
+  Nothing,
+  Select,
+} from "../components/ui";
 import { crumb } from "../lib/groups";
 import { NO_CHANNEL_LINK_HINT, canLinkChannels, canRenameGroup } from "../lib/scope";
 import { channelTypeLabel } from "./Channels";
@@ -71,16 +82,6 @@ export function Groups({ scope }: { scope: Scope }) {
         </p>
       )}
 
-      <NovoGrupo
-        sistemas={sistemas}
-        podeCriarSistema={podeCriarSistema}
-        onCreated={async () => {
-          setErro(null);
-          await carregar();
-        }}
-        onError={setErro}
-      />
-
       {grupos === null ? (
         <Loading what="grupos" />
       ) : grupos.length === 0 ? (
@@ -120,6 +121,22 @@ export function Groups({ scope }: { scope: Scope }) {
           })}
         </ul>
       )}
+
+      <NewItem label="Novo grupo">
+        {(fechar) => (
+          <NovoGrupo
+            sistemas={sistemas}
+            podeCriarSistema={podeCriarSistema}
+            onCreated={async () => {
+              setErro(null);
+              fechar();
+              await carregar();
+            }}
+            onError={setErro}
+            onCancel={fechar}
+          />
+        )}
+      </NewItem>
     </section>
   );
 }
@@ -129,11 +146,13 @@ function NovoGrupo({
   podeCriarSistema,
   onCreated,
   onError,
+  onCancel,
 }: {
   sistemas: Group[];
   podeCriarSistema: boolean;
   onCreated: () => Promise<void>;
   onError: (msg: string) => void;
+  onCancel: () => void;
 }) {
   const [nome, setNome] = useState("");
   const [pai, setPai] = useState("");
@@ -158,10 +177,16 @@ function NovoGrupo({
   return (
     <form
       onSubmit={criar}
-      className="grid gap-4 rounded-sm border border-line-strong p-4 sm:grid-cols-[minmax(0,1fr)_200px_auto] sm:items-end"
+      className="grid gap-4 rounded-sm border border-line-strong p-4 sm:grid-cols-[minmax(0,1fr)_200px]"
     >
       <Field label="nome">
-        <Input value={nome} onChange={(e) => setNome(e.target.value)} placeholder="prod" required />
+        <Input
+          value={nome}
+          onChange={(e) => setNome(e.target.value)}
+          placeholder="prod"
+          autoFocus
+          required
+        />
       </Field>
       <Field label="dentro de">
         <Select value={pai} onChange={(e) => setPai(e.target.value)}>
@@ -173,9 +198,9 @@ function NovoGrupo({
           ))}
         </Select>
       </Field>
-      <Button type="submit" variant="primary">
-        Criar grupo
-      </Button>
+      <span className="sm:col-span-2">
+        <FormActions submit="Criar grupo" onCancel={onCancel} />
+      </span>
     </form>
   );
 }

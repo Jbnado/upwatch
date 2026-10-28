@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { SECTION_IDS, type SectionId } from "./settings-sections";
 
 /**
  * Roteador mínimo sobre a History API.
@@ -24,9 +25,13 @@ export type Route =
   /** group pré-escolhe o grupo de quem cadastra a partir da tela dele. */
   | { name: "monitor-new"; group?: number }
   | { name: "monitor-edit"; id: number }
-  | { name: "settings" }
-  | { name: "status-pages" }
-  | { name: "status-page"; id: number }
+  /**
+   * Ajustes, uma seção por vez. Sem seção é o menu: no celular ele ocupa
+   * a tela; no computador, a primeira seção da conta abre ao lado.
+   */
+  | { name: "ajustes"; section?: SectionId }
+  /** Edição de uma página de estado, dentro da seção de páginas. */
+  | { name: "ajustes-pagina"; id: number }
   /**
    * A página pública.
    *
@@ -43,7 +48,19 @@ export function parseRoute(pathname: string, hash = ""): Route {
   const partes = pathname.replace(/^\/+|\/+$/g, "").split("/");
 
   if (partes[0] === "" || partes[0] === undefined) return { name: "board" };
-  if (partes[0] === "settings") return { name: "settings" };
+
+  const antigo = legacyRedirect(pathname);
+  if (antigo) return parseRoute(antigo);
+
+  if (partes[0] === "ajustes") {
+    const secao = SECTION_IDS.find((s) => s === partes[1]);
+    if (!secao) return { name: "ajustes" };
+    if (secao === "paginas" && partes[2]) {
+      const id = Number(partes[2]);
+      if (Number.isFinite(id) && id > 0) return { name: "ajustes-pagina", id };
+    }
+    return { name: "ajustes", section: secao };
+  }
 
   if (partes[0] === "groups") {
     if (partes[1] === SEM_GRUPO) return { name: "group", id: null };
@@ -56,14 +73,6 @@ export function parseRoute(pathname: string, hash = ""): Route {
   // página só, o slug repetiria o que o caminho já diz.
   if (partes[0] === "status") {
     return partes[1] ? { name: "status", slug: partes[1] } : { name: "status" };
-  }
-
-  if (partes[0] === "status-pages") {
-    if (partes[1] === undefined || partes[1] === "") return { name: "status-pages" };
-
-    const id = Number(partes[1]);
-    if (Number.isFinite(id) && id > 0) return { name: "status-page", id };
-    return { name: "status-pages" };
   }
 
   if (partes[0] === "monitors") {
@@ -88,8 +97,10 @@ export function href(route: Route): string {
   switch (route.name) {
     case "board":
       return "/";
-    case "settings":
-      return "/settings";
+    case "ajustes":
+      return route.section ? `/ajustes/${route.section}` : "/ajustes";
+    case "ajustes-pagina":
+      return `/ajustes/paginas/${route.id}`;
     case "monitor-new":
       return route.group ? `/monitors/new?grupo=${route.group}` : "/monitors/new";
     case "group":
@@ -101,13 +112,29 @@ export function href(route: Route): string {
     }
     case "monitor-edit":
       return `/monitors/${route.id}/edit`;
-    case "status-pages":
-      return "/status-pages";
-    case "status-page":
-      return `/status-pages/${route.id}`;
     case "status":
       return route.slug ? `/status/${route.slug}` : "/status";
   }
+}
+
+/**
+ * legacyRedirect devolve o endereço novo de um endereço antigo dos
+ * ajustes, ou null quando o endereço já é atual.
+ *
+ * Favorito, link colado numa issue e histórico do navegador ainda apontam
+ * para /settings e /status-pages; quem os abre precisa cair no lugar
+ * equivalente — e ver na barra o endereço novo, para o próximo link que
+ * copiar já ser o certo.
+ */
+export function legacyRedirect(pathname: string): string | null {
+  const partes = pathname.replace(/^\/+|\/+$/g, "").split("/");
+
+  if (partes[0] === "settings") return "/ajustes";
+  if (partes[0] !== "status-pages") return null;
+
+  const id = Number(partes[1]);
+  if (partes[1] && Number.isFinite(id) && id > 0) return `/ajustes/paginas/${id}`;
+  return "/ajustes/paginas";
 }
 
 /**
@@ -120,13 +147,22 @@ export function navigate(route: Route, { replace = false }: { replace?: boolean 
   window.dispatchEvent(new PopStateEvent("popstate"));
 }
 
+/**
+ * atual lê a rota da barra de endereço, trocando o endereço antigo pelo
+ * novo no lugar — replace, e não push: voltar no navegador não deveria
+ * levar de novo ao endereço que acabou de ser corrigido.
+ */
+function atual(): Route {
+  const novo = legacyRedirect(window.location.pathname);
+  if (novo) window.history.replaceState({}, "", novo + window.location.search + window.location.hash);
+  return parseRoute(window.location.pathname, window.location.hash);
+}
+
 export function useRoute(): Route {
-  const [route, setRoute] = useState(() =>
-    parseRoute(window.location.pathname, window.location.hash),
-  );
+  const [route, setRoute] = useState(atual);
 
   useEffect(() => {
-    const onChange = () => setRoute(parseRoute(window.location.pathname, window.location.hash));
+    const onChange = () => setRoute(atual());
     window.addEventListener("popstate", onChange);
     // Trocar só a âncora não dispara popstate em todo navegador.
     window.addEventListener("hashchange", onChange);
