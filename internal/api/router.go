@@ -88,6 +88,9 @@ type API struct {
 	counters      *metrics.Counters
 
 	events *eventHub
+
+	// policies é a política de escopo de cada rota, declarada ao registrá-la.
+	policies map[string]scopePolicy
 }
 
 // New monta o roteador da API.
@@ -115,6 +118,7 @@ func New(opts Options) http.Handler {
 		version:       opts.Version,
 		counters:      opts.Counters,
 		events:        newEventHub(),
+		policies:      map[string]scopePolicy{},
 	}
 	return a.routes()
 }
@@ -122,30 +126,33 @@ func New(opts Options) http.Handler {
 func (a *API) routes() http.Handler {
 	r := chi.NewRouter()
 	r.Use(recoverPanic, securityHeaders)
+	// Toda rota entra pela tabela, que exige a política de escopo junto.
+	t := routeTable{r: r, policies: a.policies}
 
 	// Liveness fora de qualquer autenticação: orquestradores a consultam
 	// antes de existir credencial alguma.
-	r.Get("/healthz", a.handleHealth)
+	t.handle(http.MethodGet, "/healthz", policyPublic, a.handleHealth)
 
 	// Exposição para Prometheus. Fora da sessão porque o coletor raspa sem
 	// ela; o token próprio é opcional (ver handleMetrics).
-	r.Get("/metrics", a.handleMetrics)
+	t.handle(http.MethodGet, "/metrics", policyPublic, a.handleMetrics)
 
 	r.Route("/api/v1", func(r chi.Router) {
+		t := routeTable{r: r, prefix: "/api/v1", policies: a.policies}
 		// A especificação é pública: descobrir como autenticar é o que se
 		// procura nela, e exigir credencial para lê-la criaria um ciclo.
-		r.Get("/openapi.yaml", a.handleOpenAPI)
+		t.handle(http.MethodGet, "/openapi.yaml", policyPublic, a.handleOpenAPI)
 
 		// Assistente de primeiro acesso; ele mesmo recusa a segunda chamada.
-		r.Get("/setup", a.handleSetupStatus)
-		r.Post("/setup", a.handleSetup)
+		t.handle(http.MethodGet, "/setup", policyPublic, a.handleSetupStatus)
+		t.handle(http.MethodPost, "/setup", policyPublic, a.handleSetup)
 
-		r.Post("/auth/login", a.handleLogin)
+		t.handle(http.MethodPost, "/auth/login", policyPublic, a.handleLogin)
 
 		// Endpoint de push: o segredo está no caminho, então a sessão não
 		// se aplica. É como um cron reporta sem carregar credencial de
 		// interface.
-		r.Post("/push/{token}", a.handlePush)
+		t.handle(http.MethodPost, "/push/{token}", policyPublic, a.handlePush)
 
 		// Página pública de estado. É a única superfície de leitura sem
 		// credencial, e por isso a resposta é montada num pacote próprio —
@@ -154,10 +161,10 @@ func (a *API) routes() http.Handler {
 		// Sem slug responde a página padrão: numa instalação com uma
 		// página só, o slug repete o que o caminho já diz, e "/status" é
 		// o endereço que se cola em contrato e em rodapé de e-mail.
-		r.Get("/public", a.handlePublicDefault)
-		r.Get("/public/feed.atom", a.handlePublicDefaultFeed)
-		r.Get("/public/{slug}", a.handlePublicStatus)
-		r.Get("/public/{slug}/feed.atom", a.handlePublicFeed)
+		t.handle(http.MethodGet, "/public", policyPublic, a.handlePublicDefault)
+		t.handle(http.MethodGet, "/public/feed.atom", policyPublic, a.handlePublicDefaultFeed)
+		t.handle(http.MethodGet, "/public/{slug}", policyPublic, a.handlePublicStatus)
+		t.handle(http.MethodGet, "/public/{slug}/feed.atom", policyPublic, a.handlePublicFeed)
 
 		// Leitura: administrador e observador entram igual.
 		//
@@ -166,55 +173,56 @@ func (a *API) routes() http.Handler {
 		// é de dentro; quem não é vê a página pública, que tem outras
 		// regras.
 		//
-		// O escopo é aplicado pelo grupo de rotas, como o papel: a guarda
-		// barra o monitor ou grupo do caminho que estiver fora, e uma rota
-		// nova aqui dentro nasce protegida.
+		// O escopo é aplicado pela guarda do grupo de rotas, como o papel,
+		// segundo a política que cada rota declara ao ser registrada. Rota
+		// sem política não sobe.
 		r.Group(func(r chi.Router) {
 			r.Use(a.authenticate, a.withViewer, a.scopeGuard)
+			t := t.on(r)
 
-			r.Post("/auth/logout", a.handleLogout)
-			r.Get("/auth/me", a.handleMe)
+			t.handle(http.MethodPost, "/auth/logout", policyAccount, a.handleLogout)
+			t.handle(http.MethodGet, "/auth/me", policyAccount, a.handleMe)
 			// Trocar a própria senha não é administrar. Exigir
 			// administrador aqui obrigaria a pedir ajuda justamente
 			// quando alguém suspeita da própria credencial.
-			r.Post("/auth/password", a.handleChangePassword)
+			t.handle(http.MethodPost, "/auth/password", policyAccount, a.handleChangePassword)
 
 			// Uma requisição resume a janela para todos os monitores. É o
 			// que a lista consome: sem isso o painel abria uma conexão por
 			// monitor, degradando justamente na instalação grande.
-			r.Get("/summaries", a.handleSummaries)
+			t.handle(http.MethodGet, "/summaries", policyFiltered, a.handleSummaries)
 
-			r.Get("/monitors", a.handleListMonitors)
-			r.Get("/monitors/{id}", a.handleGetMonitor)
-			r.Get("/monitors/{id}/heartbeats", a.handleHeartbeats)
-			r.Get("/monitors/{id}/rollups", a.handleRollups)
-			r.Get("/monitors/{id}/export", a.handleExport)
-			r.Get("/monitors/{id}/channels", a.handleListMonitorChannels)
+			t.handle(http.MethodGet, "/monitors", policyFiltered, a.handleListMonitors)
+			t.handle(http.MethodGet, "/monitors/{id}", policyMonitor, a.handleGetMonitor)
+			t.handle(http.MethodGet, "/monitors/{id}/heartbeats", policyMonitor, a.handleHeartbeats)
+			t.handle(http.MethodGet, "/monitors/{id}/rollups", policyMonitor, a.handleRollups)
+			t.handle(http.MethodGet, "/monitors/{id}/export", policyMonitor, a.handleExport)
+			t.handle(http.MethodGet, "/monitors/{id}/channels", policyMonitor, a.handleListMonitorChannels)
 			// Linha do tempo de falhas e mudanças de estado, cada uma com
 			// a causa.
-			r.Get("/monitors/{id}/events", a.handleMonitorEvents)
+			t.handle(http.MethodGet, "/monitors/{id}/events", policyMonitor, a.handleMonitorEvents)
 
 			// Grupos e o que a tela inicial lê: o resumo por grupo e o que
 			// está errado agora, já recortados pelo escopo.
-			r.Get("/groups", a.handleListGroups)
-			r.Get("/groups/summary", a.handleGroupSummary)
-			r.Get("/groups/{id}", a.handleGetMonitorGroup)
-			r.Get("/groups/{id}/channels", a.handleListGroupChannels)
-			r.Get("/problems", a.handleProblems)
+			t.handle(http.MethodGet, "/groups", policyFiltered, a.handleListGroups)
+			t.handle(http.MethodGet, "/groups/summary", policyFiltered, a.handleGroupSummary)
+			t.handle(http.MethodGet, "/groups/{id}", policyGroup, a.handleGetMonitorGroup)
+			t.handle(http.MethodGet, "/groups/{id}/channels", policyGroup, a.handleListGroupChannels)
+			t.handle(http.MethodGet, "/problems", policyFiltered, a.handleProblems)
 
-			r.Get("/channel-types", a.handleListChannelTypes)
-			r.Get("/channels", a.handleListChannels)
-			r.Get("/channels/{id}", a.handleGetChannel)
+			t.handle(http.MethodGet, "/channel-types", policyAccount, a.handleListChannelTypes)
+			t.handle(http.MethodGet, "/channels", policyFiltered, a.handleListChannels)
+			t.handle(http.MethodGet, "/channels/{id}", policyFiltered, a.handleGetChannel)
 
-			r.Get("/incidents", a.handleListIncidents)
+			t.handle(http.MethodGet, "/incidents", policyFiltered, a.handleListIncidents)
 
-			r.Get("/status-pages", a.handleListStatusPages)
-			r.Get("/status-pages/{id}", a.handleGetStatusPage)
+			t.handle(http.MethodGet, "/status-pages", policyFiltered, a.handleListStatusPages)
+			t.handle(http.MethodGet, "/status-pages/{id}", policyFiltered, a.handleGetStatusPage)
 
-			r.Get("/announcements", a.handleListAnnouncements)
-			r.Get("/announcements/{id}", a.handleGetAnnouncement)
+			t.handle(http.MethodGet, "/announcements", policyFiltered, a.handleListAnnouncements)
+			t.handle(http.MethodGet, "/announcements/{id}", policyFiltered, a.handleGetAnnouncement)
 
-			r.Get("/events", a.handleEvents)
+			t.handle(http.MethodGet, "/events", policyStream, a.handleEvents)
 		})
 
 		// Escrita: só administrador.
@@ -225,65 +233,72 @@ func (a *API) routes() http.Handler {
 		// impossível, porque a rota nasce dentro do grupo.
 		r.Group(func(r chi.Router) {
 			r.Use(a.authenticate, a.requireAdmin, a.withViewer, a.scopeGuard)
+			t := t.on(r)
 
 			// Token de API faz tudo o que a interface faz, então criá-lo
 			// é operação de administrador — senão o observador emitiria
 			// para si mesmo uma credencial sem as suas restrições.
-			r.Get("/auth/tokens", a.handleListTokens)
-			r.Post("/auth/tokens", a.handleCreateToken)
-			r.Delete("/auth/tokens/{id}", a.handleRevokeToken)
+			t.handle(http.MethodGet, "/auth/tokens", policyAccount, a.handleListTokens)
+			t.handle(http.MethodPost, "/auth/tokens", policyAccount, a.handleCreateToken)
+			t.handle(http.MethodDelete, "/auth/tokens/{id}", policyAccount, a.handleRevokeToken)
 
-			r.Get("/users", a.handleListUsers)
-			r.Post("/users", a.handleCreateUser)
-			r.Put("/users/{id}", a.handleUpdateUserRole)
-			r.Delete("/users/{id}", a.handleDeleteUser)
+			t.handle(http.MethodGet, "/users", policyFiltered, a.handleListUsers)
+			t.handle(http.MethodPost, "/users", policyPlacement, a.handleCreateUser)
+			t.handle(http.MethodPut, "/users/{id}", policyUser, a.handleUpdateUserRole)
+			t.handle(http.MethodDelete, "/users/{id}", policyUser, a.handleDeleteUser)
 
-			r.Post("/monitors", a.handleCreateMonitor)
-			r.Put("/monitors/{id}", a.handleUpdateMonitor)
-			r.Delete("/monitors/{id}", a.handleDeleteMonitor)
+			t.handle(http.MethodPost, "/monitors", policyPlacement, a.handleCreateMonitor)
+			t.handle(http.MethodPut, "/monitors/{id}", policyMonitor, a.handleUpdateMonitor)
+			t.handle(http.MethodDelete, "/monitors/{id}", policyMonitor, a.handleDeleteMonitor)
 
-			r.Put("/monitors/{id}/channels/{channelID}", a.handleLinkChannel)
-			r.Delete("/monitors/{id}/channels/{channelID}", a.handleUnlinkChannel)
+			t.handle(http.MethodPut, "/monitors/{id}/channels/{channelID}", policyMonitor, a.handleLinkChannel)
+			t.handle(http.MethodDelete, "/monitors/{id}/channels/{channelID}", policyMonitor, a.handleUnlinkChannel)
 
-			r.Post("/groups", a.handleCreateMonitorGroup)
-			r.Put("/groups/{id}", a.handleUpdateMonitorGroup)
-			r.Delete("/groups/{id}", a.handleDeleteMonitorGroup)
+			t.handle(http.MethodPost, "/groups", policyPlacement, a.handleCreateMonitorGroup)
+			t.handle(http.MethodPut, "/groups/{id}", policyGroup, a.handleUpdateMonitorGroup)
+			t.handle(http.MethodDelete, "/groups/{id}", policyGroup, a.handleDeleteMonitorGroup)
 			// Canal no grupo vale para todos os monitores dele, inclusive
 			// os criados depois.
-			r.Put("/groups/{id}/channels/{channelID}", a.handleLinkGroupChannel)
-			r.Delete("/groups/{id}/channels/{channelID}", a.handleUnlinkGroupChannel)
+			t.handle(http.MethodPut, "/groups/{id}/channels/{channelID}", policyGroup, a.handleLinkGroupChannel)
+			t.handle(http.MethodDelete, "/groups/{id}/channels/{channelID}", policyGroup, a.handleUnlinkGroupChannel)
 
-			r.Post("/channels", a.handleCreateChannel)
-			r.Put("/channels/{id}", a.handleUpdateChannel)
-			r.Delete("/channels/{id}", a.handleDeleteChannel)
+			t.handle(http.MethodPost, "/channels", policyFullScope, a.handleCreateChannel)
+			t.handle(http.MethodPut, "/channels/{id}", policyFullScope, a.handleUpdateChannel)
+			t.handle(http.MethodDelete, "/channels/{id}", policyFullScope, a.handleDeleteChannel)
 			// Entrega um aviso de exemplo. Sem isto, a única forma de saber
 			// que o canal funciona seria esperar uma queda de verdade.
-			r.Post("/channels/{id}/test", a.handleTestChannel)
+			t.handle(http.MethodPost, "/channels/{id}/test", policyFullScope, a.handleTestChannel)
 
 			// Administração das páginas públicas.
-			r.Post("/status-pages", a.handleCreateStatusPage)
-			r.Put("/status-pages/{id}", a.handleUpdateStatusPage)
-			r.Delete("/status-pages/{id}", a.handleDeleteStatusPage)
-			r.Put("/status-pages/{id}/default", a.handleSetDefaultStatusPage)
+			t.handle(http.MethodPost, "/status-pages", policyFullScope, a.handleCreateStatusPage)
+			t.handle(http.MethodPut, "/status-pages/{id}", policyFullScope, a.handleUpdateStatusPage)
+			t.handle(http.MethodDelete, "/status-pages/{id}", policyFullScope, a.handleDeleteStatusPage)
+			t.handle(http.MethodPut, "/status-pages/{id}/default", policyFullScope, a.handleSetDefaultStatusPage)
 
-			r.Post("/status-pages/{id}/groups", a.handleCreateGroup)
-			r.Put("/status-pages/{id}/groups/{groupID}", a.handleUpdateGroup)
-			r.Delete("/status-pages/{id}/groups/{groupID}", a.handleDeleteGroup)
+			t.handle(http.MethodPost, "/status-pages/{id}/groups", policyFullScope, a.handleCreateGroup)
+			t.handle(http.MethodPut, "/status-pages/{id}/groups/{groupID}", policyFullScope, a.handleUpdateGroup)
+			t.handle(http.MethodDelete, "/status-pages/{id}/groups/{groupID}", policyFullScope, a.handleDeleteGroup)
 
 			// PUT e não POST: publicar duas vezes o mesmo alvo atualiza o
 			// vínculo em vez de criar um segundo.
-			r.Put("/status-pages/{id}/components/{monitorID}", a.handleSetComponent)
-			r.Delete("/status-pages/{id}/components/{monitorID}", a.handleRemoveComponent)
+			t.handle(http.MethodPut, "/status-pages/{id}/components/{monitorID}", policyFullScope|policyMonitorParam, a.handleSetComponent)
+			t.handle(http.MethodDelete, "/status-pages/{id}/components/{monitorID}", policyFullScope|policyMonitorParam, a.handleRemoveComponent)
 
 			// Relatos: o que uma pessoa escreve, separado do incidente que a
 			// sonda detecta.
-			r.Post("/announcements", a.handleCreateAnnouncement)
-			r.Put("/announcements/{id}", a.handleUpdateAnnouncement)
-			r.Delete("/announcements/{id}", a.handleDeleteAnnouncement)
-			r.Post("/announcements/{id}/updates", a.handlePublishUpdate)
+			t.handle(http.MethodPost, "/announcements", policyFullScope, a.handleCreateAnnouncement)
+			t.handle(http.MethodPut, "/announcements/{id}", policyFullScope, a.handleUpdateAnnouncement)
+			t.handle(http.MethodDelete, "/announcements/{id}", policyFullScope, a.handleDeleteAnnouncement)
+			t.handle(http.MethodPost, "/announcements/{id}/updates", policyFullScope, a.handlePublishUpdate)
 		})
 	})
 
+	// Rota sem política não sobe. Pânico na montagem, e não erro em
+	// produção: é defeito de quem escreveu a rota, e o primeiro teste que
+	// monta a API o encontra.
+	if err := checkPolicies(r, a.policies); err != nil {
+		panic(err)
+	}
 	return r
 }
 

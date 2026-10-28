@@ -3,7 +3,10 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -77,36 +80,80 @@ func (a *API) withViewer(next http.Handler) http.Handler {
 	})
 }
 
-// scopeGuard barra o recurso do caminho que estiver fora do escopo.
+// scopePolicy é como uma rota se relaciona com o escopo.
 //
-// Middleware, como requireAdmin: uma rota nova com monitor no caminho
-// nasce protegida por estar no grupo de rotas, e esquecer a checagem num
-// handler deixa de ser possível. O teste de vazamento percorre todas as
-// rotas e reprova a que escapar.
+// Cada rota declara a sua ao ser registrada (ver routeTable). A guarda não
+// adivinha pelo caminho: classificar por prefixo deixava passar a rota
+// nova que caísse num prefixo que ninguém previu, e em acesso "na dúvida,
+// deixa" é vazamento esperando alguém criar a rota certa.
+//
+// As marcas se combinam: vincular canal a monitor é policyFullScope com
+// policyMonitor.
+type scopePolicy uint
+
+const (
+	// policyPublic atende sem sessão; as regras dela moram no handler
+	// (página pública, push, métricas).
+	policyPublic scopePolicy = 1 << iota
+	// policyAccount diz respeito à própria conta ou a nada da instalação:
+	// sessão, senha, tokens, tipos de canal.
+	policyAccount
+	// policyFiltered devolve coleção, recortada pelo handler com o viewer.
+	policyFiltered
+	// policyPlacement cria algo num grupo; o handler confere o destino.
+	policyPlacement
+	// policyStream é o fluxo de eventos, recortado evento a evento.
+	policyStream
+	// policyFullScope só atende quem alcança tudo. A recusa vem antes de
+	// olhar o recurso, para a resposta ser a mesma dentro e fora do
+	// escopo.
+	policyFullScope
+	// policyMonitor: {id} é um monitor, que precisa estar no escopo.
+	policyMonitor
+	// policyGroup: {id} é um grupo, que precisa estar no escopo.
+	policyGroup
+	// policyUser: {id} é uma conta, que não pode enxergar mais que quem
+	// pede.
+	policyUser
+	// policyMonitorParam: {monitorID} é um monitor, que precisa estar no
+	// escopo.
+	policyMonitorParam
+)
+
+// scopeGuard aplica a política declarada pela rota.
+//
+// Middleware do grupo de rotas, como requireAdmin. Rota sem política não
+// é atendida: o roteador nem sobe assim (checkPolicies), e esta recusa é
+// a segunda trava, para o caso de alguém montar rotas por outro caminho.
 func (a *API) scopeGuard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		v := viewerFrom(r)
 		ctx := r.Context()
+		rota := r.Method + " " + chi.RouteContext(ctx).RoutePattern()
+		p, ok := a.policies[rota]
+		if !ok || p == 0 || p&policyPublic != 0 {
+			slog.Error("api: rota autenticada sem política de escopo", "rota", rota)
+			writeError(w, http.StatusInternalServerError, codeInternal, "rota sem política de escopo")
+			return
+		}
 
-		pattern := chi.RouteContext(ctx).RoutePattern()
-		if r.Method != http.MethodGet && globalResource(pattern) && !v.access.All() {
-			// Antes da guarda do recurso: a resposta precisa ser a mesma
-			// para o monitor de dentro e o de fora, senão vira oráculo.
+		v := viewerFrom(r)
+		if p&policyFullScope != 0 && !v.access.All() {
 			writeError(w, http.StatusForbidden, codeForbidden,
-				"só quem alcança todos os grupos altera canais, páginas públicas e relatos")
+				"só quem alcança todos os grupos pode fazer isso")
 			return
 		}
 
 		var err error
-		switch {
-		case strings.HasPrefix(pattern, "/api/v1/monitors/{id}"):
+		if p&policyMonitor != 0 {
 			ctx, err = a.guardMonitor(ctx, v, chi.URLParam(r, "id"))
-		case strings.HasPrefix(pattern, "/api/v1/groups/{id}"):
+		}
+		if err == nil && p&policyGroup != 0 {
 			err = guardGroup(v, chi.URLParam(r, "id"))
-		case strings.HasPrefix(pattern, "/api/v1/users/{id}"):
+		}
+		if err == nil && p&policyUser != 0 {
 			err = a.guardUser(ctx, v, chi.URLParam(r, "id"))
 		}
-		if err == nil && strings.Contains(pattern, "{monitorID}") {
+		if err == nil && p&policyMonitorParam != 0 {
 			ctx, err = a.guardMonitor(ctx, v, chi.URLParam(r, "monitorID"))
 		}
 		if err != nil {
@@ -116,6 +163,51 @@ func (a *API) scopeGuard(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// routeTable registra rotas junto com a política de escopo de cada uma.
+//
+// Registrar e declarar são um gesto só: não existe forma de pôr uma rota
+// no roteador por aqui sem dizer como ela respeita o escopo.
+type routeTable struct {
+	r        chi.Router
+	prefix   string
+	policies map[string]scopePolicy
+}
+
+func (t routeTable) handle(method, pattern string, p scopePolicy, h http.HandlerFunc) {
+	t.policies[method+" "+t.prefix+pattern] = p
+	t.r.Method(method, pattern, h)
+}
+
+// on devolve a mesma tabela registrando num grupo de rotas.
+func (t routeTable) on(r chi.Router) routeTable {
+	t.r = r
+	return t
+}
+
+// checkPolicies recusa o roteador que tenha rota sem política declarada.
+func checkPolicies(routes chi.Routes, policies map[string]scopePolicy) error {
+	var faltando []string
+	err := chi.Walk(routes, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+		route = strings.TrimSuffix(route, "/*")
+		if route != "/" {
+			route = strings.TrimSuffix(route, "/")
+		}
+		chave := method + " " + route
+		if policies[chave] == 0 {
+			faltando = append(faltando, chave)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if len(faltando) > 0 {
+		sort.Strings(faltando)
+		return fmt.Errorf("api: rotas sem política de escopo: %s", strings.Join(faltando, ", "))
+	}
+	return nil
 }
 
 // errOutOfScope é o "não encontrado" de quem está fora do escopo. Mesma
@@ -170,24 +262,6 @@ func (a *API) guardUser(ctx context.Context, v viewer, raw string) error {
 		return errOutOfScope
 	}
 	return nil
-}
-
-// globalResources afetam monitores de todos os grupos, e por isso só quem
-// alcança tudo os altera: um canal alterado deixa de avisar o time
-// vizinho, uma página publicada expõe o que não é de quem publicou.
-//
-// Por prefixo, e não rota a rota, para uma rota nova nessas famílias
-// nascer coberta. O teste de vazamento classifica cada rota e reprova a
-// que ficar de fora.
-var globalResources = []string{"/api/v1/channels", "/api/v1/status-pages", "/api/v1/announcements"}
-
-func globalResource(pattern string) bool {
-	for _, p := range globalResources {
-		if pattern == p || strings.HasPrefix(pattern, p+"/") {
-			return true
-		}
-	}
-	return false
 }
 
 // monitorSelection é o filtro de listagem do escopo. Nulo para quem
