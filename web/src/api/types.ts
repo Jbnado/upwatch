@@ -2,7 +2,16 @@
 
 export type Status = "up" | "down" | "degraded" | "unknown";
 
-export type MonitorType = "http" | "tcp" | "icmp" | "dns" | "tls" | "push";
+export type MonitorType =
+  | "http"
+  | "tcp"
+  | "icmp"
+  | "dns"
+  | "tls"
+  | "push"
+  | "redis"
+  | "postgres"
+  | "mysql";
 
 export type Monitor = {
   id: number;
