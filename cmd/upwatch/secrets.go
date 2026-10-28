@@ -107,7 +107,11 @@ func rotateSecretKey(args []string) error {
 	if err != nil {
 		return explainKeyError(cfg, err)
 	}
-	defer st.Close()
+	defer func() {
+		if err := st.Close(); err != nil {
+			slog.Error("falha ao fechar o banco", "erro", err)
+		}
+	}()
 
 	if err := st.RotateSecretKey(context.Background(), newKey); err != nil {
 		return err

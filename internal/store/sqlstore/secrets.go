@@ -334,7 +334,7 @@ func ForgetSecrets(driver, dsn string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if err := s.migrate(); err != nil {
 		return 0, err
 	}
