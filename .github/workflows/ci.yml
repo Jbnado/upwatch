@@ -79,6 +79,61 @@ jobs:
           UPWATCH_TEST_POSTGRES_DSN: postgres://upwatch:upwatch@127.0.0.1:5432/upwatch?sslmode=disable
         run: go test ./internal/store/... -race -count=1
 
+  protocols:
+    name: Checkers de protocolo contra serviço real
+    runs-on: ubuntu-latest
+    # O servidor falso dos testes cobre o protocolo; só um serviço real
+    # mostra o que a ACL do Redis recusa ou o que a transação somente
+    # leitura impede de fato.
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: upwatch
+          POSTGRES_PASSWORD: upwatch
+          POSTGRES_DB: upwatch
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U upwatch"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_USER: upwatch
+          MYSQL_PASSWORD: upwatch
+          MYSQL_DATABASE: upwatch
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Testes contra Redis, PostgreSQL e MySQL
+        env:
+          UPWATCH_TEST_REDIS_ADDR: 127.0.0.1:6379
+          UPWATCH_TEST_POSTGRES_DSN: postgres://upwatch:upwatch@127.0.0.1:5432/upwatch?sslmode=disable
+          UPWATCH_TEST_MYSQL_DSN: upwatch:upwatch@tcp(127.0.0.1:3306)/upwatch
+        run: go test ./internal/checker/... -race -count=1 -run 'Live'
+
   web:
     name: Interface
     runs-on: ubuntu-latest
