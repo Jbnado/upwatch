@@ -122,6 +122,35 @@ describe("StatusPageAdmin", () => {
   });
 });
 
+describe("rótulo e seção de um serviço publicado", () => {
+  it("não deixa o rótulo salvo ao sair do campo desfazer a seção escolhida em seguida", async () => {
+    // Digitar o rótulo e ir direto à seção dispara duas gravações: a do
+    // campo, ao perder o foco, ainda com a seção antiga, e a da seção. Em
+    // paralelo, o servidor aplicava a que chegasse por último — e o ERP
+    // caía em "Sem seção" com a caixa mostrando "Retaguarda".
+    comComponentes([{ page_id: 1, monitor_id: 21, group_id: null, label: "", position: 1 }]);
+    const pendentes: (() => void)[] = [];
+    vi.mocked(api.setComponent).mockImplementation(
+      () => new Promise((ok) => pendentes.push(() => ok({} as never))),
+    );
+    render(<StatusPageAdmin id={1} />);
+
+    const rotulo = await screen.findByPlaceholderText("erp");
+    fireEvent.change(rotulo, { target: { value: "ERP" } });
+    fireEvent.blur(rotulo);
+    fireEvent.change(screen.getByRole("combobox", { name: "seção" }), { target: { value: "9" } });
+
+    // A segunda gravação espera a primeira terminar.
+    await waitFor(() => expect(api.setComponent).toHaveBeenCalledTimes(1));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(api.setComponent).toHaveBeenCalledTimes(1);
+    pendentes.shift()!();
+    await waitFor(() => expect(api.setComponent).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(api.setComponent).mock.calls[1]).toEqual([1, 21, { label: "ERP", group_id: 9 }]);
+    pendentes.shift()!();
+  });
+});
+
 describe("StatusPages", () => {
   it("mostra a lista e guarda o formulário atrás de + Nova página", async () => {
     vi.mocked(api.listStatusPages).mockResolvedValue({ items: [PAGINA] });

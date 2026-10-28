@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { api } from "../api/client";
 import {
   ApiError,
@@ -614,19 +614,30 @@ function ComponenteDetalhe({
   onChanged: () => Promise<void>;
 }) {
   const [label, setLabel] = useState(component.label ?? "");
+  const [secao, setSecao] = useState<number | null>(component.group_id ?? null);
+  // O último par enviado, e a fila das gravações. Rótulo e seção vão
+  // sempre juntos e um de cada vez: digitar o rótulo e ir direto à seção
+  // dispara duas gravações, e em paralelo o servidor ficava com a que
+  // chegasse por último — às vezes a do rótulo, ainda com a seção antiga.
+  const enviado = useRef({ label: component.label ?? "", secao: component.group_id ?? null });
+  const fila = useRef<Promise<unknown>>(Promise.resolve());
 
-  async function salvarRotulo() {
-    if (label === (component.label ?? "")) return;
-    await api.setComponent(pageID, monitor.id, { label, group_id: component.group_id ?? null });
-    await onChanged();
+  function salvar(proximo: { label: string; secao: number | null }) {
+    if (proximo.label === enviado.current.label && proximo.secao === enviado.current.secao) return;
+    enviado.current = proximo;
+    fila.current = fila.current
+      .then(() =>
+        api.setComponent(pageID, monitor.id, { label: proximo.label, group_id: proximo.secao }),
+      )
+      .then(onChanged, onChanged);
   }
 
-  async function mudarSecao(valor: string) {
-    await api.setComponent(pageID, monitor.id, {
-      label,
-      group_id: valor === "" ? null : Number(valor),
-    });
-    await onChanged();
+  const salvarRotulo = () => salvar({ label, secao });
+
+  function mudarSecao(valor: string) {
+    const proxima = valor === "" ? null : Number(valor);
+    setSecao(proxima);
+    salvar({ label, secao: proxima });
   }
 
   return (
@@ -641,7 +652,7 @@ function ComponenteDetalhe({
             // formulário, e a pessoa espera que o Enter confirme.
             if (e.key === "Enter") {
               e.preventDefault();
-              void salvarRotulo();
+              salvarRotulo();
             }
           }}
           placeholder={monitor.name}
@@ -649,10 +660,7 @@ function ComponenteDetalhe({
       </Field>
       {secoes.length > 0 && (
         <Field label="seção">
-          <Select
-            value={component.group_id ? String(component.group_id) : ""}
-            onChange={(e) => mudarSecao(e.target.value)}
-          >
+          <Select value={secao ? String(secao) : ""} onChange={(e) => mudarSecao(e.target.value)}>
             <option value="">Sem seção</option>
             {[...secoes]
               .sort((a, b) => a.position - b.position)
