@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"text/template"
 )
 
@@ -129,6 +130,11 @@ func (d *discord) Send(ctx context.Context, n Notification) error {
 
 	return post(ctx, d.cfg.URL, d.cfg.Headers, map[string]any{
 		"content": conteudo,
+		// Nenhuma menção é interpretada. A causa de um monitor push é
+		// escrita por quem bate no UpWatch, e um "@everyone" ali acordaria
+		// o servidor inteiro; o Discord só deixa de pingar quando o
+		// payload diz que nada é permitido.
+		"allowed_mentions": map[string][]string{"parse": {}},
 	})
 }
 
@@ -160,6 +166,7 @@ func NewSlack(raw json.RawMessage) (Notifier, error) {
 }
 
 func (s *slack) Send(ctx context.Context, n Notification) error {
+	n = slackEscapeOutside(n)
 	texto := renderWith(s.tmpl, n)
 	if n.Monitor.Target != "" {
 		texto += "\n" + n.Monitor.Target
@@ -168,4 +175,23 @@ func (s *slack) Send(ctx context.Context, n Notification) error {
 	return post(ctx, s.cfg.URL, s.cfg.Headers, map[string]any{
 		"text": texto,
 	})
+}
+
+// slackEscaper escapa o que o Slack lê como controle, conforme a
+// documentação de formatação dele: só &, < e >.
+var slackEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
+
+// slackEscapeOutside escapa o texto que vem de fora antes de montar a
+// mensagem.
+//
+// No Slack, <!channel> é menção em massa e <url|texto> é link disfarçado.
+// Nome, alvo e causa vêm de quem cadastrou o monitor e do próprio alvo — a
+// causa de um push é escrita por quem bate no UpWatch. O modelo do canal
+// fica de fora de propósito: quem o escreve pode querer um link para o
+// runbook, e escapar a mensagem pronta quebraria isso.
+func slackEscapeOutside(n Notification) Notification {
+	n.Monitor.Name = slackEscaper.Replace(n.Monitor.Name)
+	n.Monitor.Target = slackEscaper.Replace(n.Monitor.Target)
+	n.Message = slackEscaper.Replace(n.Message)
+	return n
 }

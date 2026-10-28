@@ -223,6 +223,14 @@ deles para escrever uma frase. Um modelo que tenta ler campo que não está
 na lista, como `.Monitor.Config`, é recusado no cadastro. Os marcadores de
 `body_template` seguem a mesma regra.
 
+Nome, alvo e causa vêm de fora — a causa de um monitor push é escrita por
+quem bate no UpWatch —, então não viram menção em massa. No Discord, o
+aviso vai com `allowed_mentions` vazio, e um `@everyone` na causa chega
+como texto, sem pingar ninguém. No Slack, `<`, `>` e `&` desses campos são
+escapados, e `<!channel>` ou um link disfarçado chegam como texto; o que
+você escreve no próprio `template`, como um link para o runbook, passa
+intacto.
+
 Os campos avançados também estão na interface, em Ajustes → Canais de
 aviso, atrás de "cabeçalhos e formato do corpo".
 

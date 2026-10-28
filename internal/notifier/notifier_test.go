@@ -468,3 +468,96 @@ func closedURL(t *testing.T) string {
 	srv.Close()
 	return url
 }
+
+// A causa de um monitor push é escrita por quem bate no UpWatch, e o nome
+// do monitor por quem o cadastrou. Um "@everyone" ali acordaria o
+// servidor inteiro do Discord às três da manhã. O Discord só deixa de
+// interpretar menção quando o payload diz que nenhuma é permitida.
+func TestDiscordDisablesMassMentions(t *testing.T) {
+	cap, url := newCapture(t)
+	d, err := notifier.NewDiscord(json.RawMessage(`{"url":"` + url + `"}`))
+	if err != nil {
+		t.Fatalf("NewDiscord returned unexpected error: %v", err)
+	}
+
+	n := outage()
+	n.Message = "@everyone @here <@&123> caiu"
+	if err := send(t, d, n); err != nil {
+		t.Fatalf("Send returned unexpected error: %v", err)
+	}
+
+	var corpo struct {
+		Content         string `json:"content"`
+		AllowedMentions *struct {
+			Parse *[]string `json:"parse"`
+		} `json:"allowed_mentions"`
+	}
+	if err := json.Unmarshal([]byte(cap.body(0)), &corpo); err != nil {
+		t.Fatalf("the payload is not valid JSON: %v", err)
+	}
+	if corpo.AllowedMentions == nil || corpo.AllowedMentions.Parse == nil || len(*corpo.AllowedMentions.Parse) != 0 {
+		t.Errorf("allowed_mentions = %s, want {\"parse\": []} so no mention pings", cap.body(0))
+	}
+	if !strings.Contains(corpo.Content, "@everyone") {
+		t.Errorf("content = %q, want the cause kept as text", corpo.Content)
+	}
+}
+
+// No Slack a menção em massa é <!channel>, <!here> ou <!everyone>, e o
+// link disfarçado é <url|texto>. Texto vindo do alvo precisa ter <, > e &
+// escapados, como a documentação de formatação do Slack pede, para ser
+// lido como texto e não como comando.
+func TestSlackEscapesControlSequencesFromOutside(t *testing.T) {
+	cap, url := newCapture(t)
+	s, err := notifier.NewSlack(json.RawMessage(`{"url":"` + url + `"}`))
+	if err != nil {
+		t.Fatalf("NewSlack returned unexpected error: %v", err)
+	}
+
+	n := outage()
+	n.Monitor.Name = "api <!here>"
+	n.Message = "@everyone <!channel> <https://phishing.exemplo|clique aqui> a & b"
+	if err := send(t, s, n); err != nil {
+		t.Fatalf("Send returned unexpected error: %v", err)
+	}
+
+	var corpo map[string]any
+	_ = json.Unmarshal([]byte(cap.body(0)), &corpo)
+	texto, _ := corpo["text"].(string)
+
+	for _, cru := range []string{"<!channel>", "<!here>", "<https://phishing"} {
+		if strings.Contains(texto, cru) {
+			t.Errorf("text carries raw %q, want it escaped: %q", cru, texto)
+		}
+	}
+	for _, escapado := range []string{"&lt;!channel&gt;", "a &amp; b"} {
+		if !strings.Contains(texto, escapado) {
+			t.Errorf("text = %q, want it to contain %q", texto, escapado)
+		}
+	}
+}
+
+// O modelo é de quem cadastra o canal, que pode querer formatação do
+// Slack de propósito — um link para o runbook. Escapar o modelo inteiro
+// quebraria isso; só o que vem de fora é escapado.
+func TestSlackKeepsFormattingWrittenInTheTemplate(t *testing.T) {
+	cap, url := newCapture(t)
+	cfg := `{"url":"` + url + `","template":"<https://runbook.exemplo|runbook> {{.Message}}"}`
+	s, err := notifier.NewSlack(json.RawMessage(cfg))
+	if err != nil {
+		t.Fatalf("NewSlack returned unexpected error: %v", err)
+	}
+
+	n := outage()
+	n.Message = "<!channel>"
+	if err := send(t, s, n); err != nil {
+		t.Fatalf("Send returned unexpected error: %v", err)
+	}
+
+	var corpo map[string]any
+	_ = json.Unmarshal([]byte(cap.body(0)), &corpo)
+	texto, _ := corpo["text"].(string)
+	if !strings.HasPrefix(texto, "<https://runbook.exemplo|runbook> &lt;!channel&gt;") {
+		t.Errorf("text = %q, want the template link kept and the cause escaped", texto)
+	}
+}
