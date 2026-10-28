@@ -76,17 +76,19 @@ func secretMonitors() ([]domain.Monitor, []string) {
 	push := mk("cron", domain.MonitorPush, `{"token":"token-do-push-0123456789"}`)
 	push.Target, push.PushToken = "", "token-do-push-0123456789"
 
-	return []domain.Monitor{
-			mk("redis", domain.MonitorRedis, `{"password":"senha-do-redis"}`),
-			mk("postgres", domain.MonitorPostgres, `{"username":"mon","password":"senha-do-pg"}`),
-			mk("mysql", domain.MonitorMySQL, `{"username":"mon","password":"senha-do-mysql"}`),
-			mk("http", domain.MonitorHTTP, `{"basic_auth_user":"ana","basic_auth_pass":"senha-do-basic",`+
-				`"headers":{"Authorization":"Bearer token-do-cabecalho","Accept":"text/plain"}}`),
-			push,
-		}, []string{
-			"senha-do-redis", "senha-do-pg", "senha-do-mysql", "senha-do-basic",
-			"token-do-cabecalho", "token-do-push-0123456789",
-		}
+	monitores := []domain.Monitor{
+		mk("redis", domain.MonitorRedis, `{"password":"senha-do-redis"}`),
+		mk("postgres", domain.MonitorPostgres, `{"username":"mon","password":"senha-do-pg"}`),
+		mk("mysql", domain.MonitorMySQL, `{"username":"mon","password":"senha-do-mysql"}`),
+		mk("http", domain.MonitorHTTP, `{"basic_auth_user":"ana","basic_auth_pass":"senha-do-basic",`+
+			`"headers":{"Authorization":"Bearer token-do-cabecalho","Accept":"text/plain"}}`),
+		push,
+	}
+	segredos := []string{
+		"senha-do-redis", "senha-do-pg", "senha-do-mysql", "senha-do-basic",
+		"token-do-cabecalho", "token-do-push-0123456789",
+	}
+	return monitores, segredos
 }
 
 // secretChannels são canais com cada forma de credencial, e o valor dela.
@@ -94,16 +96,18 @@ func secretChannels() ([]domain.Channel, []string) {
 	mk := func(name, typ, cfg string) domain.Channel {
 		return domain.Channel{Name: name, Type: typ, Enabled: true, Config: json.RawMessage(cfg)}
 	}
-	return []domain.Channel{
-			mk("webhook", "webhook", `{"url":"https://hooks.exemplo.com/token-do-webhook","headers":{"X-Token":"token-do-header"}}`),
-			mk("discord", "discord", `{"url":"https://discord.com/api/webhooks/1/token-do-discord"}`),
-			mk("slack", "slack", `{"url":"https://hooks.slack.com/services/T/B/token-do-slack"}`),
-			mk("email", "email", `{"host":"smtp.exemplo.com","password":"senha-do-smtp","from":"a@exemplo.com","to":["b@exemplo.com"]}`),
-			mk("ntfy", "ntfy", `{"topic":"plantao","token":"token-do-ntfy"}`),
-		}, []string{
-			"token-do-webhook", "token-do-header", "token-do-discord", "token-do-slack",
-			"senha-do-smtp", "token-do-ntfy",
-		}
+	canais := []domain.Channel{
+		mk("webhook", "webhook", `{"url":"https://hooks.exemplo.com/token-do-webhook","headers":{"X-Token":"token-do-header"}}`),
+		mk("discord", "discord", `{"url":"https://discord.com/api/webhooks/1/token-do-discord"}`),
+		mk("slack", "slack", `{"url":"https://hooks.slack.com/services/T/B/token-do-slack"}`),
+		mk("email", "email", `{"host":"smtp.exemplo.com","password":"senha-do-smtp","from":"a@exemplo.com","to":["b@exemplo.com"]}`),
+		mk("ntfy", "ntfy", `{"topic":"plantao","token":"token-do-ntfy"}`),
+	}
+	segredos := []string{
+		"token-do-webhook", "token-do-header", "token-do-discord", "token-do-slack",
+		"senha-do-smtp", "token-do-ntfy",
+	}
+	return canais, segredos
 }
 
 func createSecrets(t *testing.T, s store.Store) ([]domain.Monitor, []domain.Channel, []string) {
