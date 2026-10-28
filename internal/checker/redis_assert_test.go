@@ -150,13 +150,24 @@ func TestRedisAssertionEvaluateMissingKeyFails(t *testing.T) {
 	}
 }
 
+// A causa vai para o painel, para o aviso no canal e para o histórico
+// exportado. Se ela repetisse o valor lido, uma asserção de GET sobre a
+// chave de uma sessão ou de um token viraria um jeito de ler o Redis de
+// produção para quem só cadastra monitores. Diz que não é número e o
+// tamanho, que bastam para achar o erro de configuração.
 func TestRedisAssertionEvaluateNonNumericFails(t *testing.T) {
-	a := checker.RedisAssertion{Command: "GET", Key: "estado", Op: "eq", Value: 1}
+	for _, a := range []checker.RedisAssertion{
+		{Command: "GET", Key: "sessao:42", Op: "eq", Value: 1},
+		{Command: "HGET", Key: "usuario:7", Field: "token", Op: "eq", Value: 1},
+	} {
+		got := a.Evaluate("tok-secreto-do-redis")
 
-	got := a.Evaluate("ocupado")
-
-	if !strings.Contains(got, `"ocupado"`) || !strings.Contains(got, "não é número") {
-		t.Errorf("Evaluate = %q, want a cause quoting the non-numeric value", got)
+		if strings.Contains(got, "tok-secreto") {
+			t.Errorf("%s: Evaluate = %q leaks the value read", a.Command, got)
+		}
+		if !strings.Contains(got, "não é número") || !strings.Contains(got, "20 bytes") {
+			t.Errorf("%s: Evaluate = %q, want a cause saying it is not a number and its size", a.Command, got)
+		}
 	}
 }
 

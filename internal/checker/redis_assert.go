@@ -170,7 +170,10 @@ func (a RedisAssertion) measure(reply any) (float64, string) {
 	case string:
 		n, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
 		if err != nil {
-			return 0, fmt.Sprintf("%s = %q, não é número", a.label(), truncate(v, 64))
+			// O valor em si fica de fora: a causa é lida por quem não tem
+			// acesso ao Redis, e repeti-la faria de uma asserção de GET um
+			// leitor de qualquer chave. O tamanho basta para diagnosticar.
+			return 0, fmt.Sprintf("%s: a resposta não é número (%d bytes)", a.label(), len(v))
 		}
 		return n, ""
 	default:
@@ -210,11 +213,4 @@ func compare(got float64, op string, want float64) bool {
 
 func formatNumber(v float64) string {
 	return strconv.FormatFloat(v, 'f', -1, 64)
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
 }
