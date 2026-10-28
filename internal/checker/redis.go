@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"strings"
 	"sync"
 	"time"
@@ -73,6 +72,9 @@ func (discardRedisLog) Printf(context.Context, string, ...any) {}
 // Type identifica o tipo de monitor atendido.
 func (c *Redis) Type() domain.MonitorType { return domain.MonitorRedis }
 
+// ValidateTarget confere o alvo no cadastro (ver splitTarget).
+func (c *Redis) ValidateTarget(target string) error { return validateTarget(target) }
+
 // ValidateConfig confere a configuração no cadastro.
 func (c *Redis) ValidateConfig(raw json.RawMessage) error {
 	_, err := parseRedisConfig(raw)
@@ -129,9 +131,9 @@ func (c *Redis) Check(ctx context.Context, m domain.Monitor) Result {
 	if err != nil {
 		return down("%v", err)
 	}
-	host, port, err := net.SplitHostPort(m.Target)
-	if err != nil || port == "" {
-		return down("alvo precisa estar no formato host:porta, recebido %q", m.Target)
+	host, port, err := splitTarget(m.Target)
+	if err != nil {
+		return down("%v", err)
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, m.Timeout)

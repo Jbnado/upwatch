@@ -36,6 +36,9 @@ func NewMySQL() *MySQL { return &MySQL{} }
 // Type identifica o tipo de monitor atendido.
 func (c *MySQL) Type() domain.MonitorType { return domain.MonitorMySQL }
 
+// ValidateTarget confere o alvo no cadastro (ver splitTarget).
+func (c *MySQL) ValidateTarget(target string) error { return validateTarget(target) }
+
 // ValidateConfig confere a configuração no cadastro.
 func (c *MySQL) ValidateConfig(raw json.RawMessage) error {
 	_, err := parseMySQLConfig(raw)
@@ -125,9 +128,9 @@ func (c *MySQL) Check(ctx context.Context, m domain.Monitor) Result {
 	if err != nil {
 		return down("%v", err)
 	}
-	host, port, ok := splitTarget(m.Target)
-	if !ok {
-		return down("alvo precisa estar no formato host:porta, recebido %q", m.Target)
+	host, port, err := splitTarget(m.Target)
+	if err != nil {
+		return down("%v", err)
 	}
 	meta := map[string]string{"host": host, "port": port}
 	fail := func(stage string, err error) Result {

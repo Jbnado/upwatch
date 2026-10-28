@@ -202,3 +202,36 @@ func TestSQLCheckCauseDoesNotCarryTheServerText(t *testing.T) {
 		})
 	}
 }
+
+// O alvo é um host:porta de rede. Um host com barra vira socket Unix no
+// driver do PostgreSQL, e com vírgula, uma lista de servidores tentados em
+// sequência: os dois levam o monitor a lugares que o cadastro não mostra
+// — o socket local do próprio host do UpWatch, um segundo servidor
+// escondido depois da vírgula. O erro aparece no cadastro, não só na
+// primeira verificação.
+func TestProtocolTargetMustBeASingleNetworkHost(t *testing.T) {
+	reg, err := checker.NewRegistry(checker.NewRedis(), checker.NewPostgres(), checker.NewMySQL())
+	if err != nil {
+		t.Fatalf("NewRegistry returned unexpected error: %v", err)
+	}
+	for _, typ := range []domain.MonitorType{domain.MonitorRedis, domain.MonitorPostgres, domain.MonitorMySQL} {
+		for _, target := range []string{
+			"/var/run/postgresql:5432",
+			"/tmp/.s.PGSQL.5432:5432",
+			"db1,db2:5432",
+			"db1:5432,db2",
+		} {
+			m := sqlMonitor(typ, target, `{"username":"u"}`)
+			if err := reg.Validate(m); err == nil {
+				t.Errorf("%s: Validate accepted target %q", typ, target)
+			}
+			if res := reg.Check(context.Background(), m); res.Status != domain.StatusDown {
+				t.Errorf("%s: Check(%q) = %v, want down", typ, target, res.Status)
+			}
+		}
+
+		if err := reg.Validate(sqlMonitor(typ, "db.interno:5432", `{"username":"u"}`)); err != nil {
+			t.Errorf("%s: Validate rejected a plain host:port: %v", typ, err)
+		}
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -132,11 +133,29 @@ func commonSQLClass(err error) (string, bool) {
 	return "", false
 }
 
-// splitTarget confere o formato host:porta do alvo.
-func splitTarget(target string) (host, port string, ok bool) {
-	host, port, err := net.SplitHostPort(target)
-	if err != nil || port == "" {
-		return "", "", false
+// splitTarget confere o alvo dos checkers de protocolo: um único host de
+// rede e a porta.
+//
+// Um host com barra vira socket Unix no driver do PostgreSQL, e com
+// vírgula, uma lista de servidores tentados em sequência. Os dois levam o
+// monitor a lugares que o cadastro não mostra: o socket local do próprio
+// host do UpWatch, um segundo servidor escondido depois da vírgula.
+func splitTarget(target string) (host, port string, err error) {
+	host, port, err = net.SplitHostPort(target)
+	if err != nil || host == "" || port == "" {
+		return "", "", fmt.Errorf("checker: alvo precisa estar no formato host:porta, recebido %q", target)
 	}
-	return host, port, true
+	if strings.ContainsAny(host, "/\\,@ \t\r\n\x00") {
+		return "", "", fmt.Errorf("checker: o host do alvo precisa ser um único nome ou IP de rede, sem barra nem vírgula, recebido %q", host)
+	}
+	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		return "", "", fmt.Errorf("checker: porta inválida no alvo, recebido %q", port)
+	}
+	return host, port, nil
+}
+
+// validateTarget é o ValidateTarget dos checkers de protocolo.
+func validateTarget(target string) error {
+	_, _, err := splitTarget(target)
+	return err
 }

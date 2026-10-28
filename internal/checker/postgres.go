@@ -43,6 +43,9 @@ func NewPostgres() *Postgres { return &Postgres{} }
 // Type identifica o tipo de monitor atendido.
 func (c *Postgres) Type() domain.MonitorType { return domain.MonitorPostgres }
 
+// ValidateTarget confere o alvo no cadastro (ver splitTarget).
+func (c *Postgres) ValidateTarget(target string) error { return validateTarget(target) }
+
 // ValidateConfig confere a configuração no cadastro.
 func (c *Postgres) ValidateConfig(raw json.RawMessage) error {
 	_, err := parsePostgresConfig(raw)
@@ -158,9 +161,9 @@ func (c *Postgres) Check(ctx context.Context, m domain.Monitor) Result {
 	if err != nil {
 		return down("%v", err)
 	}
-	host, port, ok := splitTarget(m.Target)
-	if !ok {
-		return down("alvo precisa estar no formato host:porta, recebido %q", m.Target)
+	host, port, err := splitTarget(m.Target)
+	if err != nil {
+		return down("%v", err)
 	}
 	meta := map[string]string{"host": host, "port": port}
 	fail := func(stage string, err error) Result {
