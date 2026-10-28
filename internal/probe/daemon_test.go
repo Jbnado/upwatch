@@ -212,3 +212,30 @@ func TestDaemonLogNeverShowsThePushToken(t *testing.T) {
 		t.Errorf("log shows the push token:\n%s", f.logs.String())
 	}
 }
+
+// Recarregar enquanto uma verificação acaba de medir não pode travar o
+// daemon: a recarga para a tarefa e espera por ela, e a tarefa, ao
+// registrar o resultado, não pode depender de nada que a recarga segure.
+// Travado, o daemon para de verificar sem dizer nada.
+func TestDaemonReloadWhileResultsArriveDoesNotDeadlock(t *testing.T) {
+	f := startDaemon(t, tcpConfig("ADDR", "a"))
+	waitFor(t, func() bool { return f.has("a") })
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := range 200 {
+			interval := "1m"
+			if i%2 == 1 {
+				interval = "2m"
+			}
+			f.write(t, strings.ReplaceAll(tcpConfig("ADDR", "a"), "interval: 1m", "interval: "+interval))
+			f.daemon.Reload()
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("reloading while results arrive deadlocked the daemon")
+	}
+}

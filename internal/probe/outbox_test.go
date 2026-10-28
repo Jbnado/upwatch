@@ -24,7 +24,7 @@ func newScriptedSend(errs ...error) *scriptedSend {
 	return &scriptedSend{errs: errs, calls: make(chan probe.Signal, 100)}
 }
 
-func (s *scriptedSend) send(_ context.Context, _ string, sig probe.Signal) error {
+func (s *scriptedSend) send(ctx context.Context, _ string, sig probe.Signal) error {
 	s.mu.Lock()
 	var err error
 	if len(s.errs) > 0 {
@@ -33,7 +33,13 @@ func (s *scriptedSend) send(_ context.Context, _ string, sig probe.Signal) error
 		err = s.fallback
 	}
 	s.mu.Unlock()
-	s.calls <- sig
+	// Como o cliente HTTP de verdade, desiste quando o contexto acaba: sem
+	// isso, um teste que não lê as tentativas travaria a parada do runner.
+	select {
+	case s.calls <- sig:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 	return err
 }
 

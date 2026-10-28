@@ -43,6 +43,11 @@ type Daemon struct {
 	cfg      Config
 	lastSeen [32]byte
 	lastErr  string
+
+	// statusMu é separado de mu de propósito. A recarga segura mu
+	// enquanto para as tarefas e espera por elas; se a tarefa precisasse
+	// de mu para registrar o resultado, as duas se esperariam para sempre.
+	statusMu sync.Mutex
 	statuses map[string]string
 }
 
@@ -152,10 +157,10 @@ func (d *Daemon) reportLocked(err error) {
 func (d *Daemon) onResult(name string, at time.Time, sig Signal) {
 	d.state.RecordResult(name, at, sig)
 
-	d.mu.Lock()
+	d.statusMu.Lock()
 	prev := d.statuses[name]
 	d.statuses[name] = sig.Status
-	d.mu.Unlock()
+	d.statusMu.Unlock()
 
 	// Só a mudança vai para o log: uma linha por minuto por verificação
 	// enterraria a que interessa.
