@@ -45,15 +45,7 @@ func (r *userRepo) Create(ctx context.Context, u *domain.User) error {
 
 // inTx roda fn numa transação da conexão do repositório.
 func (r *userRepo) inTx(ctx context.Context, fn func(*tx) error) error {
-	t, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("sqlstore: iniciando transação: %w", err)
-	}
-	if err := fn(t); err != nil {
-		_ = t.Rollback()
-		return err
-	}
-	return t.Commit()
+	return r.db.inTx(ctx, fn)
 }
 
 // writeUserGroups substitui as concessões da conta.

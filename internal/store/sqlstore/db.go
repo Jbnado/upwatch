@@ -3,6 +3,7 @@ package sqlstore
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -96,6 +97,19 @@ func (d *db) insertID(ctx context.Context, query string, args ...any) (int64, er
 		return 0, err
 	}
 	return id, nil
+}
+
+// inTx roda fn numa transação, desfazendo-a se fn falhar.
+func (d *db) inTx(ctx context.Context, fn func(*tx) error) error {
+	t, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlstore: iniciando transação: %w", err)
+	}
+	if err := fn(t); err != nil {
+		_ = t.Rollback()
+		return err
+	}
+	return t.Commit()
 }
 
 // tx é a transação com o mesmo tratamento de dialeto.

@@ -18,19 +18,74 @@ type groupRepo struct{ db *db }
 
 const groupColumns = `id, name, slug, parent_id, created_at, updated_at`
 
+// Create grava o grupo, recusando um terceiro nível.
+//
+// A forma da árvore é conferida na API (domain.GroupTree), mas a árvore
+// que ela leu pode mudar até aqui: o pai pode ganhar um pai no meio. Por
+// isso a gravação trava o pai e leva a condição na própria instrução.
 func (r *groupRepo) Create(ctx context.Context, g *domain.Group) error {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	g.CreatedAt, g.UpdatedAt = now, now
 
-	id, err := r.db.insertID(ctx, `
-		INSERT INTO monitor_group (name, slug, parent_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?)`,
-		g.Name, g.Slug, g.ParentID, toMillis(now), toMillis(now))
-	if err != nil {
-		return translateAuthErr(err, "grupo")
+	return r.db.inTx(ctx, func(t *tx) error {
+		if err := lockGroups(ctx, t, g.ParentID); err != nil {
+			return err
+		}
+		id, err := t.insertID(ctx, `
+			INSERT INTO monitor_group (name, slug, parent_id, created_at, updated_at)
+			SELECT ?, ?, ?, ?, ?
+			WHERE `+parentIsTopLevel,
+			g.Name, g.Slug, g.ParentID, toMillis(now), toMillis(now), g.ParentID, g.ParentID, int64(0))
+		if errors.Is(err, sql.ErrNoRows) {
+			return errThirdLevel
+		}
+		if err != nil {
+			return translateGroupErr(err)
+		}
+		g.ID = id
+		return nil
+	})
+}
+
+// parentIsTopLevel é a condição de dois níveis do lado do pai: sem pai,
+// ou com um pai que existe, é de topo e não é o próprio grupo. Recebe o
+// pai duas vezes e o id do grupo (zero na criação).
+const parentIsTopLevel = `(CAST(? AS BIGINT) IS NULL OR EXISTS (
+	SELECT 1 FROM monitor_group p WHERE p.id = ? AND p.parent_id IS NULL AND p.id <> ?))`
+
+// errThirdLevel é a recusa do store a um terceiro nível.
+var errThirdLevel = fmt.Errorf("grupos têm no máximo dois níveis: %w", store.ErrConflict)
+
+// lockGroups trava os grupos indicados até o fim da transação, com um
+// UPDATE que não muda nada — vale nos dois bancos, como lockFullAdmins.
+// Quem reorganiza a mesma parte da árvore ao mesmo tempo espera, e relê
+// já com a mudança de quem chegou antes; sem isso, no PostgreSQL, criar
+// um ambiente em P e pôr P dentro de outro grupo passavam os dois.
+//
+// Grupo que não existe é ErrNotFound: o pai sumiu, ou nunca existiu.
+func lockGroups(ctx context.Context, t *tx, ids ...*int64) error {
+	for _, id := range ids {
+		if id == nil {
+			continue
+		}
+		res, err := t.ExecContext(ctx, `UPDATE monitor_group SET updated_at = updated_at WHERE id = ?`, *id)
+		if err != nil {
+			return fmt.Errorf("sqlstore: travando grupo %d: %w", *id, err)
+		}
+		if err := requireAffected(res, fmt.Sprintf("grupo %d", *id)); err != nil {
+			return err
+		}
 	}
-	g.ID = id
 	return nil
+}
+
+// translateGroupErr traduz unicidade em ErrConflict e a chave estrangeira
+// do pai em ErrNotFound.
+func translateGroupErr(err error) error {
+	if isForeignKeyViolation(err) {
+		return fmt.Errorf("grupo pai: %w", store.ErrNotFound)
+	}
+	return translateAuthErr(err, "grupo")
 }
 
 func (r *groupRepo) Get(ctx context.Context, id int64) (domain.Group, error) {
@@ -43,16 +98,36 @@ func (r *groupRepo) Get(ctx context.Context, id int64) (domain.Group, error) {
 	return g, err
 }
 
+// Update grava o grupo, recusando um terceiro nível: o pai precisa ser de
+// topo, e o grupo que ganha pai não pode ter ambientes.
 func (r *groupRepo) Update(ctx context.Context, g domain.Group) error {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 
-	res, err := r.db.ExecContext(ctx, `
-		UPDATE monitor_group SET name = ?, slug = ?, parent_id = ?, updated_at = ? WHERE id = ?`,
-		g.Name, g.Slug, g.ParentID, toMillis(now), g.ID)
-	if err != nil {
-		return translateAuthErr(err, "grupo")
-	}
-	return requireAffected(res, fmt.Sprintf("grupo %d", g.ID))
+	return r.db.inTx(ctx, func(t *tx) error {
+		if err := lockGroups(ctx, t, &g.ID, g.ParentID); err != nil {
+			return err
+		}
+		res, err := t.ExecContext(ctx, `
+			UPDATE monitor_group SET name = ?, slug = ?, parent_id = ?, updated_at = ?
+			WHERE id = ? AND `+parentIsTopLevel+`
+			  AND (CAST(? AS BIGINT) IS NULL OR NOT EXISTS (
+				SELECT 1 FROM monitor_group filho WHERE filho.parent_id = ?))`,
+			g.Name, g.Slug, g.ParentID, toMillis(now), g.ID,
+			g.ParentID, g.ParentID, g.ID, g.ParentID, g.ID)
+		if err != nil {
+			return translateGroupErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("sqlstore: contando linhas afetadas: %w", err)
+		}
+		if n == 0 {
+			// O grupo e o pai existem (a trava acima conferiu): o que
+			// barrou foi a forma.
+			return errThirdLevel
+		}
+		return nil
+	})
 }
 
 // Delete apaga o grupo só se ele estiver vazio.

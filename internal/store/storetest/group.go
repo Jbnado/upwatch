@@ -3,6 +3,8 @@ package storetest
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,6 +21,8 @@ func groupCases() []conformanceCase {
 		{"GroupSlugIsUniqueAmongSiblings", testGroupSlugIsUniqueAmongSiblings},
 		{"GroupUpdatePersistsChanges", testGroupUpdatePersistsChanges},
 		{"GroupDeleteRefusesWhileInUse", testGroupDeleteRefusesWhileInUse},
+		{"GroupDepthIsEnforcedByTheStore", testGroupDepthIsEnforcedByTheStore},
+		{"GroupConcurrentMovesKeepTwoLevels", testGroupConcurrentMovesKeepTwoLevels},
 		{"GroupDeleteRemovesEmptyGroup", testGroupDeleteRemovesEmptyGroup},
 
 		{"MonitorRoundTripsGroup", testMonitorRoundTripsGroup},
@@ -159,6 +163,94 @@ func testGroupDeleteRefusesWhileInUse(t *testing.T, newStore Factory) {
 	}
 	if err := s.Groups().Delete(ctx, prod.ID); !errors.Is(err, store.ErrConflict) {
 		t.Errorf("Delete of a group with monitors returned %v, want store.ErrConflict", err)
+	}
+}
+
+// Dois níveis no máximo, também no store. A API confere a forma da árvore
+// antes de gravar (domain.GroupTree), mas a árvore que ela leu pode mudar
+// até a gravação: o pai ganha um pai, ou o grupo que vai virar ambiente
+// ganha um ambiente. A garantia que vale é a que o banco dá na escrita.
+func testGroupDepthIsEnforcedByTheStore(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	rpa := mustCreateGroup(t, s, "RPA", nil)
+	prod := mustCreateGroup(t, s, "prod", &rpa.ID)
+	ret := mustCreateGroup(t, s, "Retaguarda", nil)
+	mustCreateGroup(t, s, "hml", &ret.ID)
+	solto := mustCreateGroup(t, s, "Solto", nil)
+
+	terceiro := domain.Group{Name: "fundo", Slug: "fundo", ParentID: &prod.ID}
+	if err := s.Groups().Create(ctx, &terceiro); !errors.Is(err, store.ErrConflict) {
+		t.Errorf("Create under an environment returned %v, want store.ErrConflict", err)
+	}
+	semPai := int64(9999)
+	orfao := domain.Group{Name: "orfao", Slug: "orfao", ParentID: &semPai}
+	if err := s.Groups().Create(ctx, &orfao); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("Create under a missing parent returned %v, want store.ErrNotFound", err)
+	}
+
+	for nome, g := range map[string]domain.Group{
+		"grupo de topo para dentro de um ambiente": {ID: solto.ID, Name: "Solto", Slug: "solto", ParentID: &prod.ID},
+		"sistema com ambientes para dentro de outro": {ID: ret.ID, Name: "Retaguarda", Slug: "retaguarda", ParentID: &rpa.ID},
+	} {
+		if err := s.Groups().Update(ctx, g); !errors.Is(err, store.ErrConflict) {
+			t.Errorf("%s: Update returned %v, want store.ErrConflict", nome, err)
+		}
+	}
+	if got, _ := s.Groups().Get(ctx, ret.ID); got.ParentID != nil {
+		t.Error("the refused Update moved the group anyway")
+	}
+
+	// O controle positivo: grupo de topo sem ambientes vira ambiente.
+	solto.ParentID = &rpa.ID
+	if err := s.Groups().Update(ctx, solto); err != nil {
+		t.Fatalf("moving a leaf top-level group under a system returned %v", err)
+	}
+}
+
+// Duas reorganizações ao mesmo tempo: uma cria um ambiente no grupo P, a
+// outra põe P dentro de X. Cada uma, sozinha, é válida; juntas fariam um
+// terceiro nível. Uma das duas precisa ser recusada.
+func testGroupConcurrentMovesKeepTwoLevels(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		p := mustCreateGroup(t, s, fmt.Sprintf("P%d", i), nil)
+		x := mustCreateGroup(t, s, fmt.Sprintf("X%d", i), nil)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			filho := domain.Group{Name: fmt.Sprintf("filho%d", i), Slug: fmt.Sprintf("filho%d", i), ParentID: &p.ID}
+			_ = s.Groups().Create(ctx, &filho)
+		}()
+		go func() {
+			defer wg.Done()
+			movido := p
+			movido.ParentID = &x.ID
+			_ = s.Groups().Update(ctx, movido)
+		}()
+		wg.Wait()
+	}
+
+	grupos, err := s.Groups().List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	porID := map[int64]domain.Group{}
+	for _, g := range grupos {
+		porID[g.ID] = g
+	}
+	for _, g := range grupos {
+		if g.ParentID == nil {
+			continue
+		}
+		if pai := porID[*g.ParentID]; pai.ParentID != nil {
+			t.Errorf("terceiro nível: %q dentro de %q, que está dentro de outro", g.Name, pai.Name)
+		}
 	}
 }
 

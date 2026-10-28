@@ -301,14 +301,17 @@ type ChannelRepo interface {
 // GroupRepo guarda os grupos de monitores.
 //
 // A forma da árvore — dois níveis, só folha recebe monitor — é conferida
-// no domínio (domain.GroupTree). Aqui ficam as garantias que só o banco
-// dá sem corrida: unicidade entre irmãos e a recusa de apagar o que está
+// no domínio (domain.GroupTree), que dá a mensagem para quem pediu. Aqui
+// ficam as garantias que só o banco dá sem corrida: unicidade entre
+// irmãos, a profundidade de dois níveis e a recusa de apagar o que está
 // em uso.
 type GroupRepo interface {
 	// Create devolve ErrConflict se já houver irmão com o mesmo nome ou
-	// slug.
+	// slug, ou se o pai não for de topo; ErrNotFound se o pai não existir.
 	Create(ctx context.Context, g *domain.Group) error
 	Get(ctx context.Context, id int64) (domain.Group, error)
+	// Update recusa como Create, e também quando o grupo que ganha pai tem
+	// ambientes dentro dele.
 	Update(ctx context.Context, g domain.Group) error
 	// Delete devolve ErrConflict enquanto o grupo tiver monitores ou
 	// ambientes: apagar perderia o vínculo deles em silêncio. Vínculos de
