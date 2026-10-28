@@ -108,9 +108,10 @@ func (a *API) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		"Versão em execução, sempre com valor 1.")
 	fmt.Fprintf(&b, "upwatch_build_info{version=%s} 1\n", quote(a.version))
 
-	monitores, err := a.store.Monitors().List(ctx, store.MonitorFilter{
-		Page: store.PageFilter{Limit: store.MaxPageSize},
-	})
+	// Todas as páginas: o corte de cardinalidade é o de
+	// metricsMaxMonitors, anunciado numa métrica, e não o da página do
+	// store, que truncava em silêncio e fazia o total mentir.
+	monitores, err := a.listAllMonitors(ctx, store.MonitorFilter{})
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -118,7 +119,7 @@ func (a *API) handleMetrics(w http.ResponseWriter, r *http.Request) {
 
 	family(&b, "upwatch_monitors_total", "gauge",
 		"Quantidade de monitores cadastrados.")
-	fmt.Fprintf(&b, "upwatch_monitors_total %d\n", len(monitores.Items))
+	fmt.Fprintf(&b, "upwatch_monitors_total %d\n", len(monitores))
 
 	estados, err := a.store.States().All(ctx)
 	if err != nil {
@@ -143,7 +144,7 @@ func (a *API) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		return "monitor=" + quote(m.Name) + ",group=" + quote(arvore.Path(*m.GroupID))
 	}
 
-	itens := monitores.Items
+	itens := monitores
 	truncados := 0
 	if len(itens) > metricsMaxMonitors {
 		truncados = len(itens) - metricsMaxMonitors

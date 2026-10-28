@@ -669,3 +669,50 @@ func TestScopedAdminCannotProbeHiddenSiblingNames(t *testing.T) {
 	assertStatus(t, adm.do(t, http.MethodPut, "/api/v1/groups/"+itoa(c.retProd),
 		map[string]any{"name": "producao", "parent_id": c.ret}), http.StatusOK)
 }
+
+// Instalação com mais monitores que uma página do store.
+//
+// /summaries lia uma página só, de 500, e /problems lia uma página só de
+// incidentes abertos para achar a causa de cada queda. Passado esse
+// número, a lista perdia monitores e "Problemas agora" perdia causas, sem
+// nada avisar que havia mais.
+func TestListingsDoNotStopAtOneStorePage(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+	ctx := context.Background()
+
+	const n = 520
+	for i := 0; i < n; i++ {
+		m := domain.Monitor{Name: "m" + itoa(int64(i)), Type: domain.MonitorHTTP, Target: "https://exemplo.com",
+			Interval: time.Minute, Timeout: 10 * time.Second, ConfirmationThreshold: 3, Enabled: true}
+		if err := s.store.Monitors().Create(ctx, &m); err != nil {
+			t.Fatal(err)
+		}
+		s.estado(t, m.ID, domain.StatusDown, epoch.Add(-time.Hour))
+		inc := domain.Incident{MonitorID: m.ID, StartedAt: epoch.Add(-time.Hour), Cause: "causa " + m.Name}
+		if err := s.store.Incidents().Open(ctx, &inc); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	resp := s.do(t, http.MethodGet, "/api/v1/summaries", nil)
+	assertStatus(t, resp, http.StatusOK)
+	if got := len(decode[resumos](t, resp).Items); got != n {
+		t.Errorf("/summaries trouxe %d monitores, want %d", got, n)
+	}
+
+	resp = s.do(t, http.MethodGet, "/api/v1/problems", nil)
+	assertStatus(t, resp, http.StatusOK)
+	itens := decode[struct {
+		Items []problema `json:"items"`
+	}](t, resp).Items
+	if len(itens) != n {
+		t.Fatalf("/problems trouxe %d, want %d", len(itens), n)
+	}
+	for _, p := range itens {
+		if p.Cause != "causa "+p.Name {
+			t.Errorf("%s ficou sem a causa da queda: %q", p.Name, p.Cause)
+			break
+		}
+	}
+}

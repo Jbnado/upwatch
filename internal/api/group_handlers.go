@@ -422,6 +422,19 @@ func (a *API) handleProblems(w http.ResponseWriter, r *http.Request) {
 	for _, i := range abertos.Items {
 		causaDaQueda[i.MonitorID] = i.Cause
 	}
+	// Uma consulta cobre o caso comum. Passando de uma página, a causa de
+	// cada queda que ficou de fora é lida uma a uma, em vez de a linha
+	// sair sem causa em silêncio.
+	causa := func(id int64) (string, error) {
+		if c, ok := causaDaQueda[id]; ok || !abertos.HasMore {
+			return c, nil
+		}
+		i, err := a.store.Incidents().Current(ctx, id)
+		if errors.Is(err, store.ErrNotFound) {
+			return "", nil
+		}
+		return i.Cause, err
+	}
 
 	items := []problem{}
 	for _, m := range monitores {
@@ -447,7 +460,10 @@ func (a *API) handleProblems(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if p.Cause == "" {
-			p.Cause = causaDaQueda[m.ID]
+			if p.Cause, err = causa(m.ID); err != nil {
+				writeStoreError(w, err)
+				return
+			}
 		}
 		items = append(items, p)
 	}

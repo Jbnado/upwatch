@@ -81,8 +81,9 @@ func (a *API) handleSummaries(w http.ResponseWriter, r *http.Request) {
 		buckets = maxBuckets
 	}
 
-	page, err := a.store.Monitors().List(r.Context(), store.MonitorFilter{
-		Page:   store.PageFilter{Limit: store.MaxPageSize},
+	// Todas as páginas: a lista é o painel inteiro, e parar na primeira
+	// página do store sumia com monitores sem avisar que havia mais.
+	monitores, err := a.listAllMonitors(r.Context(), store.MonitorFilter{
 		Groups: viewerFrom(r).monitorSelection(),
 	})
 	if err != nil {
@@ -110,8 +111,8 @@ func (a *API) handleSummaries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items := make([]summaryResponse, 0, len(page.Items))
-	for _, m := range page.Items {
+	items := make([]summaryResponse, 0, len(monitores))
+	for _, m := range monitores {
 		s, serie, err := a.summarise(r, m.ID, rng, fonte, buckets)
 		if err != nil {
 			writeStoreError(w, err)
