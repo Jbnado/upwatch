@@ -42,6 +42,9 @@ type User struct {
 	// Role decide o que a conta pode fazer. Ver role.go.
 	Role Role `json:"role"`
 
+	// Scope decide sobre quais grupos o papel vale. Ver scope.go.
+	Scope Scope `json:"scope"`
+
 	// PasswordHash nunca sai pela API; MarshalJSON o omite.
 	PasswordHash string `json:"-"`
 
@@ -61,7 +64,7 @@ func (u User) Validate() error {
 	if !u.Role.Valid() {
 		return invalid("role", "papel desconhecido")
 	}
-	return nil
+	return u.Scope.Validate()
 }
 
 // ValidatePassword confere o comprimento da senha.
@@ -114,11 +117,12 @@ func (u User) MarshalJSON() ([]byte, error) {
 		ID        int64     `json:"id"`
 		Username  string    `json:"username"`
 		Role      Role      `json:"role"`
+		Scope     Scope     `json:"scope"`
 		CreatedAt time.Time `json:"created_at"`
 		UpdatedAt time.Time `json:"updated_at"`
 	}
 	return json.Marshal(alias{
-		ID: u.ID, Username: u.Username, Role: u.Role,
+		ID: u.ID, Username: u.Username, Role: u.Role, Scope: u.Scope,
 		CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt,
 	})
 }
