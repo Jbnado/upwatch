@@ -303,7 +303,10 @@ prioridade 3. A mesma urgência para tudo ensinaria a ignorar tudo. O título é
 `<monitor>: <estado>`, e cada estado tem seu ícone.
 
 A senha do SMTP e o token do ntfy, como a URL dos webhooks, nunca voltam
-nas leituras da API. Para trocá-los, o `PUT /api/v1/channels/{id}` leva
+nas leituras da API. Também não aparecem no log nem no erro do botão de
+teste: quando a entrega falha, o erro mostra só esquema e host do destino,
+porque o caminho é onde ficam o token do webhook do Discord e do Slack e o
+tópico do ntfy. Para trocá-los, o `PUT /api/v1/channels/{id}` leva
 a configuração inteira de novo.
 
 ## Página pública de estado

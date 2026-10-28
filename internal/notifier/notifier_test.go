@@ -561,3 +561,41 @@ func TestSlackKeepsFormattingWrittenInTheTemplate(t *testing.T) {
 		t.Errorf("text = %q, want the template link kept and the cause escaped", texto)
 	}
 }
+
+// O erro de entrega vai para o log e para a resposta do botão de teste. O
+// erro de rede do Go carrega a URL inteira, e nela está a credencial: o
+// token no caminho do webhook do Discord e do Slack, e o tópico do ntfy —
+// que no servidor público é a única coisa entre o alerta e qualquer um.
+// Log é lido por mais gente, e guardado por mais tempo, que a
+// configuração do canal.
+func TestDeliveryErrorsDoNotCarryTheSecretPartOfTheURL(t *testing.T) {
+	base := closedURL(t)
+	const segredo = "tokenSecretoXYZ123"
+
+	casos := map[string]string{
+		"webhook": `{"url":"` + base + `/hooks/` + segredo + `?chave=` + segredo + `"}`,
+		"discord": `{"url":"` + base + `/api/webhooks/123/` + segredo + `"}`,
+		"slack":   `{"url":"` + base + `/services/T000/B000/` + segredo + `"}`,
+		"ntfy":    `{"server":"` + base + `","topic":"` + segredo + `"}`,
+	}
+	for tipo, cfg := range casos {
+		t.Run(tipo, func(t *testing.T) {
+			n, err := notifier.Build(tipo, json.RawMessage(cfg))
+			if err != nil {
+				t.Fatalf("Build returned unexpected error: %v", err)
+			}
+
+			err = send(t, n, outage())
+			if err == nil {
+				t.Fatal("Send to a closed port returned nil error, want an error")
+			}
+			if strings.Contains(err.Error(), segredo) {
+				t.Errorf("error = %q leaks the secret part of the URL", err)
+			}
+			// O host continua: sem ele, ninguém sabe qual destino caiu.
+			if !strings.Contains(err.Error(), "127.0.0.1") {
+				t.Errorf("error = %q, want it to keep the host", err)
+			}
+		})
+	}
+}

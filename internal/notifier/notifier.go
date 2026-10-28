@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"net/textproto"
+	neturl "net/url"
 	"strings"
 	"text/template"
 	"time"
@@ -335,7 +336,7 @@ func postRaw(ctx context.Context, url string, headers map[string]string, content
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(corpo))
 	if err != nil {
-		return fmt.Errorf("notifier: montando requisição: %w", err)
+		return fmt.Errorf("notifier: montando requisição: %w", maskURL(err))
 	}
 	req.Header.Set("Content-Type", contentType)
 	for k, v := range headers {
@@ -344,7 +345,7 @@ func postRaw(ctx context.Context, url string, headers map[string]string, content
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("notifier: entregando aviso: %w", err)
+		return fmt.Errorf("notifier: entregando aviso: %w", maskURL(err))
 	}
 	defer resp.Body.Close()
 
@@ -352,6 +353,35 @@ func postRaw(ctx context.Context, url string, headers map[string]string, content
 		return &statusError{Code: resp.StatusCode}
 	}
 	return nil
+}
+
+// maskURL tira do erro tudo que vem depois do host.
+//
+// O erro de rede do Go traz a URL inteira, e ele vai para o log e para a
+// resposta do botão de teste. Nos canais, o caminho e a query são a
+// credencial: o token do webhook do Discord e do Slack, o tópico do ntfy
+// — que no servidor público é a única coisa entre o alerta e qualquer um.
+// O host fica, porque sem ele ninguém sabe qual destino caiu. O erro
+// continua embrulhado, e timeout segue reconhecível como timeout.
+func maskURL(err error) error {
+	var ue *neturl.Error
+	if !errors.As(err, &ue) {
+		return err
+	}
+	ue.URL = semCredencial(ue.URL)
+	return err
+}
+
+// semCredencial reduz a URL a esquema e host.
+func semCredencial(bruta string) string {
+	u, err := neturl.Parse(bruta)
+	if err != nil || u.Host == "" {
+		return "(url omitida)"
+	}
+	if u.Path == "" && u.RawQuery == "" && u.Fragment == "" && u.User == nil {
+		return u.Scheme + "://" + u.Host
+	}
+	return u.Scheme + "://" + u.Host + "/…"
 }
 
 // requireURL confere que o canal sabe para onde enviar.
