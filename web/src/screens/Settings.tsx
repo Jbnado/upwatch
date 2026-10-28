@@ -31,7 +31,7 @@ export function Settings({ onSignedOut, eu }: { onSignedOut: () => void; eu: Use
 
       {administraTudo && <PaginasPublicas />}
       {administraTudo && <Channels />}
-      {administra && <Groups podeCriarSistema={eu.scope.all_groups} />}
+      {administra && <Groups scope={eu.scope} />}
       {administra && <Users eu={eu} />}
       {administra && <Tokens />}
       <Password onSignedOut={onSignedOut} />

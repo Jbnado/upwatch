@@ -155,9 +155,14 @@ export const api = {
 
   /**
    * events é a linha do tempo do monitor: mudanças de estado e falhas,
-   * da mais recente para trás. A próxima página começa em next_before.
+   * da mais recente para trás. A próxima página é a do next_cursor da
+   * anterior, passado em cursor: o cursor carrega instante, tipo e chave,
+   * e eventos do mesmo instante não se perdem entre páginas.
    */
-  events: (id: number, params: { before?: string; limit?: number; type?: "state" | "failure" } = {}) =>
+  events: (
+    id: number,
+    params: { cursor?: string; limit?: number; type?: "state" | "failure" } = {},
+  ) =>
     request<EventPage>(`/monitors/${id}/events${query(params)}`),
 
   /** problems é o que está errado agora, já ordenado pelo servidor. */

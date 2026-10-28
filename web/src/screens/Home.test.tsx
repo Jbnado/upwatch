@@ -151,3 +151,33 @@ describe("Home", () => {
     expect(await screen.findByText("Nenhum grupo no seu acesso")).toBeInTheDocument();
   });
 });
+
+describe("Home: grupo sem monitor", () => {
+  // O servidor passou a mandar "empty" para o grupo sem monitor nenhum, em
+  // vez de "unknown". "unknown" é monitor que deveria responder e não está
+  // sendo medido; o grupo vazio não tem o que medir. Pintá-lo com a cor de
+  // "sem medição" alarmaria por um grupo recém-criado.
+  it("mostra o cartão como vazio, sem cor de problema", async () => {
+    const vazio = cartao({
+      group_id: 2,
+      parent_id: 1,
+      name: "hml",
+      path: "RPA / hml",
+      status: "empty",
+      total: 0,
+      up: 0,
+    });
+    vi.mocked(api.groupSummary).mockResolvedValue({ items: [RPA_PROD, vazio] });
+    vi.mocked(api.problems).mockResolvedValue({ items: [BFF] });
+
+    render(<Home podeEscrever={false} />);
+
+    const sistema = await screen.findByRole("region", { name: "RPA" });
+    const card = within(sistema).getAllByRole("link")[1]!;
+    expect(card).toHaveAttribute("href", "/groups/2");
+    expect(card).toHaveTextContent("vazio");
+    expect(card.className).not.toMatch(/down|degraded|sunken/);
+    // O ponto também diz "vazio" a quem lê a tela, e não "sem medição".
+    expect(card).not.toHaveTextContent("sem medição");
+  });
+});

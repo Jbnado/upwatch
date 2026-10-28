@@ -62,7 +62,16 @@ export type MonitorInput = {
  */
 export type Summary = {
   monitor_id: number;
+  /**
+   * Estado confirmado: o mesmo do cartão de grupo e de "Problemas agora".
+   * Não é o da última batida — uma falha só vira queda depois do limiar.
+   */
   status: Status;
+  /**
+   * Resultado da última batida, sem confirmação; null quando nunca houve.
+   * É por ele que a tela vê a falha que ainda não virou queda.
+   */
+  last_check_status: Status | null;
   source: "raw" | "hourly" | "daily";
   uptime_percent: number | null;
   latency_p50_ms: number | null;
@@ -131,6 +140,13 @@ export type Group = {
 };
 
 /**
+ * Estado de um grupo: o pior entre os monitores ativos, ou "empty" para o
+ * grupo sem monitor nenhum. "empty" não é "unknown": não há o que medir,
+ * e não há problema nenhum.
+ */
+export type GroupStatus = Status | "empty";
+
+/**
  * Cartão de um grupo na tela inicial. O sistema soma os ambientes dele;
  * group_id nulo é "Sem grupo".
  */
@@ -139,8 +155,8 @@ export type GroupSummary = {
   parent_id: number | null;
   name: string;
   path: string;
-  /** Pior estado entre os ativos. */
-  status: Status;
+  /** Pior estado entre os ativos; "empty" sem monitor nenhum. */
+  status: GroupStatus;
   total: number;
   up: number;
   degraded: number;
@@ -184,7 +200,8 @@ export type MonitorEvent = {
 export type EventPage = {
   items: MonitorEvent[];
   has_more: boolean;
-  next_before?: string;
+  /** Só com has_more; volta em `cursor` para a página seguinte. Opaco. */
+  next_cursor?: string;
 };
 
 export type User = {

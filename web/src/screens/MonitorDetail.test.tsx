@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Monitor, MonitorEvent, Problem, Summary, User } from "../api/types";
+import { ApiError, type Channel, type Monitor, type MonitorEvent, type Problem, type Summary, type User } from "../api/types";
 import { MonitorDetail } from "./MonitorDetail";
 
 /**
@@ -23,6 +23,8 @@ vi.mock("../api/client", () => ({
     monitorChannels: vi.fn(),
     groupChannels: vi.fn(),
     listChannels: vi.fn(),
+    linkChannel: vi.fn(),
+    unlinkChannel: vi.fn(),
     exportUrl: () => "/export",
   },
 }));
@@ -64,6 +66,7 @@ function resumo(status: Summary["status"]): Summary {
     latency_p95_ms: 180,
     latency_p99_ms: 300,
     last_check_at: null,
+    last_check_status: status,
     up: 0,
     degraded: 0,
     down: 0,
@@ -296,7 +299,7 @@ describe("MonitorDetail: falhas repetidas", () => {
   it("une o grupo que atravessa a página ao carregar os mais antigos", async () => {
     cenario({ status: "down", problema: QUEDA, eventos: [] });
     vi.mocked(api.events)
-      .mockResolvedValueOnce({ items: nove.slice(0, 5), has_more: true, next_before: nove[4]!.at })
+      .mockResolvedValueOnce({ items: nove.slice(0, 5), has_more: true, next_cursor: "c1" })
       .mockResolvedValueOnce({ items: nove.slice(5), has_more: false });
 
     render(<MonitorDetail id={12} tab="eventos" eu={EU} />);
@@ -306,5 +309,180 @@ describe("MonitorDetail: falhas repetidas", () => {
 
     expect(await screen.findByRole("button", { name: /9 vezes/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /4 vezes/ })).not.toBeInTheDocument();
+  });
+});
+
+describe("MonitorDetail: paginação dos eventos", () => {
+  // O servidor trocou o instante (next_before) por um cursor composto
+  // (next_cursor, devolvido em ?cursor=), para eventos do mesmo instante
+  // não se perderem entre páginas. A tela que ainda lesse next_before
+  // pararia na primeira página sem dizer nada: o botão de mais antigos
+  // simplesmente não apareceria.
+  const evento = (i: number): MonitorEvent => ({
+    type: "state",
+    at: new Date(Date.UTC(2026, 9, 28, 11, 0, 0) - i * 3_600_000).toISOString(),
+    status: i % 2 === 0 ? "up" : "down",
+    from: i % 2 === 0 ? "down" : "up",
+  });
+
+  it("segue o next_cursor de página em página até o fim", async () => {
+    vi.mocked(api.events).mockClear();
+    cenario({ status: "up", problema: null, eventos: [] });
+    vi.mocked(api.events)
+      .mockResolvedValueOnce({ items: [evento(0), evento(1)], has_more: true, next_cursor: "c1" })
+      .mockResolvedValueOnce({ items: [evento(2), evento(3)], has_more: true, next_cursor: "c2" })
+      .mockResolvedValueOnce({ items: [evento(4)], has_more: false });
+
+    render(<MonitorDetail id={12} tab="eventos" eu={EU} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Carregar mais antigos" }));
+    await vi.waitFor(() => expect(api.events).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(api.events).mock.calls[1]![1]).toMatchObject({ cursor: "c1" });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Carregar mais antigos" }));
+    await vi.waitFor(() => expect(api.events).toHaveBeenCalledTimes(3));
+    expect(vi.mocked(api.events).mock.calls[2]![1]).toMatchObject({ cursor: "c2" });
+
+    // Sem has_more, acabou: o botão some em vez de pedir uma página vazia.
+    await vi.waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Carregar mais antigos" })).not.toBeInTheDocument(),
+    );
+    // A primeira página não leva cursor: começa do mais recente.
+    expect(vi.mocked(api.events).mock.calls[0]![1]).not.toHaveProperty("cursor");
+  });
+});
+
+describe("MonitorDetail: estado confirmado e última verificação", () => {
+  // O resumo passou a trazer o estado confirmado em status, o mesmo do
+  // cartão e de "Problemas agora", e a última batida em
+  // last_check_status. A falha ainda não confirmada só aparece pela
+  // última batida; sem olhar para ela, o quadro sumiria justamente no
+  // começo de uma queda.
+  it("diz que está falhando, sem afirmar queda, quando só a última verificação falhou", async () => {
+    cenario({ status: "up", problema: null, eventos: [] });
+    vi.mocked(api.summaries).mockResolvedValue({
+      items: [{ ...resumo("up"), last_check_status: "down" }],
+      from: "",
+      to: "",
+    });
+
+    render(<MonitorDetail id={12} tab="eventos" eu={EU} />);
+
+    const quadro = await screen.findByRole("region", { name: "estado atual" });
+    expect(quadro).toHaveTextContent("falhando");
+    expect(quadro).toHaveTextContent("ainda não confirmado como queda");
+    expect(quadro).not.toHaveTextContent("fora do ar");
+  });
+
+  it("não abre quadro quando o confirmado e a última verificação estão no ar", async () => {
+    cenario({ status: "up", problema: null, eventos: [] });
+
+    render(<MonitorDetail id={12} tab="eventos" eu={EU} />);
+
+    await screen.findByRole("tablist");
+    expect(screen.queryByRole("region", { name: "estado atual" })).not.toBeInTheDocument();
+  });
+
+  it("não chama de falha a última verificação sem medição", async () => {
+    // "unknown" é a sonda dizendo que a rede do próprio servidor caiu: o
+    // alvo não falhou, só não foi medido.
+    cenario({ status: "up", problema: null, eventos: [] });
+    vi.mocked(api.summaries).mockResolvedValue({
+      items: [{ ...resumo("up"), last_check_status: "unknown" }],
+      from: "",
+      to: "",
+    });
+
+    render(<MonitorDetail id={12} tab="eventos" eu={EU} />);
+
+    await screen.findByRole("tablist");
+    expect(screen.queryByRole("region", { name: "estado atual" })).not.toBeInTheDocument();
+  });
+});
+
+const ADMIN_TOTAL: User = { ...EU, id: 2, username: "bia", role: "admin" };
+const ADMIN_RESTRITO: User = {
+  ...EU,
+  id: 3,
+  username: "caio",
+  role: "admin",
+  scope: { all_groups: false, group_ids: [3] },
+};
+
+describe("MonitorDetail: avisos e escopo", () => {
+  const DISCORD: Channel = {
+    id: 7,
+    name: "plantão",
+    type: "discord",
+    enabled: true,
+    created_at: "",
+    updated_at: "",
+  };
+
+  it("não oferece vincular canal à conta restrita, e diz por quê", async () => {
+    // O servidor responde 403: o canal é de todos os grupos, e pendurá-lo
+    // no próprio monitor mexe no aviso dos outros. Caixas que sempre
+    // voltam atrás seriam piores que caixa nenhuma.
+    cenario({ status: "up", problema: null, eventos: [] });
+    vi.mocked(api.monitorChannels).mockResolvedValue({ items: [DISCORD] });
+
+    render(<MonitorDetail id={12} tab="avisos" eu={ADMIN_RESTRITO} />);
+
+    expect(await screen.findByText("plantão")).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(screen.getByText(/só quem tem acesso a todos os grupos/i)).toBeInTheDocument();
+    expect(api.listChannels).not.toHaveBeenCalled();
+  });
+
+  it("mostra a recusa do servidor ao vincular, em vez de desfazer a caixa calado", async () => {
+    cenario({ status: "up", problema: null, eventos: [] });
+    vi.mocked(api.listChannels).mockResolvedValue({ items: [DISCORD] });
+    vi.mocked(api.monitorChannels).mockResolvedValue({ items: [] });
+    vi.mocked(api.linkChannel).mockRejectedValue(
+      new ApiError(403, "forbidden", "seu escopo não permite isso"),
+    );
+
+    render(<MonitorDetail id={12} tab="avisos" eu={ADMIN_TOTAL} />);
+
+    fireEvent.click(await screen.findByRole("checkbox", { name: /plantão/ }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("seu escopo não permite isso");
+    await vi.waitFor(() =>
+      expect(screen.getByRole("checkbox", { name: /plantão/ })).not.toBeChecked(),
+    );
+  });
+});
+
+describe("MonitorDetail: push", () => {
+  const PUSH: Monitor = {
+    ...BFF,
+    type: "push",
+    target: "",
+    config: { token: "AbCdEfGhIjKlMnOpQrSt", schedule: "2 9 * * *", timezone: "America/Sao_Paulo" },
+  };
+
+  it("não monta endereço com a máscara que o observador recebe no lugar do token", async () => {
+    // Para quem só lê, o servidor devolve o token como "***". Um endereço
+    // montado com ele não funciona, e o botão copiaria um endereço falso.
+    cenario({ status: "up", problema: null, eventos: [] });
+    vi.mocked(api.getMonitor).mockResolvedValue({ ...PUSH, config: { ...PUSH.config, token: "***" } });
+
+    render(<MonitorDetail id={12} tab="eventos" eu={EU} />);
+
+    const sinal = await screen.findByRole("region", { name: "sinal do push" });
+    expect(sinal).toHaveTextContent("sinal em dia");
+    expect(sinal).not.toHaveTextContent("/api/v1/push/");
+    expect(within(sinal).queryByRole("button", { name: "Copiar endereço" })).not.toBeInTheDocument();
+  });
+
+  it("dá ao administrador o endereço com o token cortado e a cópia", async () => {
+    cenario({ status: "up", problema: null, eventos: [] });
+    vi.mocked(api.getMonitor).mockResolvedValue(PUSH);
+
+    render(<MonitorDetail id={12} tab="eventos" eu={ADMIN_TOTAL} />);
+
+    const sinal = await screen.findByRole("region", { name: "sinal do push" });
+    expect(sinal).toHaveTextContent("/api/v1/push/AbCd…");
+    expect(within(sinal).getByRole("button", { name: "Copiar endereço" })).toBeInTheDocument();
   });
 });

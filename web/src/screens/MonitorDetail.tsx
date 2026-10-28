@@ -37,10 +37,10 @@ import {
 } from "../lib/events";
 import { explainCause } from "../lib/cause";
 import { crumb } from "../lib/groups";
-import { maskedPushAddress, pushAddress, pushSignal } from "../lib/push";
+import { maskedPushAddress, pushAddress, pushSignal, pushTokenVisible } from "../lib/push";
 import { DEFAULT_RANGE, windowFor, type Range } from "../lib/ranges";
 import { navigate, type MonitorTab } from "../lib/router";
-import { channelOrigins } from "../lib/scope";
+import { NO_CHANNEL_LINK_HINT, canLinkChannels, channelOrigins } from "../lib/scope";
 
 /** Mesma resolução de faixa do painel: as duas telas desenham igual. */
 const PONTOS_DA_FAIXA = 60;
@@ -155,8 +155,14 @@ export function MonitorDetail({
     resumo?.series.map((p) => ({ at: p.at, status: p.status, latencyMs: p.latency_ms })) ?? [];
 
   // O estado de agora vem do problema quando há um: é a mesma fonte da
-  // tela inicial. Sem problema, o resumo diz se está no ar.
+  // tela inicial. Sem problema, o resumo diz o estado confirmado.
   const atual: Status = problema?.status ?? resumo?.status ?? "unknown";
+  // A falha que ainda não virou queda só aparece na última batida: o
+  // estado confirmado continua "no ar" até o limiar. Sem medição não
+  // entra — é a rede do próprio servidor, não o alvo.
+  const ultima = resumo?.last_check_status;
+  const pendente: Exclude<Status, "up" | "unknown"> | null =
+    atual === "up" && (ultima === "down" || ultima === "degraded") ? ultima : null;
   const grupo = grupos.find((g) => g.id === monitor.group_id);
   const sistema = grupo?.parent_id ? grupos.find((g) => g.id === grupo.parent_id) : undefined;
   const voltar = monitor.group_id != null ? { name: "group" as const, id: monitor.group_id } : null;
@@ -177,7 +183,7 @@ export function MonitorDetail({
   }));
   // O token inteiro é a credencial do monitor: só aparece a quem
   // administra, e só por pedido.
-  if (administra && token) {
+  if (administra && pushTokenVisible(token)) {
     menu.push({
       kind: "action",
       label: mostrarToken ? "Ocultar token" : "Mostrar token",
@@ -224,17 +230,21 @@ export function MonitorDetail({
 
       {erro && <Alert>{erro}</Alert>}
 
-      {monitor.type === "push" && token && (
+      {monitor.type === "push" && (
         <PushInfo
           status={atual}
           token={token}
           reveal={mostrarToken}
           nextExpected={monitor.next_expected_push}
+          timezone={monitor.config?.["timezone"] ? String(monitor.config["timezone"]) : undefined}
         />
       )}
 
       {monitor.enabled && atual !== "up" && (
         <StateBox status={atual} problem={problema} streak={sequencia} type={monitor.type} />
+      )}
+      {monitor.enabled && pendente && (
+        <StateBox status={pendente} problem={null} streak={null} type={monitor.type} pending />
       )}
 
       <section aria-label="medidas" className="flex flex-col gap-2">
@@ -270,7 +280,13 @@ export function MonitorDetail({
           )}
           {tab === "quedas" && <Incidents monitorID={monitor.id} />}
           {tab === "avisos" && (
-            <Recipients monitor={monitor} grupo={grupo} sistema={sistema} administra={administra} />
+            <Recipients
+              monitor={monitor}
+              grupo={grupo}
+              sistema={sistema}
+              administra={administra}
+              vincula={administra && canLinkChannels(eu.scope)}
+            />
           )}
         </TabPanel>
       </div>
@@ -296,14 +312,24 @@ function StateBox({
   problem,
   streak,
   type,
+  pending = false,
 }: {
   status: Exclude<Status, "up">;
   problem: Problem | null;
   streak: number | null;
   type: Monitor["type"];
+  /** Só a última verificação falhou; o estado confirmado ainda é no ar. */
+  pending?: boolean;
 }) {
   const tom = BOX_TONE[status];
-  const palavra = type === "push" && status === "down" ? "sem sinal" : tom.word;
+  // Antes da confirmação, "fora do ar" afirmaria a queda que o servidor
+  // ainda não declarou; lento continua lento.
+  const palavra =
+    pending && status === "down"
+      ? "falhando"
+      : type === "push" && status === "down"
+        ? "sem sinal"
+        : tom.word;
 
   const rodape: string[] = [];
   if (streak !== null && streak > 0) {
@@ -419,18 +445,22 @@ function Stat({ label, value }: { label: string; value: string }) {
 /**
  * PushInfo é o que um monitor push tem de próprio: como anda o sinal e o
  * endereço para onde o serviço bate, com o segredo cortado na tela e
- * inteiro na cópia.
+ * inteiro na cópia. Quem só lê recebe o token mascarado pelo servidor, e
+ * vê o sinal sem o endereço.
  */
 function PushInfo({
   status,
   token,
   reveal,
   nextExpected,
+  timezone,
 }: {
   status: Status;
   token: string;
   reveal: boolean;
   nextExpected?: string;
+  /** Fuso da agenda, para a próxima execução sair nele. */
+  timezone?: string;
 }) {
   const [copiado, setCopiado] = useState(false);
   const origem = window.location.origin;
@@ -447,18 +477,22 @@ function PushInfo({
 
   return (
     <section aria-label="sinal do push" className="flex flex-col gap-2">
-      <p className="text-body text-ink-2">{pushSignal({ status, nextExpected }).join(" · ")}</p>
-      <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <code className="min-w-0 max-w-full truncate rounded-sm border border-line-strong bg-surface px-2.5 py-1 text-small">
-          {reveal ? pushAddress(origem, token) : maskedPushAddress(origem, token)}
-        </code>
-        <Button size="sm" onClick={copiar}>
-          {copiado ? "Copiado" : "Copiar endereço"}
-        </Button>
-        <span aria-live="polite" className="sr-only">
-          {copiado ? "endereço copiado" : ""}
-        </span>
-      </div>
+      <p className="text-body text-ink-2">
+        {pushSignal({ status, nextExpected, timezone }).join(" · ")}
+      </p>
+      {pushTokenVisible(token) && (
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <code className="min-w-0 max-w-full truncate rounded-sm border border-line-strong bg-surface px-2.5 py-1 text-small">
+            {reveal ? pushAddress(origem, token) : maskedPushAddress(origem, token)}
+          </code>
+          <Button size="sm" onClick={copiar}>
+            {copiado ? "Copiado" : "Copiar endereço"}
+          </Button>
+          <span aria-live="polite" className="sr-only">
+            {copiado ? "endereço copiado" : ""}
+          </span>
+        </div>
+      )}
     </section>
   );
 }
@@ -514,7 +548,7 @@ function Events({
       .then((page) => {
         if (!vivo) return;
         setItens(page.items);
-        setProxima(page.has_more ? page.next_before : undefined);
+        setProxima(page.has_more ? page.next_cursor : undefined);
       });
     return () => {
       vivo = false;
@@ -537,12 +571,12 @@ function Events({
     setCarregando(true);
     try {
       const page = await api.events(monitorID, {
-        before: proxima,
+        cursor: proxima,
         limit: POR_PAGINA,
         type: filtro === "failure" ? "failure" : undefined,
       });
       setItens((atual) => [...(atual ?? []), ...page.items]);
-      setProxima(page.has_more ? page.next_before : undefined);
+      setProxima(page.has_more ? page.next_cursor : undefined);
       setPaginas((n) => n + 1);
     } finally {
       setCarregando(false);
@@ -904,11 +938,14 @@ function Recipients({
   grupo,
   sistema,
   administra,
+  vincula,
 }: {
   monitor: Monitor;
   grupo?: Group;
   sistema?: Group;
   administra: boolean;
+  /** Vincula canais: só quem tem escopo total, como no servidor. */
+  vincula: boolean;
 }) {
   const [linhas, setLinhas] = useState<{ channel: Channel; origins: string[] }[] | null>(null);
 
@@ -969,7 +1006,11 @@ function Recipients({
         </ul>
       )}
 
-      {administra && (
+      {administra && !vincula && (
+        <p className="max-w-prose pt-2 text-small text-ink-3">{NO_CHANNEL_LINK_HINT}</p>
+      )}
+
+      {vincula && (
         <div className="flex flex-col gap-2 pt-2">
           <h3 className="eyebrow">canais vinculados a este monitor</h3>
           <MonitorChannels monitorID={monitor.id} onChange={carregar} />

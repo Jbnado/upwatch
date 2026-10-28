@@ -82,6 +82,10 @@ describe("byProblem", () => {
 });
 
 describe("cardWord", () => {
+  it("diz vazio para o grupo sem monitor, que o servidor marca como empty", () => {
+    expect(cardWord(cartao({ status: "empty", total: 0, up: 0 }))).toBe("vazio");
+  });
+
   it("diz ok quando nada está errado", () => {
     expect(cardWord(cartao({ total: 7, up: 7 }))).toBe("ok");
   });

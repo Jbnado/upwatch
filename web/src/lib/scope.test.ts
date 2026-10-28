@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { Channel, Group } from "../api/types";
-import { channelOrigins, covers, scopeLabel, toggleScopeGroup } from "./scope";
+import {
+  canLinkChannels,
+  canRenameGroup,
+  channelOrigins,
+  covers,
+  scopeLabel,
+  toggleScopeGroup,
+} from "./scope";
 
 /**
  * Acesso por conta e origem dos avisos.
@@ -95,5 +102,43 @@ describe("channelOrigins", () => {
       { channel: canal(2, "time rpa"), origins: ["do ambiente RPA · prod"] },
       { channel: canal(3, "diretoria"), origins: ["do sistema RPA"] },
     ]);
+  });
+});
+
+describe("canRenameGroup", () => {
+  // O servidor recusa com 403 renomear grupo cujos irmãos a conta não
+  // enxerga inteiros: o conflito de nome com um irmão de fora revelaria
+  // que ele existe. Para um sistema, os irmãos são todos os sistemas, e
+  // só a conta de escopo total os vê; para um ambiente, basta ter o
+  // sistema dele — que é quando ele aparece na lista de grupos da conta.
+  const total = { all_groups: true, group_ids: [] };
+
+  it("deixa a conta de escopo total renomear qualquer grupo", () => {
+    expect(canRenameGroup(total, RPA, [RPA, RPA_PROD])).toBe(true);
+    expect(canRenameGroup(total, RPA_PROD, [RPA, RPA_PROD])).toBe(true);
+  });
+
+  it("não deixa a conta restrita renomear sistema, nem o que ela mesma tem", () => {
+    const restrita = { all_groups: false, group_ids: [RPA.id] };
+    expect(canRenameGroup(restrita, RPA, [RPA, RPA_PROD, RPA_HML])).toBe(false);
+  });
+
+  it("deixa renomear o ambiente de um sistema concedido", () => {
+    const restrita = { all_groups: false, group_ids: [RPA.id] };
+    expect(canRenameGroup(restrita, RPA_PROD, [RPA, RPA_PROD, RPA_HML])).toBe(true);
+  });
+
+  it("não deixa renomear o ambiente concedido sozinho, sem o sistema", () => {
+    const restrita = { all_groups: false, group_ids: [RET_PROD.id] };
+    expect(canRenameGroup(restrita, RET_PROD, [RET_PROD])).toBe(false);
+  });
+});
+
+describe("canLinkChannels", () => {
+  // Canal é recurso de todos os grupos: vincular e desvincular, no
+  // monitor ou no grupo, exigem escopo total no servidor.
+  it("só vale para quem alcança todos os grupos", () => {
+    expect(canLinkChannels({ all_groups: true, group_ids: [] })).toBe(true);
+    expect(canLinkChannels({ all_groups: false, group_ids: [1] })).toBe(false);
   });
 });

@@ -650,6 +650,7 @@ export function MonitorChannels({
   const [todos, setTodos] = useState<Channel[]>([]);
   const [vinculados, setVinculados] = useState<Set<number>>(new Set());
   const [carregando, setCarregando] = useState(true);
+  const [erro, setErro] = useState<string | null>(null);
 
   async function carregar() {
     const [lista, doMonitor] = await Promise.all([
@@ -678,13 +679,16 @@ export function MonitorChannels({
       return proximo;
     });
 
+    setErro(null);
     try {
       if (ligado) await api.unlinkChannel(monitorID, canal.id);
       else await api.linkChannel(monitorID, canal.id);
       onChange?.();
-    } catch {
+    } catch (e) {
       // Falhou: recarrega para a tela voltar a refletir o servidor em vez
-      // de mostrar um estado que não existe.
+      // de mostrar um estado que não existe, e diz por quê — a caixa que
+      // volta atrás sozinha pareceria um clique que não pegou.
+      setErro(e instanceof ApiError ? e.message : "Não foi possível mudar o vínculo.");
       await carregar();
     }
   }
@@ -705,16 +709,19 @@ export function MonitorChannels({
   // preenchimento próprio para a área de clique cobrir o rótulo inteiro,
   // e sem isso a lista apareceria recuada em relação ao título da seção.
   return (
-    <ul className="-mx-1 flex flex-col">
-      {todos.map((canal) => (
-        <li key={canal.id}>
-          <Checkbox checked={vinculados.has(canal.id)} onChange={() => alternar(canal)}>
-            <span>{canal.name}</span>
-            <span className="eyebrow">{TIPOS[canal.type]?.label ?? canal.type}</span>
-            {!canal.enabled && <span className="text-small text-ink-3">desligado</span>}
-          </Checkbox>
-        </li>
-      ))}
-    </ul>
+    <>
+      {erro && <Alert>{erro}</Alert>}
+      <ul className="-mx-1 flex flex-col">
+        {todos.map((canal) => (
+          <li key={canal.id}>
+            <Checkbox checked={vinculados.has(canal.id)} onChange={() => alternar(canal)}>
+              <span>{canal.name}</span>
+              <span className="eyebrow">{TIPOS[canal.type]?.label ?? canal.type}</span>
+              {!canal.enabled && <span className="text-small text-ink-3">desligado</span>}
+            </Checkbox>
+          </li>
+        ))}
+      </ul>
+    </>
   );
 }

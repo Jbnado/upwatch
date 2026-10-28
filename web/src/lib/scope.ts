@@ -44,6 +44,35 @@ export function toggleScopeGroup(ids: number[], id: number, groups: Group[]): nu
   return [...ids.filter((x) => !filhos.has(x)), id];
 }
 
+/**
+ * canRenameGroup diz se o servidor aceita renomear o grupo.
+ *
+ * Renomear exige enxergar todos os irmãos do grupo: o conflito de nome
+ * com um irmão de fora revelaria que ele existe, e o servidor recusa com
+ * 403 seja o nome livre ou não. Os irmãos de um sistema são todos os
+ * sistemas, que só a conta de escopo total vê. Os de um ambiente são os
+ * do mesmo sistema, que a conta vê quando tem o sistema — e é quando ele
+ * aparece na lista de grupos dela, que o servidor já recorta.
+ */
+export function canRenameGroup(scope: Scope, group: Group, visible: Group[]): boolean {
+  if (scope.all_groups) return true;
+  if (group.parent_id === null) return false;
+  return visible.some((g) => g.id === group.parent_id);
+}
+
+/**
+ * canLinkChannels diz se a conta vincula canais a monitores e grupos.
+ * O canal é de todos os grupos: pendurá-lo no próprio grupo é mexer no
+ * aviso dos outros, e o servidor recusa com 403 quem não alcança tudo.
+ */
+export function canLinkChannels(scope: Scope): boolean {
+  return scope.all_groups;
+}
+
+/** NO_CHANNEL_LINK_HINT explica, na tela, por que não há o que marcar. */
+export const NO_CHANNEL_LINK_HINT =
+  "Só quem tem acesso a todos os grupos vincula canais: o canal avisa sobre monitores de vários grupos, e mudar onde ele vale mexe no aviso dos outros.";
+
 export type ChannelSource = { origin: string; channels: Channel[] };
 
 /**

@@ -124,6 +124,7 @@ const CARD_TONE: Record<GroupSummary["status"], string> = {
   degraded: "border-degraded/50 bg-degraded-dim",
   down: "border-down/50 bg-down-dim",
   unknown: "border-line-strong bg-sunken",
+  empty: "border-line bg-surface",
 };
 
 const WORD_TONE: Record<GroupSummary["status"], string> = {
@@ -131,6 +132,7 @@ const WORD_TONE: Record<GroupSummary["status"], string> = {
   degraded: "text-degraded",
   down: "text-down",
   unknown: "text-ink-2",
+  empty: "text-ink-3",
 };
 
 /**

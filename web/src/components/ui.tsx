@@ -7,7 +7,7 @@ import type {
   SelectHTMLAttributes,
   TextareaHTMLAttributes,
 } from "react";
-import type { Status } from "../api/types";
+import type { GroupStatus } from "../api/types";
 import { href, navigate, type Route } from "../lib/router";
 
 /**
@@ -246,11 +246,14 @@ export function Checkbox({
   );
 }
 
-const STATUS_STYLE: Record<Status, { dot: string; text: string; label: string }> = {
+const STATUS_STYLE: Record<GroupStatus, { dot: string; text: string; label: string }> = {
   up: { dot: "bg-up", text: "text-up", label: "no ar" },
   degraded: { dot: "bg-degraded", text: "text-degraded", label: "degradado" },
   down: { dot: "bg-down", text: "text-down", label: "fora do ar" },
   unknown: { dot: "bg-unknown", text: "text-unknown", label: "sem medição" },
+  // Grupo sem monitor: anel vazio e sem cor de estado. Não há o que
+  // medir, e pintá-lo como "sem medição" alarmaria por um grupo novo.
+  empty: { dot: "border border-ink-3", text: "text-ink-3", label: "vazio" },
 };
 
 /**
@@ -260,7 +263,13 @@ const STATUS_STYLE: Record<Status, { dot: string; text: string; label: string }>
  * não distingue vermelho de verde, e um painel que só usa cor deixa essa
  * pessoa sem informação nenhuma.
  */
-export function StatusDot({ status, withLabel = false }: { status: Status; withLabel?: boolean }) {
+export function StatusDot({
+  status,
+  withLabel = false,
+}: {
+  status: GroupStatus;
+  withLabel?: boolean;
+}) {
   const style = STATUS_STYLE[status];
 
   return (

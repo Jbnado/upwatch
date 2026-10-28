@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client";
-import { ApiError, type Channel, type Group } from "../api/types";
+import { ApiError, type Channel, type Group, type Scope } from "../api/types";
 import { Alert, Button, Checkbox, Field, Input, Loading, Nothing, Select } from "../components/ui";
 import { crumb } from "../lib/groups";
+import { NO_CHANNEL_LINK_HINT, canLinkChannels, canRenameGroup } from "../lib/scope";
 import { channelTypeLabel } from "./Channels";
 
 /**
@@ -14,8 +15,13 @@ import { channelTypeLabel } from "./Channels";
  *
  * Apagar grupo em uso é recusado antes de perguntar, dizendo o porquê e o
  * que fazer: um "tem certeza?" seguido de um erro seria a pior ordem.
+ *
+ * Pela mesma razão, a conta restrita não vê oferecido o que o servidor
+ * recusaria: renomear grupo cujos irmãos ela não enxerga e vincular
+ * canais. Os botões ficam, desligados, apontando para a explicação.
  */
-export function Groups({ podeCriarSistema }: { podeCriarSistema: boolean }) {
+export function Groups({ scope }: { scope: Scope }) {
+  const podeCriarSistema = scope.all_groups;
   const [grupos, setGrupos] = useState<Group[] | null>(null);
   const [monitores, setMonitores] = useState<Map<number, number>>(new Map());
   const [erro, setErro] = useState<string | null>(null);
@@ -56,6 +62,15 @@ export function Groups({ podeCriarSistema }: { podeCriarSistema: boolean }) {
 
       {erro && <Alert>{erro}</Alert>}
 
+      {!scope.all_groups && (
+        <p id={RESTRICAO_ID} className="max-w-prose text-small text-ink-3">
+          Com acesso restrito a grupos, renomear um sistema — ou um ambiente cujo sistema não está
+          no seu acesso — e vincular canais ficam com quem tem acesso a todos os grupos: o nome
+          precisa ser conferido contra grupos que você não vê, e o canal avisa sobre os outros
+          grupos também.
+        </p>
+      )}
+
       <NovoGrupo
         sistemas={sistemas}
         podeCriarSistema={podeCriarSistema}
@@ -81,7 +96,7 @@ export function Groups({ podeCriarSistema }: { podeCriarSistema: boolean }) {
                   groups={todos}
                   monitores={monitores.get(s.id) ?? 0}
                   filhos={filhos}
-                  podeCriarSistema={podeCriarSistema}
+                  scope={scope}
                   onChanged={carregar}
                 />
                 {filhos.length > 0 && (
@@ -93,7 +108,7 @@ export function Groups({ podeCriarSistema }: { podeCriarSistema: boolean }) {
                           groups={todos}
                           monitores={monitores.get(f.id) ?? 0}
                           filhos={[]}
-                          podeCriarSistema={podeCriarSistema}
+                          scope={scope}
                           onChanged={carregar}
                         />
                       </li>
@@ -165,6 +180,9 @@ function NovoGrupo({
   );
 }
 
+/** RESTRICAO_ID liga os botões desligados à explicação da restrição. */
+const RESTRICAO_ID = "grupos-restricao";
+
 function plural(n: number, um: string, varios: string) {
   return `${n} ${n === 1 ? um : varios}`;
 }
@@ -179,14 +197,14 @@ function GroupRow({
   groups,
   monitores,
   filhos,
-  podeCriarSistema,
+  scope,
   onChanged,
 }: {
   group: Group;
   groups: Group[];
   monitores: number;
   filhos: Group[];
-  podeCriarSistema: boolean;
+  scope: Scope;
   onChanged: () => Promise<void>;
 }) {
   const [aberto, setAberto] = useState<"editar" | "avisos" | null>(null);
@@ -194,6 +212,13 @@ function GroupRow({
 
   const ambiente = group.parent_id !== null;
   const nome = crumb(group.path);
+  const podeRenomear = canRenameGroup(scope, group, groups);
+  // Sem renomear, o formulário ainda serve para mudar de sistema — desde
+  // que haja para onde ir e o grupo não tenha ambientes, que viraria o
+  // terceiro nível.
+  const podeMover =
+    filhos.length === 0 && groups.some((g) => g.parent_id === null && g.id !== group.parent_id);
+  const editavel = podeRenomear || (ambiente && podeMover);
 
   async function apagar() {
     setRecusa(null);
@@ -253,6 +278,8 @@ function GroupRow({
             size="sm"
             aria-expanded={aberto === "editar"}
             onClick={() => setAberto(aberto === "editar" ? null : "editar")}
+            disabled={!editavel}
+            aria-describedby={podeRenomear ? undefined : RESTRICAO_ID}
           >
             Renomear
           </Button>
@@ -273,7 +300,8 @@ function GroupRow({
           group={group}
           groups={groups}
           temFilhos={filhos.length > 0}
-          podeCriarSistema={podeCriarSistema}
+          podeCriarSistema={scope.all_groups}
+          podeRenomear={podeRenomear}
           onDone={async () => {
             setAberto(null);
             await onChanged();
@@ -282,7 +310,7 @@ function GroupRow({
         />
       )}
 
-      {aberto === "avisos" && <CanaisDoGrupo group={group} />}
+      {aberto === "avisos" && <CanaisDoGrupo group={group} vincula={canLinkChannels(scope)} />}
     </div>
   );
 }
@@ -292,6 +320,7 @@ function EditarGrupo({
   groups,
   temFilhos,
   podeCriarSistema,
+  podeRenomear,
   onDone,
   onCancel,
 }: {
@@ -299,6 +328,7 @@ function EditarGrupo({
   groups: Group[];
   temFilhos: boolean;
   podeCriarSistema: boolean;
+  podeRenomear: boolean;
   onDone: () => Promise<void>;
   onCancel: () => void;
 }) {
@@ -329,8 +359,18 @@ function EditarGrupo({
       onSubmit={salvar}
       className="grid gap-3 rounded-sm border border-line-strong p-3 sm:grid-cols-[minmax(0,1fr)_200px_auto] sm:items-end"
     >
-      <Field label="nome" error={erro ?? undefined}>
-        <Input value={nome} onChange={(e) => setNome(e.target.value)} required autoFocus />
+      <Field
+        label="nome"
+        error={erro ?? undefined}
+        hint={podeRenomear ? undefined : "Renomear exige acesso a todos os grupos ao lado deste."}
+      >
+        <Input
+          value={nome}
+          onChange={(e) => setNome(e.target.value)}
+          required
+          autoFocus={podeRenomear}
+          disabled={!podeRenomear}
+        />
       </Field>
       <Field label="dentro de">
         <Select value={pai} onChange={(e) => setPai(e.target.value)} disabled={!podeMover}>
@@ -358,16 +398,24 @@ function EditarGrupo({
  * CanaisDoGrupo vincula canais ao grupo. Valem para todos os monitores
  * dele — num sistema, também para os dos ambientes —, inclusive os
  * cadastrados depois.
+ *
+ * Para a conta restrita é só leitura: o servidor recusa o vínculo, e a
+ * lista de canais que ele lhe devolve vem recortada — não serve de
+ * cardápio. Ela vê o que avisa sobre o grupo, e por que não muda.
  */
-function CanaisDoGrupo({ group }: { group: Group }) {
+function CanaisDoGrupo({ group, vincula }: { group: Group; vincula: boolean }) {
   const [todos, setTodos] = useState<Channel[] | null>(null);
   const [vinculados, setVinculados] = useState<Set<number>>(new Set());
+  const [erro, setErro] = useState<string | null>(null);
 
   const carregar = useCallback(async () => {
-    const [lista, doGrupo] = await Promise.all([api.listChannels(), api.groupChannels(group.id)]);
-    setTodos(lista.items);
+    const [lista, doGrupo] = await Promise.all([
+      vincula ? api.listChannels() : Promise.resolve(null),
+      api.groupChannels(group.id),
+    ]);
+    setTodos(lista ? lista.items : doGrupo.items);
     setVinculados(new Set(doGrupo.items.map((c) => c.id)));
-  }, [group.id]);
+  }, [group.id, vincula]);
 
   useEffect(() => {
     void carregar();
@@ -381,25 +429,57 @@ function CanaisDoGrupo({ group }: { group: Group }) {
       else proximo.add(canal.id);
       return proximo;
     });
+    setErro(null);
     try {
       if (ligado) await api.unlinkGroupChannel(group.id, canal.id);
       else await api.linkGroupChannel(group.id, canal.id);
-    } catch {
+    } catch (e) {
+      // A caixa volta ao que o servidor tem, e a recusa fica à vista: sem
+      // ela, o clique pareceria não ter pegado.
+      setErro(e instanceof ApiError ? e.message : "Não foi possível mudar o vínculo.");
       await carregar();
     }
   }
 
   if (todos === null) return <Loading what="canais" />;
+
+  const titulo = (
+    <span className="eyebrow">
+      avisam sobre todos os monitores de {crumb(group.path)}
+      {group.parent_id === null ? " e dos ambientes dele" : ""}
+    </span>
+  );
+
+  if (!vincula) {
+    return (
+      <div className="flex flex-col gap-1 rounded-sm border border-line-strong p-3">
+        {titulo}
+        {todos.length === 0 ? (
+          <p className="text-small text-ink-2">Nenhum canal vinculado a este grupo.</p>
+        ) : (
+          <ul className="flex flex-col">
+            {todos.map((canal) => (
+              <li key={canal.id} className="flex items-baseline gap-2 py-1">
+                <span className="text-body">{canal.name}</span>
+                <span className="eyebrow">{channelTypeLabel(canal.type)}</span>
+                {!canal.enabled && <span className="text-small text-ink-3">desligado</span>}
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="max-w-prose text-small text-ink-3">{NO_CHANNEL_LINK_HINT}</p>
+      </div>
+    );
+  }
+
   if (todos.length === 0) {
     return <p className="text-small text-ink-3">Nenhum canal cadastrado ainda.</p>;
   }
 
   return (
     <div className="flex flex-col gap-1 rounded-sm border border-line-strong p-3">
-      <span className="eyebrow">
-        avisam sobre todos os monitores de {crumb(group.path)}
-        {group.parent_id === null ? " e dos ambientes dele" : ""}
-      </span>
+      {titulo}
+      {erro && <Alert>{erro}</Alert>}
       <ul className="-mx-1 flex flex-col">
         {todos.map((canal) => (
           <li key={canal.id}>

@@ -1,4 +1,4 @@
-import type { GroupSummary, MonitorType, Status } from "../api/types";
+import type { GroupStatus, GroupSummary, MonitorType, Status } from "../api/types";
 
 /**
  * Regras de grupo que a interface aplica sobre o que o servidor manda.
@@ -10,9 +10,16 @@ import type { GroupSummary, MonitorType, Status } from "../api/types";
 /**
  * PROBLEM_RANK é a urgência de cada estado, a mesma do servidor
  * (domain.ProblemRank). Repetida aqui porque a lista do grupo ordena o que
- * a própria tela já tem, sem pedir de novo.
+ * a própria tela já tem, sem pedir de novo. O grupo vazio não tem nada
+ * errado, como o que está no ar.
  */
-export const PROBLEM_RANK: Record<Status, number> = { down: 3, degraded: 2, unknown: 1, up: 0 };
+export const PROBLEM_RANK: Record<GroupStatus, number> = {
+  down: 3,
+  degraded: 2,
+  unknown: 1,
+  up: 0,
+  empty: 0,
+};
 
 const NOMES = new Intl.Collator("pt-BR", { numeric: true, sensitivity: "base" });
 
@@ -23,7 +30,7 @@ const NOMES = new Intl.Collator("pt-BR", { numeric: true, sensitivity: "base" })
  */
 export function byProblem<T>(
   items: T[],
-  get: (item: T) => { status: Status; name: string; paused?: boolean },
+  get: (item: T) => { status: GroupStatus; name: string; paused?: boolean },
 ): T[] {
   return [...items].sort((a, b) => {
     const x = get(a);
@@ -42,7 +49,7 @@ export function byProblem<T>(
  * entrar aqui?", e o detalhe mora uma tela adiante.
  */
 export function cardWord(s: GroupSummary): string {
-  if (s.total === 0) return "vazio";
+  if (s.status === "empty" || s.total === 0) return "vazio";
   if (s.total === s.paused) return "pausado";
   if (s.problems === 0) return "ok";
   if (s.down === 0 && s.unknown === 0) return "lento";

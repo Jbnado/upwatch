@@ -42,6 +42,7 @@ function resumo(id: number, status: Status): Summary {
     latency_p95_ms: 1,
     latency_p99_ms: 1,
     last_check_at: null,
+    last_check_status: status,
     up: 0,
     degraded: 0,
     down: 0,
