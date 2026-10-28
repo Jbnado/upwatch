@@ -1,4 +1,4 @@
-import type { GroupSummary, Status } from "../api/types";
+import type { GroupSummary, MonitorType, Status } from "../api/types";
 
 /**
  * Regras de grupo que a interface aplica sobre o que o servidor manda.
@@ -147,4 +147,50 @@ export function shortName(name: string, path: string): string {
 export function crumb(path: string): string {
   if (!path) return "Sem grupo";
   return path.split(" / ").join(" · ");
+}
+
+/**
+ * problemWord é o estado dito em palavra numa linha de problema. No push
+ * quem bate é o serviço, então o que falta é sinal, e não o alvo no ar.
+ */
+export function problemWord(status: Status, type: MonitorType): string {
+  if (type === "push") {
+    if (status === "down") return "sem sinal";
+    if (status === "unknown") return "aguardando sinal";
+  }
+  switch (status) {
+    case "down":
+      return "fora do ar";
+    case "degraded":
+      return "lento";
+    case "unknown":
+      return "sem medição";
+    case "up":
+      return "no ar";
+  }
+}
+
+/** Recorte da lista por estado; pausado é um estado à parte. */
+export type StateFilter = "todos" | Status | "pausado";
+
+/**
+ * matches diz se a linha entra na busca e no recorte. A busca olha nome e
+ * alvo, ignorando caixa e acento: quem procura "conciliacao" no teclado
+ * de plantão não deveria ficar sem resultado por causa de um til.
+ */
+export function matches(
+  item: { name: string; target?: string; status: Status; paused?: boolean },
+  query: string,
+  state: StateFilter,
+): boolean {
+  if (state === "pausado" && !item.paused) return false;
+  if (state !== "pausado" && state !== "todos" && (item.paused || item.status !== state)) return false;
+
+  const q = semAcento(query.trim());
+  if (!q) return true;
+  return semAcento(item.name).includes(q) || semAcento(item.target ?? "").includes(q);
+}
+
+function semAcento(texto: string): string {
+  return texto.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
 }

@@ -21,7 +21,8 @@ export type Route =
    * para o link colado no chat abrir no mesmo lugar para quem recebe.
    */
   | { name: "monitor"; id: number; tab?: MonitorTab; anchor?: string }
-  | { name: "monitor-new" }
+  /** group pré-escolhe o grupo de quem cadastra a partir da tela dele. */
+  | { name: "monitor-new"; group?: number }
   | { name: "monitor-edit"; id: number }
   | { name: "settings" }
   | { name: "status-pages" }
@@ -90,7 +91,7 @@ export function href(route: Route): string {
     case "settings":
       return "/settings";
     case "monitor-new":
-      return "/monitors/new";
+      return route.group ? `/monitors/new?grupo=${route.group}` : "/monitors/new";
     case "group":
       return `/groups/${route.id ?? SEM_GRUPO}`;
     case "monitor": {
@@ -109,8 +110,13 @@ export function href(route: Route): string {
   }
 }
 
-export function navigate(route: Route) {
-  window.history.pushState({}, "", href(route));
+/**
+ * navigate troca de tela. replace serve à troca de aba: voltar no
+ * navegador deveria sair da tela, não desfazer cada aba visitada.
+ */
+export function navigate(route: Route, { replace = false }: { replace?: boolean } = {}) {
+  if (replace) window.history.replaceState({}, "", href(route));
+  else window.history.pushState({}, "", href(route));
   window.dispatchEvent(new PopStateEvent("popstate"));
 }
 

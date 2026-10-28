@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { GroupSummary } from "../api/types";
-import { byProblem, cardWord, crumb, hasGroups, organizeCards, shortName } from "./groups";
+import {
+  byProblem,
+  cardWord,
+  crumb,
+  hasGroups,
+  matches,
+  organizeCards,
+  problemWord,
+  shortName,
+} from "./groups";
 
 /**
  * A tela inicial inteira se apoia nestas regras: em que ordem o problema
@@ -193,5 +202,37 @@ describe("crumb", () => {
   it("troca a barra do caminho pelo ponto da interface", () => {
     expect(crumb("RPA / prod")).toBe("RPA · prod");
     expect(crumb("")).toBe("Sem grupo");
+  });
+});
+
+describe("problemWord", () => {
+  it("fala de sinal no push e de ar nos demais", () => {
+    // Push não tem endereço para "cair": o que falta é o serviço avisar
+    // que está vivo, e é isso que quem lê precisa entender.
+    expect(problemWord("down", "http")).toBe("fora do ar");
+    expect(problemWord("down", "push")).toBe("sem sinal");
+    expect(problemWord("unknown", "push")).toBe("aguardando sinal");
+    expect(problemWord("degraded", "tcp")).toBe("lento");
+    expect(problemWord("unknown", "dns")).toBe("sem medição");
+  });
+});
+
+describe("matches", () => {
+  const bff = { name: "bff", target: "http://bff:3000/health", status: "down" as const, paused: false };
+
+  it("busca pelo nome ou pelo alvo, sem caixa nem acento", () => {
+    expect(matches(bff, "BFF", "todos")).toBe(true);
+    expect(matches(bff, "3000", "todos")).toBe(true);
+    expect(matches({ ...bff, name: "conciliação" }, "conciliacao", "todos")).toBe(true);
+    expect(matches(bff, "worker", "todos")).toBe(false);
+  });
+
+  it("filtra pelo estado, e pausado é estado à parte", () => {
+    // O estado de um pausado é de antes da pausa; contá-lo em "fora do
+    // ar" faria o filtro mostrar um problema que ninguém precisa resolver.
+    expect(matches(bff, "", "down")).toBe(true);
+    expect(matches(bff, "", "up")).toBe(false);
+    expect(matches({ ...bff, paused: true }, "", "down")).toBe(false);
+    expect(matches({ ...bff, paused: true }, "", "pausado")).toBe(true);
   });
 });
