@@ -304,6 +304,10 @@ function StateBox({
     );
   }
   if (problem) rodape.push(`desde ${sinceClock(problem.since)}`);
+  // Sem problema na lista, a última verificação falhou mas o limiar de
+  // confirmação ainda não foi atingido: dizer "há X" seria afirmar uma
+  // queda que o servidor ainda não declarou.
+  else rodape.push("falhando, ainda não confirmado como queda");
 
   return (
     <section
