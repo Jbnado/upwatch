@@ -3,6 +3,7 @@ package api_test
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -360,9 +361,9 @@ type evento struct {
 }
 
 type paginaEventos struct {
-	Items      []evento   `json:"items"`
-	HasMore    bool       `json:"has_more"`
-	NextBefore *time.Time `json:"next_before"`
+	Items      []evento `json:"items"`
+	HasMore    bool     `json:"has_more"`
+	NextCursor *string  `json:"next_cursor"`
 }
 
 // A aba de eventos mistura mudanças de estado e batidas com falha, cada
@@ -424,12 +425,12 @@ func TestMonitorEventsPaginate(t *testing.T) {
 	resp := s.do(t, http.MethodGet, "/api/v1/monitors/"+itoa(id)+"/events?limit=2", nil)
 	assertStatus(t, resp, http.StatusOK)
 	primeira := decode[paginaEventos](t, resp)
-	if len(primeira.Items) != 2 || !primeira.HasMore || primeira.NextBefore == nil {
+	if len(primeira.Items) != 2 || !primeira.HasMore || primeira.NextCursor == nil {
 		t.Fatalf("primeira página = %+v", primeira)
 	}
 
-	resp = s.do(t, http.MethodGet, "/api/v1/monitors/"+itoa(id)+"/events?limit=10&before="+
-		primeira.NextBefore.Format(time.RFC3339Nano), nil)
+	resp = s.do(t, http.MethodGet, "/api/v1/monitors/"+itoa(id)+"/events?limit=10&cursor="+
+		url.QueryEscape(*primeira.NextCursor), nil)
 	assertStatus(t, resp, http.StatusOK)
 	segunda := decode[paginaEventos](t, resp)
 	if len(segunda.Items) != 3 || segunda.HasMore {
@@ -437,6 +438,93 @@ func TestMonitorEventsPaginate(t *testing.T) {
 	}
 	if !segunda.Items[0].At.Before(primeira.Items[1].At) {
 		t.Error("a segunda página repetiu a primeira")
+	}
+}
+
+// Eventos do mesmo instante não se perdem entre páginas.
+//
+// A página seguinte pedia "antes de" o instante do último evento. Quando
+// mais eventos caíam no mesmo milissegundo do que cabiam na página — uma
+// mudança e as falhas de várias origens, que chegam juntas —, os que
+// sobravam daquele instante nunca apareciam. O cursor agora é composto
+// (instante, tipo, chave), e has_more só diz "tem mais" quando tem.
+func TestMonitorEventsPaginateWithoutLosingTheSameInstant(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+	ctx := context.Background()
+
+	id := s.createMonitor(t, newMonitorBody("api"))
+	var hbs []domain.Heartbeat
+	for _, origem := range []string{"a", "b", "c", "d", "e"} {
+		hbs = append(hbs, domain.Heartbeat{MonitorID: id, Timestamp: epoch, Status: domain.StatusDown,
+			Message: "falha " + origem, ProbeID: origem})
+	}
+	hbs = append(hbs, domain.Heartbeat{MonitorID: id, Timestamp: epoch.Add(-time.Minute),
+		Status: domain.StatusDown, Message: "antes", ProbeID: "a"})
+	if err := s.store.WriteHeartbeats(ctx, hbs); err != nil {
+		t.Fatal(err)
+	}
+	for _, de := range []domain.Status{domain.StatusUp, domain.StatusDegraded} {
+		tr := domain.Transition{MonitorID: id, From: de, To: domain.StatusDown, At: epoch, Cause: "queda"}
+		if err := s.store.Transitions().Record(ctx, &tr); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	vistos := map[string]int{}
+	caminho := "/api/v1/monitors/" + itoa(id) + "/events?limit=2"
+	for paginas := 0; ; paginas++ {
+		if paginas > 10 {
+			t.Fatal("a paginação não termina")
+		}
+		resp := s.do(t, http.MethodGet, caminho, nil)
+		assertStatus(t, resp, http.StatusOK)
+		pg := decode[paginaEventos](t, resp)
+		if len(pg.Items) > 2 {
+			t.Fatalf("página com %d eventos, limite 2", len(pg.Items))
+		}
+		for _, e := range pg.Items {
+			vistos[e.Type+" "+e.From+" "+e.Message]++
+		}
+		if !pg.HasMore {
+			if pg.NextCursor != nil {
+				t.Error("has_more falso com cursor para a próxima página")
+			}
+			break
+		}
+		if pg.NextCursor == nil {
+			t.Fatal("has_more sem cursor")
+		}
+		caminho = "/api/v1/monitors/" + itoa(id) + "/events?limit=2&cursor=" + url.QueryEscape(*pg.NextCursor)
+	}
+
+	if len(vistos) != 8 {
+		t.Errorf("eventos vistos = %v, want as 2 mudanças e as 6 falhas", vistos)
+	}
+	for e, n := range vistos {
+		if n != 1 {
+			t.Errorf("%q apareceu %d vezes", e, n)
+		}
+	}
+}
+
+// Exatamente o limite: não há próxima página, e has_more não pode mandar
+// buscar uma página vazia.
+func TestMonitorEventsHasMoreIsExact(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+
+	id := s.createMonitor(t, newMonitorBody("api"))
+	if err := s.store.WriteHeartbeats(context.Background(), []domain.Heartbeat{
+		{MonitorID: id, Timestamp: epoch, Status: domain.StatusDown, Message: "a", ProbeID: "local"},
+		{MonitorID: id, Timestamp: epoch.Add(-time.Minute), Status: domain.StatusDown, Message: "b", ProbeID: "local"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resp := s.do(t, http.MethodGet, "/api/v1/monitors/"+itoa(id)+"/events?limit=2", nil)
+	assertStatus(t, resp, http.StatusOK)
+	if pg := decode[paginaEventos](t, resp); len(pg.Items) != 2 || pg.HasMore || pg.NextCursor != nil {
+		t.Errorf("página = %+v, want 2 eventos e has_more falso", pg)
 	}
 }
 

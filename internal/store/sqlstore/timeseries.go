@@ -70,6 +70,10 @@ func (s *Store) QueryHeartbeats(ctx context.Context, q store.HeartbeatQuery) ([]
 	if q.OnlyFailures {
 		sqlText += ` AND status IN ('down', 'degraded')`
 	}
+	if q.Before != nil {
+		sqlText += ` AND (ts < ? OR (ts = ? AND probe_id < ?))`
+		args = append(args, toMillis(q.Before.At), toMillis(q.Before.At), q.Before.ProbeID)
+	}
 	// DESC porque o limite precisa cortar o começo da janela, e não o fim.
 	//
 	// Com ASC, quem pergunta "como está agora" recebia o passado: intervalo
@@ -81,7 +85,10 @@ func (s *Store) QueryHeartbeats(ctx context.Context, q store.HeartbeatQuery) ([]
 	// A saída volta a ser cronológica logo abaixo: quem consome desenha uma
 	// linha do tempo, e inverter isso aqui empurraria a inversão para todo
 	// chamador.
-	sqlText += ` ORDER BY ts DESC LIMIT ?`
+	//
+	// A origem desempata o mesmo instante, para o corte do limite e o
+	// cursor concordarem sobre o que veio antes.
+	sqlText += ` ORDER BY ts DESC, probe_id DESC LIMIT ?`
 	args = append(args, q.Limit)
 
 	rows, err := s.db.QueryContext(ctx, sqlText, args...)

@@ -354,7 +354,11 @@ func (r *transitionRepo) List(ctx context.Context, f store.TransitionFilter) ([]
 	q := `SELECT id, monitor_id, from_status, to_status, at, cause
 		FROM state_transition WHERE monitor_id = ?`
 	args := []any{f.MonitorID}
-	if !f.Before.IsZero() {
+	switch {
+	case !f.Before.IsZero() && f.BeforeID > 0:
+		q += ` AND (at < ? OR (at = ? AND id < ?))`
+		args = append(args, toMillis(f.Before), toMillis(f.Before), f.BeforeID)
+	case !f.Before.IsZero():
 		q += ` AND at < ?`
 		args = append(args, toMillis(f.Before))
 	}

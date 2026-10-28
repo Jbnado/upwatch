@@ -118,6 +118,17 @@ type HeartbeatQuery struct {
 	// acontece antes do limite, senão uma janela de batidas boas
 	// esconderia a falha que veio antes delas.
 	OnlyFailures bool
+	// Before, quando preenchido, traz só as batidas anteriores ao cursor
+	// na ordem (instante, origem) decrescente. É como a linha do tempo
+	// pagina para trás: cortar só pelo instante perdia as batidas de
+	// outras origens que caíam no mesmo milissegundo da última da página.
+	Before *HeartbeatCursor
+}
+
+// HeartbeatCursor é a posição de uma batida na ordem (instante, origem).
+type HeartbeatCursor struct {
+	At      time.Time
+	ProbeID string
 }
 
 // Normalize aplica limites e normaliza a janela.
@@ -326,7 +337,12 @@ type TransitionFilter struct {
 	// Before corta a página: só mudanças anteriores a este instante. Zero
 	// começa do agora.
 	Before time.Time
-	Limit  int
+	// BeforeID desempata no instante Before: com ele, entram também as
+	// mudanças desse instante com id menor. A lista sai em (instante, id)
+	// decrescente, e sem o desempate a página seguinte pulava as mudanças
+	// que dividiam o instante com a última da página anterior.
+	BeforeID int64
+	Limit    int
 }
 
 // TransitionRepo guarda o histórico de mudanças confirmadas de estado.

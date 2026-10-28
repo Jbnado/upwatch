@@ -48,6 +48,8 @@ func groupCases() []conformanceCase {
 		{"TransitionRoundTrips", testTransitionRoundTrips},
 		{"TransitionListIsNewestFirstAndPaginates", testTransitionListIsNewestFirstAndPaginates},
 		{"TransitionCascadesOnMonitorDelete", testTransitionCascadesOnMonitorDelete},
+		{"TransitionListBreaksTiesByID", testTransitionListBreaksTiesByID},
+		{"HeartbeatQueryBeforeCursorKeepsTheSameInstant", testHeartbeatQueryBeforeCursorKeepsTheSameInstant},
 		{"HeartbeatQueryOnlyFailures", testHeartbeatQueryOnlyFailures},
 	}
 }
@@ -879,6 +881,74 @@ func testTransitionCascadesOnMonitorDelete(t *testing.T, newStore Factory) {
 // A aba de eventos lista as batidas com falha. Filtrar no banco, e não
 // depois do limite, é o que impede uma janela de batidas boas de esconder
 // a falha que veio antes delas.
+// Mudanças no mesmo instante saem em ordem de id decrescente, e o cursor
+// (instante, id) continua de onde parou sem pular as que dividem o
+// instante com a última da página.
+func testTransitionListBreaksTiesByID(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	id := mustCreateMonitor(t, s, "api")
+
+	var ids []int64
+	for i := 0; i < 3; i++ {
+		tr := domain.Transition{MonitorID: id, From: domain.StatusUp, To: domain.StatusDown, At: epoch}
+		if err := s.Transitions().Record(ctx, &tr); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, tr.ID)
+	}
+	antes := domain.Transition{MonitorID: id, From: domain.StatusDown, To: domain.StatusUp, At: epoch.Add(-time.Minute)}
+	if err := s.Transitions().Record(ctx, &antes); err != nil {
+		t.Fatal(err)
+	}
+
+	primeira, _ := s.Transitions().List(ctx, store.TransitionFilter{MonitorID: id, Limit: 2})
+	if len(primeira) != 2 || primeira[0].ID != ids[2] || primeira[1].ID != ids[1] {
+		t.Fatalf("first page = %+v, want ids %d and %d", primeira, ids[2], ids[1])
+	}
+	segunda, _ := s.Transitions().List(ctx, store.TransitionFilter{
+		MonitorID: id, Limit: 10, Before: primeira[1].At, BeforeID: primeira[1].ID,
+	})
+	if len(segunda) != 2 || segunda[0].ID != ids[0] || segunda[1].ID != antes.ID {
+		t.Errorf("second page = %+v, want ids %d and %d", segunda, ids[0], antes.ID)
+	}
+}
+
+// O cursor (instante, origem) da consulta de batidas continua no mesmo
+// milissegundo, pelas origens que ainda faltam. Origens diferentes batem
+// juntas, e cortar a página pelo instante perdia as que sobravam nele.
+func testHeartbeatQueryBeforeCursorKeepsTheSameInstant(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	id := mustCreateMonitor(t, s, "api")
+
+	var hbs []domain.Heartbeat
+	for _, origem := range []string{"a", "b", "c"} {
+		hbs = append(hbs, domain.Heartbeat{MonitorID: id, Timestamp: epoch, Status: domain.StatusDown, ProbeID: origem})
+	}
+	hbs = append(hbs, domain.Heartbeat{MonitorID: id, Timestamp: epoch.Add(-time.Minute), Status: domain.StatusDown, ProbeID: "z"})
+	if err := s.WriteHeartbeats(ctx, hbs); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.QueryHeartbeats(ctx, store.HeartbeatQuery{
+		MonitorID: id, Range: fullRange(), Limit: 10,
+		Before: &store.HeartbeatCursor{At: epoch, ProbeID: "b"},
+	})
+	if err != nil {
+		t.Fatalf("QueryHeartbeats returned unexpected error: %v", err)
+	}
+	if len(got) != 2 || got[0].ProbeID != "z" || got[1].ProbeID != "a" {
+		t.Errorf("before (epoch, b) = %+v, want z then a", got)
+	}
+
+	// Sem cursor, o limite corta pelo mais novo e desempata pela origem.
+	got, _ = s.QueryHeartbeats(ctx, store.HeartbeatQuery{MonitorID: id, Range: fullRange(), Limit: 2})
+	if len(got) != 2 || got[0].ProbeID != "b" || got[1].ProbeID != "c" {
+		t.Errorf("newest two = %+v, want b then c in chronological order", got)
+	}
+}
+
 func testHeartbeatQueryOnlyFailures(t *testing.T, newStore Factory) {
 	s := newStore(t)
 	ctx := context.Background()

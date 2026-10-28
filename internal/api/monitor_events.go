@@ -1,8 +1,12 @@
 package api
 
 import (
+	"cmp"
+	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Jbnado/upwatch/internal/store"
@@ -38,12 +42,79 @@ type monitorEvent struct {
 	// LatencyMS e ProbeID só nas falhas.
 	LatencyMS *int64 `json:"latency_ms,omitempty"`
 	ProbeID   string `json:"probe_id,omitempty"`
+
+	// pos é a posição do evento na linha do tempo, de onde sai o cursor.
+	pos eventCursor
+}
+
+// eventCursor é a posição de um evento na ordem da linha do tempo: mais
+// recente primeiro; no mesmo instante, a mudança antes da falha que a
+// confirmou ("caiu, porque respondeu X"); entre mudanças, id decrescente;
+// entre falhas, origem decrescente.
+//
+// Composto, e não só o instante: mudança e falhas de várias origens caem
+// no mesmo milissegundo, e "antes de" um instante perdia as que sobravam
+// nele quando a página acabava no meio.
+type eventCursor struct {
+	at time.Time
+	// rank 0 é mudança, 1 é falha.
+	rank int
+	// id é a chave da mudança; probe, a da falha.
+	id    int64
+	probe string
+}
+
+func (c eventCursor) compare(o eventCursor) int {
+	if x := o.at.Compare(c.at); x != 0 {
+		return x
+	}
+	if c.rank != o.rank {
+		return c.rank - o.rank
+	}
+	if c.rank == 0 {
+		return cmp.Compare(o.id, c.id)
+	}
+	return strings.Compare(o.probe, c.probe)
+}
+
+// String é o cursor como sai na resposta: opaco para quem consome, que só
+// o devolve em ?cursor=.
+func (c eventCursor) String() string {
+	chave := c.probe
+	if c.rank == 0 {
+		chave = strconv.FormatInt(c.id, 10)
+	}
+	return fmt.Sprintf("%d:%d:%s", c.at.UnixMilli(), c.rank, chave)
+}
+
+func parseEventCursor(raw string) (eventCursor, error) {
+	partes := strings.SplitN(raw, ":", 3)
+	if len(partes) != 3 {
+		return eventCursor{}, fmt.Errorf("cursor inválido")
+	}
+	ms, err := strconv.ParseInt(partes[0], 10, 64)
+	if err != nil {
+		return eventCursor{}, fmt.Errorf("cursor inválido")
+	}
+	c := eventCursor{at: time.UnixMilli(ms).UTC()}
+	switch partes[1] {
+	case "0":
+		if c.id, err = strconv.ParseInt(partes[2], 10, 64); err != nil {
+			return eventCursor{}, fmt.Errorf("cursor inválido")
+		}
+	case "1":
+		c.rank, c.probe = 1, partes[2]
+	default:
+		return eventCursor{}, fmt.Errorf("cursor inválido")
+	}
+	return c, nil
 }
 
 // handleMonitorEvents devolve uma página da linha do tempo.
 //
-// Parâmetros: before (RFC3339, exclusivo) pagina para trás; limit (1–200);
-// type filtra por "state" ou "failure".
+// Parâmetros: cursor (o next_cursor da página anterior) pagina para trás;
+// before (RFC3339, exclusivo) começa de um instante; limit (1–200); type
+// filtra por "state" ou "failure".
 func (a *API) handleMonitorEvents(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r)
 	if !ok {
@@ -62,24 +133,42 @@ func (a *API) handleMonitorEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	limit = min(limit, maxEventsLimit)
 
-	before := farFuture
-	if raw := r.URL.Query().Get("before"); raw != "" {
+	var (
+		transicoes = store.TransitionFilter{MonitorID: id, Limit: limit + 1}
+		falhas     = store.HeartbeatQuery{
+			MonitorID: id, Range: store.TimeRange{From: time.Unix(0, 0), To: farFuture},
+			Limit: limit + 1, OnlyFailures: true,
+		}
+	)
+	if raw := r.URL.Query().Get("cursor"); raw != "" {
+		c, err := parseEventCursor(raw)
+		if err != nil {
+			writeFieldError(w, "cursor", "cursor inválido; use o next_cursor da página anterior")
+			return
+		}
+		transicoes.Before = c.at
+		if c.rank == 0 {
+			// Parou numa mudança: faltam as mudanças anteriores a ela e
+			// todas as falhas do mesmo instante, que vêm depois na ordem.
+			transicoes.BeforeID = c.id
+			falhas.Range.To = c.at.Add(time.Millisecond)
+		} else {
+			// Parou numa falha: as mudanças do instante já saíram.
+			falhas.Before = &store.HeartbeatCursor{At: c.at, ProbeID: c.probe}
+		}
+	} else if raw := r.URL.Query().Get("before"); raw != "" {
 		t, err := time.Parse(time.RFC3339Nano, raw)
 		if err != nil {
 			writeFieldError(w, "before", "data inválida; use RFC3339")
 			return
 		}
-		before = t.UTC()
+		transicoes.Before, falhas.Range.To = t.UTC(), t.UTC()
 	}
 
 	var items []monitorEvent
 
 	if tipo != "failure" {
-		filtro := store.TransitionFilter{MonitorID: id, Limit: limit + 1}
-		if before != farFuture {
-			filtro.Before = before
-		}
-		mudancas, err := a.store.Transitions().List(r.Context(), filtro)
+		mudancas, err := a.store.Transitions().List(r.Context(), transicoes)
 		if err != nil {
 			writeStoreError(w, err)
 			return
@@ -87,68 +176,41 @@ func (a *API) handleMonitorEvents(w http.ResponseWriter, r *http.Request) {
 		for _, t := range mudancas {
 			items = append(items, monitorEvent{
 				Type: "state", At: t.At, Status: t.To.String(), From: t.From.String(), Message: t.Cause,
+				pos: eventCursor{at: t.At, id: t.ID},
 			})
 		}
 	}
 
 	if tipo != "state" {
-		falhas, err := a.store.QueryHeartbeats(r.Context(), store.HeartbeatQuery{
-			MonitorID:    id,
-			Range:        store.TimeRange{From: time.Unix(0, 0), To: before},
-			Limit:        limit + 1,
-			OnlyFailures: true,
-		})
+		batidas, err := a.store.QueryHeartbeats(r.Context(), falhas)
 		if err != nil {
 			writeStoreError(w, err)
 			return
 		}
-		for _, hb := range falhas {
+		for _, hb := range batidas {
 			latencia := hb.LatencyMS
 			items = append(items, monitorEvent{
 				Type: "failure", At: hb.Timestamp, Status: hb.Status.String(),
 				Message: hb.Message, LatencyMS: &latencia, ProbeID: hb.ProbeID,
+				pos: eventCursor{at: hb.Timestamp, rank: 1, probe: hb.ProbeID},
 			})
 		}
 	}
 
-	// Mais recente primeiro; no mesmo instante, a mudança antes da falha
-	// que a confirmou — é a ordem em que se lê "caiu, porque respondeu X".
-	slices.SortStableFunc(items, func(x, y monitorEvent) int {
-		if c := y.At.Compare(x.At); c != 0 {
-			return c
-		}
-		return eventRank(x) - eventRank(y)
-	})
+	slices.SortFunc(items, func(x, y monitorEvent) int { return x.pos.compare(y.pos) })
 
-	page, hasMore := cutEvents(items, limit)
-	body := map[string]any{"items": page, "has_more": hasMore}
+	// Cada fonte trouxe até limit+1: se o total passou do limite, há
+	// próxima página, e ela começa logo depois do último evento desta.
+	hasMore := len(items) > limit
 	if hasMore {
-		body["next_before"] = page[len(page)-1].At
+		items = items[:limit]
+	}
+	if items == nil {
+		items = []monitorEvent{}
+	}
+	body := map[string]any{"items": items, "has_more": hasMore}
+	if hasMore {
+		body["next_cursor"] = items[len(items)-1].pos.String()
 	}
 	writeJSON(w, http.StatusOK, body)
-}
-
-func eventRank(e monitorEvent) int {
-	if e.Type == "state" {
-		return 0
-	}
-	return 1
-}
-
-// cutEvents corta a página sem separar eventos do mesmo instante.
-//
-// A página seguinte pede "antes de" o último instante desta; cortar no
-// meio de um instante faria os eventos restantes dele nunca aparecerem.
-func cutEvents(items []monitorEvent, limit int) ([]monitorEvent, bool) {
-	if items == nil {
-		return []monitorEvent{}, false
-	}
-	if len(items) <= limit {
-		return items, false
-	}
-	fim := limit
-	for fim < len(items) && items[fim].At.Equal(items[limit-1].At) {
-		fim++
-	}
-	return items[:fim], fim < len(items)
 }
