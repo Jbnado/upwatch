@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -391,8 +392,11 @@ func TestTemplateNeverEmitsMonitorSecrets(t *testing.T) {
 			}
 			// %v imprime json.RawMessage como lista de bytes; o segredo
 			// continua lá, só que em decimal.
-			emBytes := strings.Trim(fmt.Sprint([]byte(segredo)), "[]")
-			if corpo := cap.body(0); strings.Contains(corpo, segredo) || strings.Contains(corpo, emBytes) {
+			emBytes := make([]string, len(segredo))
+			for i := range segredo {
+				emBytes[i] = strconv.Itoa(int(segredo[i]))
+			}
+			if corpo := cap.body(0); strings.Contains(corpo, segredo) || strings.Contains(corpo, strings.Join(emBytes, " ")) {
 				t.Errorf("the custom template leaked the monitor config: %s", corpo)
 			}
 		})
