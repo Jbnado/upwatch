@@ -14,6 +14,8 @@ internal/web/dist
 # Binários e bancos locais.
 upwatch
 upwatch.exe
+upwatch-probe
+upwatch-probe.exe
 *.db
 *.db-shm
 *.db-wal

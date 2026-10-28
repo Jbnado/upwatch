@@ -69,6 +69,14 @@ type RedisAssertion struct {
 
 func (a RedisAssertion) command() string { return strings.ToUpper(a.Command) }
 
+// RedisReadCommand informa se o comando está na lista fechada de leitura.
+// Serve a quem monta a asserção a partir de texto e quer recusar o
+// comando antes de interpretar o resto da linha.
+func RedisReadCommand(name string) bool {
+	_, ok := redisReadCommands[strings.ToUpper(name)]
+	return ok
+}
+
 // Validate confere a asserção no cadastro.
 func (a RedisAssertion) Validate() error {
 	spec, ok := redisReadCommands[a.command()]
