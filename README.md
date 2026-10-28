@@ -231,7 +231,12 @@ na prática, estão fora do ar. Os monitores desses tipos entram de verdade:
 
 - **PostgreSQL e MySQL** abrem sessão e executam uma consulta (padrão
   `SELECT 1`) numa transação somente leitura; a latência é a duração da
-  consulta.
+  consulta. A consulta começa com `SELECT`, `WITH`, `SHOW`, `VALUES` ou
+  `EXPLAIN`, só as 100 primeiras linhas são lidas, e o servidor recebe um
+  limite de tempo um pouco abaixo do timeout do monitor, para nada dela
+  seguir rodando lá depois. A causa de uma falha diz a etapa e o código
+  (`consulta: erro do servidor (SQLSTATE 22P02)`), nunca o texto do
+  servidor, que pode repetir dado lido; o texto vai para o log.
 
 **Use um usuário com o mínimo de acesso.** O UpWatch guarda a senha para
 verificar a cada minuto; ela não volta pela API nem aparece na causa de
@@ -250,8 +255,16 @@ ACL SETUSER upwatch on >... ~rq:* -@all +ping +info +scard +llen
 ```
 
 Ao editar o monitor, deixar a senha em branco mantém a guardada — exceto
-quando o endereço muda: aí ela precisa ser informada de novo, para que
-trocar o alvo não sirva para levá-la a outro servidor.
+quando o endereço muda ou o TLS fica mais fraco: aí ela precisa ser
+informada de novo, para que a edição não sirva para levá-la a outro
+servidor ou a quem estiver no caminho. O mesmo vale para a senha do basic
+auth e para os cabeçalhos de credencial do monitor HTTP, que voltam pela
+API com o valor `***`.
+
+A transação somente leitura não segura tudo o que um usuário privilegiado
+consegue: no PostgreSQL, um superusuário grava arquivo no servidor com
+`SELECT lo_export(...)` mesmo dentro dela. O usuário acima, só com
+`LOGIN`, não consegue.
 
 ## Página pública de estado
 
