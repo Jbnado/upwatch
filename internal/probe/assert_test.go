@@ -2,6 +2,7 @@ package probe_test
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/Jbnado/upwatch/internal/checker"
@@ -78,5 +79,14 @@ func TestFormatRedisAssertionRoundTrips(t *testing.T) {
 		if got := probe.FormatRedisAssertion(a); got != line {
 			t.Errorf("FormatRedisAssertion = %q, want %q", got, line)
 		}
+	}
+}
+
+// Quem digita FLUSHALL precisa ler que o comando é proibido, e não uma
+// queixa sobre a quantidade de argumentos.
+func TestParseRedisAssertionNamesTheForbiddenCommand(t *testing.T) {
+	_, err := probe.ParseRedisAssertion("FLUSHALL > 0")
+	if err == nil || !strings.Contains(err.Error(), "FLUSHALL") || !strings.Contains(err.Error(), "não é permitido") {
+		t.Errorf("err = %v, want it to name the forbidden command", err)
 	}
 }

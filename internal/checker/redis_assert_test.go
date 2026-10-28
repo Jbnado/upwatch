@@ -204,3 +204,19 @@ func TestRedisAssertionEvaluateInfoMissingField(t *testing.T) {
 		t.Errorf("Evaluate = %q, want a cause saying the field does not exist", got)
 	}
 }
+
+// A sonda lê a asserção de uma linha de texto e precisa recusar o
+// comando antes de interpretar o resto, para a mensagem falar do comando
+// proibido e não da contagem de argumentos.
+func TestRedisReadCommandFollowsTheClosedList(t *testing.T) {
+	for _, cmd := range []string{"SCARD", "scard", "INFO", "DBSIZE"} {
+		if !checker.RedisReadCommand(cmd) {
+			t.Errorf("RedisReadCommand(%q) = false", cmd)
+		}
+	}
+	for _, cmd := range []string{"FLUSHALL", "SET", "KEYS", "EVAL", ""} {
+		if checker.RedisReadCommand(cmd) {
+			t.Errorf("RedisReadCommand(%q) = true", cmd)
+		}
+	}
+}

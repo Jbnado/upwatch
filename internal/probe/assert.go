@@ -35,6 +35,10 @@ func ParseRedisAssertion(line string) (checker.RedisAssertion, error) {
 			"asserção %q incompleta; use COMANDO [chave] OPERADOR VALOR, como SCARD rq:workers:default >= 1", line)
 	}
 
+	if !checker.RedisReadCommand(parts[0]) {
+		return checker.RedisAssertion{}, fmt.Errorf(
+			"comando %q não é permitido; use um de SCARD, LLEN, GET, EXISTS, HGET, ZCARD, DBSIZE ou INFO", parts[0])
+	}
 	op, ok := operatorNames[strings.ToLower(parts[len(parts)-2])]
 	if !ok {
 		return checker.RedisAssertion{}, fmt.Errorf(
