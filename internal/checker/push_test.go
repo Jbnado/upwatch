@@ -15,15 +15,42 @@ import (
 
 var pushNow = time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
 
-// pushLog devolve o instante do último sinal, controlado pelo teste.
+// pushLog devolve o último sinal, controlado pelo teste.
+//
+// Sem status explícito o sinal é "up", como o de um cron que só diz
+// "estou vivo".
+//
+// O sinal começa inédito, como o que acabou de chegar; MarkPushEvaluated
+// o marca como já contado, que é o que o banco faz.
 type pushLog struct {
-	at  time.Time
-	has bool
-	err error
+	at        time.Time
+	has       bool
+	err       error
+	status    domain.Status
+	message   string
+	latency   int64
+	id        int64
+	evaluated bool
+	marked    []int64
 }
 
-func (p *pushLog) LastPush(context.Context, int64) (time.Time, bool, error) {
-	return p.at, p.has, p.err
+func (p *pushLog) LastPush(context.Context, int64) (domain.PushSignal, bool, error) {
+	status := p.status
+	if status == domain.StatusUnknown {
+		status = domain.StatusUp
+	}
+	return domain.PushSignal{
+		ID: p.id, At: p.at, Status: status, Message: p.message, LatencyMS: p.latency,
+		Evaluated: p.evaluated,
+	}, p.has, p.err
+}
+
+func (p *pushLog) MarkPushEvaluated(_ context.Context, _ int64, signalID int64) error {
+	p.marked = append(p.marked, signalID)
+	if signalID == p.id {
+		p.evaluated = true
+	}
+	return nil
 }
 
 func pushMonitor(t *testing.T, interval time.Duration, cfg map[string]any) domain.Monitor {
@@ -41,6 +68,7 @@ func pushMonitor(t *testing.T, interval time.Duration, cfg map[string]any) domai
 		ID: 1, Name: "cron noturno", Type: domain.MonitorPush,
 		Interval: interval, Timeout: interval / 2,
 		ConfirmationThreshold: 1, Config: raw,
+		CreatedAt: pushNow.Add(-30 * time.Second),
 	}
 }
 
@@ -104,11 +132,30 @@ func TestPushHonoursExplicitGracePeriod(t *testing.T) {
 
 // Monitor recém-criado ainda não recebeu nada. Marcar como fora do ar
 // dispararia alerta antes de o serviço ter tido chance de reportar.
-func TestPushNeverSignalledIsUnknown(t *testing.T) {
+func TestPushNeverSignalledIsUnknownWithinTheFirstWindow(t *testing.T) {
 	got := newPush(&pushLog{has: false}).Check(context.Background(), pushMonitor(t, time.Minute, nil))
 
 	if got.Status != domain.StatusUnknown {
 		t.Errorf("Status = %v (%s), want %v", got.Status, got.Message, domain.StatusUnknown)
+	}
+}
+
+// O push é um dead-man's switch: se a sonda nunca sobe, alguém precisa
+// saber. Ficar em "aguardando" para sempre deixaria justamente a falha de
+// implantação — script nunca agendado, token errado no agente — sem aviso
+// nenhum.
+func TestPushNeverSignalledBeyondTheFirstWindowIsDown(t *testing.T) {
+	m := pushMonitor(t, time.Minute, nil)
+	// Janela padrão de 2min (intervalo mais folga igual); criado há 3min.
+	m.CreatedAt = pushNow.Add(-3 * time.Minute)
+
+	got := newPush(&pushLog{has: false}).Check(context.Background(), m)
+
+	if got.Status != domain.StatusDown {
+		t.Errorf("Status = %v (%s), want %v", got.Status, got.Message, domain.StatusDown)
+	}
+	if got.Message != "nenhum sinal recebido desde a criação do monitor" {
+		t.Errorf("Message = %q, want it to say no signal ever arrived", got.Message)
 	}
 }
 
@@ -137,15 +184,99 @@ func TestPushReportsSecondsSinceLastSignal(t *testing.T) {
 	}
 }
 
-// A latência de um monitor push não descreve tempo de resposta de nada:
-// preenchê-la poluiria os percentis com um número sem significado.
-func TestPushReportsNoLatency(t *testing.T) {
+// Sem medição informada, a latência fica zerada: o UpWatch não mede tempo
+// de resposta de nada num monitor push, e inventar um número poluiria os
+// percentis.
+func TestPushReportsNoLatencyWhenTheServiceMeasuredNone(t *testing.T) {
 	log := &pushLog{at: pushNow.Add(-10 * time.Second), has: true}
 
 	got := newPush(log).Check(context.Background(), pushMonitor(t, time.Minute, nil))
 
 	if got.LatencyMS != 0 {
 		t.Errorf("LatencyMS = %d, want 0: a push monitor measures no round trip", got.LatencyMS)
+	}
+}
+
+// Quando o próprio serviço mede quanto a tarefa levou, esse é o único
+// número de duração que existe; descartá-lo esconderia a rotina que vai
+// ficando lenta até estourar o horário.
+func TestPushReportsTheLatencyMeasuredByTheService(t *testing.T) {
+	log := &pushLog{at: pushNow.Add(-10 * time.Second), has: true, latency: 842}
+
+	got := newPush(log).Check(context.Background(), pushMonitor(t, time.Minute, nil))
+
+	if got.LatencyMS != 842 {
+		t.Errorf("LatencyMS = %d, want 842 as reported by the service", got.LatencyMS)
+	}
+}
+
+// Quem reporta por push muitas vezes sabe o que deu errado. Um "down"
+// explícito precisa virar falha com a causa informada; senão o script teria
+// de calar e esperar a janela estourar, e o aviso chegaria atrasado
+// dizendo só "silêncio".
+func TestPushReportedDownCarriesTheCause(t *testing.T) {
+	log := &pushLog{
+		at: pushNow.Add(-10 * time.Second), has: true,
+		status: domain.StatusDown, message: "fila sem worker",
+	}
+
+	got := newPush(log).Check(context.Background(), pushMonitor(t, time.Minute, nil))
+
+	if got.Status != domain.StatusDown {
+		t.Errorf("Status = %v, want %v", got.Status, domain.StatusDown)
+	}
+	if !strings.Contains(got.Message, "fila sem worker") {
+		t.Errorf("Message = %q, want the cause reported by the service", got.Message)
+	}
+}
+
+// Queda sem causa ainda precisa dizer de onde veio a falha: sem isso o
+// operador procuraria um problema de rede que não existe.
+func TestPushReportedDownWithoutCauseSaysTheServiceReportedIt(t *testing.T) {
+	log := &pushLog{at: pushNow.Add(-10 * time.Second), has: true, status: domain.StatusDown}
+
+	got := newPush(log).Check(context.Background(), pushMonitor(t, time.Minute, nil))
+
+	if got.Status != domain.StatusDown {
+		t.Errorf("Status = %v, want %v", got.Status, domain.StatusDown)
+	}
+	if !strings.Contains(strings.ToLower(got.Message), "reportou") {
+		t.Errorf("Message = %q, want it to say the service itself reported the failure", got.Message)
+	}
+}
+
+func TestPushReportedDegradedIsDegraded(t *testing.T) {
+	log := &pushLog{
+		at: pushNow.Add(-10 * time.Second), has: true,
+		status: domain.StatusDegraded, message: "fila com 5 mil itens",
+	}
+
+	got := newPush(log).Check(context.Background(), pushMonitor(t, time.Minute, nil))
+
+	if got.Status != domain.StatusDegraded {
+		t.Errorf("Status = %v, want %v", got.Status, domain.StatusDegraded)
+	}
+	if got.Message != "fila com 5 mil itens" {
+		t.Errorf("Message = %q, want the reported cause", got.Message)
+	}
+}
+
+// Silêncio vence o último status: um "up" antigo não pode manter verde um
+// serviço que parou de reportar, e um "down" antigo não pode esconder que
+// agora o problema é outro — ninguém mais está reportando.
+func TestPushSilenceOverridesTheLastReportedStatus(t *testing.T) {
+	log := &pushLog{
+		at: pushNow.Add(-5 * time.Minute), has: true,
+		status: domain.StatusDown, message: "fila sem worker",
+	}
+
+	got := newPush(log).Check(context.Background(), pushMonitor(t, time.Minute, nil))
+
+	if got.Status != domain.StatusDown {
+		t.Errorf("Status = %v, want %v", got.Status, domain.StatusDown)
+	}
+	if !strings.Contains(strings.ToLower(got.Message), "sem sinal") {
+		t.Errorf("Message = %q, want it to report the silence", got.Message)
 	}
 }
 
@@ -207,5 +338,478 @@ func TestPushGenerateTokenProducesDistinctSecrets(t *testing.T) {
 	if len(first) < checker.MinPushTokenLength {
 		t.Errorf("generated token has %d characters, want at least %d",
 			len(first), checker.MinPushTokenLength)
+	}
+}
+
+// ---------- agenda cron ----------
+
+// mustLocation carrega um fuso da base IANA. São Paulo não tem horário de
+// verão desde 2019, o que deixa os testes de agenda livres de
+// deslocamento; o de horário de verão usa Nova York.
+func mustLocation(t *testing.T, name string) *time.Location {
+	t.Helper()
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		t.Fatalf("LoadLocation(%q) returned unexpected error: %v", name, err)
+	}
+	return loc
+}
+
+// scheduledMonitor monta o caso da issue: rotina das 09:02 e 18:02, com
+// folga de 10 minutos, verificada a cada minuto.
+func scheduledMonitor(t *testing.T, tz string) domain.Monitor {
+	t.Helper()
+	return pushMonitor(t, time.Minute, map[string]any{
+		"token": "segredo-de-16-chars", "schedule": "2 9,18 * * *",
+		"timezone": tz, "grace_period_seconds": 600,
+	})
+}
+
+func checkAt(t *testing.T, now time.Time, log *pushLog, m domain.Monitor) checker.Result {
+	t.Helper()
+	return checker.NewPush(log, clock.NewFake(now)).Check(context.Background(), m)
+}
+
+// Entre as execuções previstas o silêncio é esperado. Com intervalo, uma
+// rotina das 09:02 e das 18:02 viraria alarme toda tarde; com agenda, o
+// monitor sabe que ninguém devia reportar antes das 18:02.
+func TestPushScheduleToleratesSilenceBetweenRuns(t *testing.T) {
+	sp := mustLocation(t, "America/Sao_Paulo")
+	log := &pushLog{at: time.Date(2026, 7, 28, 9, 3, 0, 0, sp), has: true}
+
+	got := checkAt(t, time.Date(2026, 7, 28, 17, 59, 0, 0, sp), log, scheduledMonitor(t, "America/Sao_Paulo"))
+
+	if got.Status != domain.StatusUp {
+		t.Errorf("Status = %v (%s), want %v", got.Status, got.Message, domain.StatusUp)
+	}
+}
+
+// A folga existe para a rotina que atrasa uns minutos não gerar alarme.
+func TestPushScheduleToleratesDelayWithinGrace(t *testing.T) {
+	sp := mustLocation(t, "America/Sao_Paulo")
+	log := &pushLog{at: time.Date(2026, 7, 28, 9, 3, 0, 0, sp), has: true}
+
+	got := checkAt(t, time.Date(2026, 7, 28, 18, 11, 0, 0, sp), log, scheduledMonitor(t, "America/Sao_Paulo"))
+
+	if got.Status != domain.StatusUp {
+		t.Errorf("Status = %v (%s), want %v", got.Status, got.Message, domain.StatusUp)
+	}
+}
+
+// Falta o sinal de uma execução prevista: é a única situação em que o
+// monitor com agenda cai. A mensagem nomeia a execução perdida, que é o
+// que o operador vai procurar no log da rotina.
+func TestPushScheduleMissedRunIsDown(t *testing.T) {
+	sp := mustLocation(t, "America/Sao_Paulo")
+	log := &pushLog{at: time.Date(2026, 7, 28, 9, 3, 0, 0, sp), has: true}
+
+	got := checkAt(t, time.Date(2026, 7, 28, 18, 13, 0, 0, sp), log, scheduledMonitor(t, "America/Sao_Paulo"))
+
+	if got.Status != domain.StatusDown {
+		t.Fatalf("Status = %v (%s), want %v", got.Status, got.Message, domain.StatusDown)
+	}
+	if !strings.Contains(got.Message, "18:02") {
+		t.Errorf("Message = %q, want it to name the missed run at 18:02", got.Message)
+	}
+}
+
+// O intervalo de 15h entre 18:02 e 09:02 não pode virar alarme de
+// madrugada: o sinal das 18:05 cobre até a execução seguinte.
+func TestPushScheduleCoversTheOvernightGap(t *testing.T) {
+	sp := mustLocation(t, "America/Sao_Paulo")
+	log := &pushLog{at: time.Date(2026, 7, 28, 18, 5, 0, 0, sp), has: true}
+
+	got := checkAt(t, time.Date(2026, 7, 29, 9, 5, 0, 0, sp), log, scheduledMonitor(t, "America/Sao_Paulo"))
+
+	if got.Status != domain.StatusUp {
+		t.Errorf("Status = %v (%s), want %v", got.Status, got.Message, domain.StatusUp)
+	}
+}
+
+// Rotinas são agendadas no horário local, e o horário de verão desloca a
+// execução em relação ao UTC. Com fuso fixo, o monitor esperaria o sinal
+// uma hora depois do que a rotina realmente roda, e a falha chegaria
+// atrasada justamente na semana da mudança.
+func TestPushScheduleFollowsDaylightSavingTime(t *testing.T) {
+	m := pushMonitor(t, time.Minute, map[string]any{
+		"token": "segredo-de-16-chars", "schedule": "0 9 * * *",
+		"timezone": "America/New_York", "grace_period_seconds": 600,
+	})
+	// Sábado 07/03/2026, 09:01 EST (14:01 UTC). No domingo começa o
+	// horário de verão, e as 09:00 locais passam a ser 13:00 UTC.
+	log := &pushLog{at: time.Date(2026, 3, 7, 14, 1, 0, 0, time.UTC), has: true}
+
+	got := checkAt(t, time.Date(2026, 3, 8, 13, 15, 0, 0, time.UTC), log, m)
+
+	if got.Status != domain.StatusDown {
+		t.Errorf("Status = %v (%s), want %v: the 09:00 EDT run was missed",
+			got.Status, got.Message, domain.StatusDown)
+	}
+}
+
+// O dead-man's switch vale também com agenda: a contagem começa na
+// primeira execução prevista depois da criação, não na própria criação.
+// Um monitor criado às 08:00 para uma rotina das 09:02 não pode cair às
+// 08:10, nem ficar esperando para sempre se a rotina nunca rodar.
+func TestPushScheduleNeverSignalledCountsFromTheFirstExpectedRun(t *testing.T) {
+	sp := mustLocation(t, "America/Sao_Paulo")
+	m := scheduledMonitor(t, "America/Sao_Paulo")
+	m.CreatedAt = time.Date(2026, 7, 28, 8, 0, 0, 0, sp)
+
+	before := checkAt(t, time.Date(2026, 7, 28, 9, 11, 0, 0, sp), &pushLog{has: false}, m)
+	if before.Status != domain.StatusUnknown {
+		t.Errorf("before the first deadline: Status = %v (%s), want %v",
+			before.Status, before.Message, domain.StatusUnknown)
+	}
+
+	after := checkAt(t, time.Date(2026, 7, 28, 9, 13, 0, 0, sp), &pushLog{has: false}, m)
+	if after.Status != domain.StatusDown {
+		t.Errorf("after the first deadline: Status = %v (%s), want %v",
+			after.Status, after.Message, domain.StatusDown)
+	}
+}
+
+// A próxima execução esperada é o que a interface mostra no detalhe: é
+// assim que um fuso errado aparece no cadastro, e não na primeira
+// madrugada.
+func TestPushNextExpectedRunFollowsTheSchedule(t *testing.T) {
+	sp := mustLocation(t, "America/Sao_Paulo")
+	cfg := json.RawMessage(`{"token":"segredo-de-16-chars","schedule":"2 9,18 * * *","timezone":"America/Sao_Paulo"}`)
+
+	got, ok, err := checker.NextPushRun(cfg, time.Date(2026, 7, 28, 12, 0, 0, 0, sp))
+	if err != nil || !ok {
+		t.Fatalf("NextPushRun = (%v, %v, %v), want a scheduled run", got, ok, err)
+	}
+	if want := time.Date(2026, 7, 28, 18, 2, 0, 0, sp); !got.Equal(want) {
+		t.Errorf("NextPushRun = %v, want %v", got, want)
+	}
+}
+
+// Sem agenda não há execução prevista, só intervalo; inventar uma data
+// faria a interface prometer algo que o monitor não vigia.
+func TestPushNextExpectedRunWithoutScheduleIsAbsent(t *testing.T) {
+	_, ok, err := checker.NextPushRun(json.RawMessage(`{"token":"segredo-de-16-chars"}`), pushNow)
+	if err != nil || ok {
+		t.Errorf("NextPushRun without schedule = (ok=%v, err=%v), want (false, nil)", ok, err)
+	}
+}
+
+func TestPushValidateConfigAcceptsSchedule(t *testing.T) {
+	cfg := json.RawMessage(`{"token":"um-token-suficientemente-longo","schedule":"2 9,18 * * 1-5","timezone":"America/Sao_Paulo"}`)
+
+	if err := newPush(&pushLog{}).ValidateConfig(cfg); err != nil {
+		t.Errorf("ValidateConfig returned unexpected error: %v", err)
+	}
+}
+
+// Expressão errada precisa ser recusada no cadastro; aceitá-la deixaria o
+// monitor sem saber quando esperar o sinal, e o erro só apareceria quando
+// a rotina já tivesse falhado sem aviso.
+func TestPushValidateConfigRejectsBadSchedules(t *testing.T) {
+	cases := map[string]string{
+		"lixo":                 `{"schedule":"toda hora","timezone":"UTC"}`,
+		"seis campos":          `{"schedule":"0 2 9 * * *","timezone":"UTC"}`,
+		"minuto fora da faixa": `{"schedule":"61 9 * * *","timezone":"UTC"}`,
+		// 30 de fevereiro nunca chega: o monitor ficaria esperando para
+		// sempre sem jamais cobrar o sinal.
+		"nunca dispara": `{"schedule":"0 0 30 2 *","timezone":"UTC"}`,
+		// Sem fuso explícito, "09:02" seria lido em UTC, e uma rotina de
+		// São Paulo seria cobrada três horas antes de rodar.
+		"sem fuso":         `{"schedule":"2 9 * * *"}`,
+		"fuso inexistente": `{"schedule":"2 9 * * *","timezone":"America/Atlantida"}`,
+		// O fuso vem embutido no campo próprio; aceitar também o prefixo
+		// da biblioteca deixaria dois lugares decidindo a mesma coisa.
+		"fuso no prefixo": `{"schedule":"CRON_TZ=UTC 2 9 * * *","timezone":"UTC"}`,
+	}
+	for name, extra := range cases {
+		t.Run(name, func(t *testing.T) {
+			var cfg map[string]any
+			if err := json.Unmarshal([]byte(extra), &cfg); err != nil {
+				t.Fatalf("bad fixture: %v", err)
+			}
+			cfg["token"] = "um-token-suficientemente-longo"
+			raw, _ := json.Marshal(cfg)
+
+			if err := newPush(&pushLog{}).ValidateConfig(raw); err == nil {
+				t.Errorf("ValidateConfig(%s) returned nil error, want an error", raw)
+			}
+		})
+	}
+}
+
+// ---------- um sinal, uma observação ----------
+
+// O motor confirma uma queda depois de N observações seguidas. Se cada
+// verificação relesse o mesmo "down" como falha nova, um único sinal
+// abriria incidente sozinho assim que N verificações passassem — o
+// contrário do que o limiar promete. O sinal conta uma vez; as
+// verificações seguintes, até chegar outro, só repetem o que ele disse.
+func TestPushCountsEachSignalOnce(t *testing.T) {
+	log := &pushLog{
+		at: pushNow.Add(-10 * time.Second), has: true, id: 7,
+		status: domain.StatusDown, message: "fila sem worker", latency: 842,
+	}
+	push, m := newPush(log), pushMonitor(t, time.Minute, nil)
+
+	first := push.Check(context.Background(), m)
+	second := push.Check(context.Background(), m)
+
+	if first.Repeated || first.Status != domain.StatusDown {
+		t.Errorf("first check = %+v, want the signal counted as a new failure", first)
+	}
+	if !second.Repeated {
+		t.Errorf("second check = %+v, want it marked as a repeat of the same signal", second)
+	}
+	// A releitura continua mostrando o que o serviço disse: o painel não
+	// pode piscar verde entre dois sinais de queda.
+	if second.Status != domain.StatusDown || second.Message != "fila sem worker" {
+		t.Errorf("second check = %+v, want the reported status and cause kept", second)
+	}
+	if len(log.marked) != 1 || log.marked[0] != 7 {
+		t.Errorf("marked = %v, want the signal 7 marked once", log.marked)
+	}
+}
+
+// Um sinal novo volta a contar, mesmo que diga a mesma coisa: dois "down"
+// seguidos são duas observações, e é assim que o limiar se cumpre.
+func TestPushNewSignalCountsAgain(t *testing.T) {
+	log := &pushLog{at: pushNow.Add(-10 * time.Second), has: true, id: 7, status: domain.StatusDown}
+	push, m := newPush(log), pushMonitor(t, time.Minute, nil)
+	push.Check(context.Background(), m)
+
+	log.id, log.evaluated = 8, false
+	got := push.Check(context.Background(), m)
+
+	if got.Repeated {
+		t.Errorf("check after a new signal = %+v, want it counted", got)
+	}
+}
+
+// O silêncio é medido de novo a cada verificação — cada uma confere o
+// relógio —, então nunca é repetição, mesmo com o último sinal já contado.
+func TestPushSilenceIsAlwaysANewObservation(t *testing.T) {
+	log := &pushLog{at: pushNow.Add(-5 * time.Minute), has: true, id: 7, evaluated: true}
+
+	got := newPush(log).Check(context.Background(), pushMonitor(t, time.Minute, nil))
+
+	if got.Status != domain.StatusDown || got.Repeated {
+		t.Errorf("silence check = %+v, want a new failure", got)
+	}
+}
+
+// ---------- mudança de configuração e reativação ----------
+
+// Trocar a agenda recomeça a espera. A referência era o último sinal da
+// agenda antiga: uma rotina semanal passada para diária ficava devendo,
+// no instante da edição, a execução diária que a agenda nova teria tido
+// desde o último sinal — e o monitor caía na hora, por uma falta que
+// ninguém cometeu.
+func TestPushScheduleChangeRestartsTheWait(t *testing.T) {
+	sp := mustLocation(t, "America/Sao_Paulo")
+	m := scheduledMonitor(t, "America/Sao_Paulo")
+	now := time.Date(2026, 7, 28, 12, 0, 0, 0, sp)
+	m.RearmedAt = now.Add(-time.Minute)
+	// O último sinal, da agenda semanal antiga, foi há cinco dias.
+	log := &pushLog{at: now.Add(-5 * 24 * time.Hour), has: true}
+
+	got := checkAt(t, now, log, m)
+
+	if got.Status == domain.StatusDown {
+		t.Errorf("Status = %v (%s), want no fault right after the schedule changed", got.Status, got.Message)
+	}
+}
+
+// Reativar um monitor parado há dias é o mesmo caso: enquanto estava
+// desligado ninguém esperava sinal, e cobrar a janela a partir do último
+// recebido derrubaria o monitor no instante em que alguém o liga.
+func TestPushReactivationRestartsTheWait(t *testing.T) {
+	m := pushMonitor(t, time.Minute, nil)
+	m.RearmedAt = pushNow.Add(-30 * time.Second)
+	log := &pushLog{at: pushNow.Add(-3 * 24 * time.Hour), has: true}
+
+	got := newPush(log).Check(context.Background(), m)
+
+	if got.Status == domain.StatusDown {
+		t.Errorf("Status = %v (%s), want no fault right after reactivation", got.Status, got.Message)
+	}
+}
+
+// A espera recomeça, mas não some: passada a primeira janela depois da
+// mudança sem sinal nenhum, o silêncio volta a valer.
+func TestPushSilenceAfterTheRearmWindowIsDown(t *testing.T) {
+	m := pushMonitor(t, time.Minute, nil)
+	m.RearmedAt = pushNow.Add(-3 * time.Minute)
+	log := &pushLog{at: pushNow.Add(-3 * 24 * time.Hour), has: true}
+
+	got := newPush(log).Check(context.Background(), m)
+
+	if got.Status != domain.StatusDown {
+		t.Errorf("Status = %v (%s), want down once the rearmed window ran out", got.Status, got.Message)
+	}
+}
+
+// O monitor que nunca recebeu sinal também conta a primeira janela a
+// partir da última mudança, e não da criação.
+func TestPushNeverSignalledCountsFromTheLastRearm(t *testing.T) {
+	m := pushMonitor(t, time.Minute, nil)
+	m.CreatedAt = pushNow.Add(-24 * time.Hour)
+	m.RearmedAt = pushNow.Add(-30 * time.Second)
+
+	got := newPush(&pushLog{}).Check(context.Background(), m)
+
+	if got.Status != domain.StatusUnknown {
+		t.Errorf("Status = %v (%s), want waiting right after reactivation", got.Status, got.Message)
+	}
+}
+
+// ---------- folga mínima com agenda ----------
+
+// Sem folga explícita, a folga era o intervalo de verificação — um minuto,
+// no caso comum. Uma rotina agendada que leva dois minutos para terminar e
+// só então reporta viraria alarme toda execução. Com agenda, a folga
+// implícita é de pelo menos cinco minutos.
+func TestPushScheduleWithoutGraceToleratesFiveMinutes(t *testing.T) {
+	sp := mustLocation(t, "America/Sao_Paulo")
+	m := pushMonitor(t, time.Minute, map[string]any{
+		"token": "segredo-de-16-chars", "schedule": "0 9 * * *", "timezone": "America/Sao_Paulo",
+	})
+	log := &pushLog{at: time.Date(2026, 7, 27, 9, 1, 0, 0, sp), has: true}
+
+	within := checkAt(t, time.Date(2026, 7, 28, 9, 4, 0, 0, sp), log, m)
+	if within.Status != domain.StatusUp {
+		t.Errorf("4 minutes after the run: Status = %v (%s), want %v", within.Status, within.Message, domain.StatusUp)
+	}
+
+	beyond := checkAt(t, time.Date(2026, 7, 28, 9, 6, 0, 0, sp), log, m)
+	if beyond.Status != domain.StatusDown {
+		t.Errorf("6 minutes after the run: Status = %v (%s), want %v", beyond.Status, beyond.Message, domain.StatusDown)
+	}
+}
+
+// A folga explícita continua valendo, mesmo abaixo de cinco minutos: quem
+// a escreveu sabe quanto a rotina leva.
+func TestPushScheduleHonoursExplicitShortGrace(t *testing.T) {
+	sp := mustLocation(t, "America/Sao_Paulo")
+	m := pushMonitor(t, time.Minute, map[string]any{
+		"token": "segredo-de-16-chars", "schedule": "0 9 * * *", "timezone": "America/Sao_Paulo",
+		"grace_period_seconds": 60,
+	})
+	log := &pushLog{at: time.Date(2026, 7, 27, 9, 1, 0, 0, sp), has: true}
+
+	got := checkAt(t, time.Date(2026, 7, 28, 9, 2, 0, 0, sp), log, m)
+
+	if got.Status != domain.StatusDown {
+		t.Errorf("Status = %v (%s), want %v with an explicit one-minute grace", got.Status, got.Message, domain.StatusDown)
+	}
+}
+
+// ---------- horário de verão: a hora que some e a que se repete ----------
+
+// dstMonitor é um push diário com folga de 10 minutos no fuso dado.
+func dstMonitor(t *testing.T, schedule, tz string) domain.Monitor {
+	t.Helper()
+	return pushMonitor(t, time.Minute, map[string]any{
+		"token": "segredo-de-16-chars", "schedule": schedule,
+		"timezone": tz, "grace_period_seconds": 600,
+	})
+}
+
+// Na madrugada em que o relógio pula das 02:00 para as 03:00, uma rotina
+// das 02:00 não tem horário naquele dia. O cron clássico a roda às 03:00;
+// o CronJob do Kubernetes, que usa a mesma biblioteca de agenda daqui, a
+// pula. Cobrar a execução daria alarme falso para quem pula, então aquele
+// dia não é cobrado — mas o seguinte é, para a hora que some não virar
+// cegueira.
+func TestPushScheduleSkipsTheMissingHourInNewYork(t *testing.T) {
+	ny := mustLocation(t, "America/New_York")
+	m := dstMonitor(t, "0 2 * * *", "America/New_York")
+	// Sábado 07/03/2026, 02:01 EST. Domingo, 08/03, as 02:00 não existem.
+	log := &pushLog{at: time.Date(2026, 3, 7, 2, 1, 0, 0, ny), has: true}
+
+	sameDay := checkAt(t, time.Date(2026, 3, 8, 3, 30, 0, 0, ny), log, m)
+	if sameDay.Status == domain.StatusDown {
+		t.Errorf("on the day the hour vanished: Status = %v (%s), want no fault", sameDay.Status, sameDay.Message)
+	}
+
+	nextDay := checkAt(t, time.Date(2026, 3, 9, 2, 11, 0, 0, ny), log, m)
+	if nextDay.Status != domain.StatusDown {
+		t.Errorf("the next day: Status = %v (%s), want the 02:00 run enforced again", nextDay.Status, nextDay.Message)
+	}
+}
+
+// Na madrugada em que o relógio volta das 02:00 para a 01:00, as 01:30
+// acontecem duas vezes. O cron clássico roda a rotina uma vez só, na
+// primeira. Se o monitor esperasse também a segunda, toda rotina das
+// 01:30 viraria alarme falso uma vez por ano, às 01:40 do horário padrão.
+func TestPushScheduleExpectsTheRepeatedHourOnceInNewYork(t *testing.T) {
+	ny := mustLocation(t, "America/New_York")
+	m := dstMonitor(t, "30 1 * * *", "America/New_York")
+	// Domingo 01/11/2026, 01:31 EDT: o sinal da primeira 01:30.
+	firstPass := time.Date(2026, 11, 1, 5, 31, 0, 0, time.UTC)
+	log := &pushLog{at: firstPass, has: true}
+
+	// 01:45 EST, uma hora depois: a segunda 01:30 já passou com a folga.
+	secondPass := time.Date(2026, 11, 1, 6, 45, 0, 0, time.UTC)
+	if got := checkAt(t, secondPass, log, m); got.Status == domain.StatusDown {
+		t.Errorf("after the repeated 01:30: Status = %v (%s), want no fault", got.Status, got.Message)
+	}
+
+	nextDay := checkAt(t, time.Date(2026, 11, 2, 1, 41, 0, 0, ny), log, m)
+	if nextDay.Status != domain.StatusDown {
+		t.Errorf("the next day: Status = %v (%s), want the 01:30 run enforced", nextDay.Status, nextDay.Message)
+	}
+}
+
+// A primeira das duas 01:30 continua cobrada: pular a hora repetida não
+// pode virar pular a execução daquele dia.
+func TestPushScheduleStillExpectsTheFirstOfTheRepeatedHour(t *testing.T) {
+	ny := mustLocation(t, "America/New_York")
+	m := dstMonitor(t, "30 1 * * *", "America/New_York")
+	log := &pushLog{at: time.Date(2026, 10, 31, 1, 31, 0, 0, ny), has: true}
+
+	// 01:41 EDT, a primeira passagem, sem sinal.
+	got := checkAt(t, time.Date(2026, 11, 1, 5, 41, 0, 0, time.UTC), log, m)
+
+	if got.Status != domain.StatusDown {
+		t.Errorf("Status = %v (%s), want the first 01:30 enforced", got.Status, got.Message)
+	}
+}
+
+// São Paulo não tem horário de verão desde 2019, mas o fuso guarda o
+// histórico, e um monitor que reprocessa a agenda daquela época — ou um
+// país que volte a adotar a mudança — precisa do mesmo comportamento. Lá
+// a mudança era à meia-noite: em 04/11/2018 o relógio pulou das 00:00
+// para a 01:00, e em 17/02/2019 voltou da meia-noite para as 23:00 do dia
+// 16. As horas afetadas são outras, então as expressões também.
+func TestPushScheduleSkipsTheMissingMidnightInSaoPaulo(t *testing.T) {
+	sp := mustLocation(t, "America/Sao_Paulo")
+	m := dstMonitor(t, "0 0 * * *", "America/Sao_Paulo")
+	log := &pushLog{at: time.Date(2018, 11, 3, 0, 1, 0, 0, sp), has: true}
+
+	sameDay := checkAt(t, time.Date(2018, 11, 4, 1, 30, 0, 0, sp), log, m)
+	if sameDay.Status == domain.StatusDown {
+		t.Errorf("on the day midnight vanished: Status = %v (%s), want no fault", sameDay.Status, sameDay.Message)
+	}
+
+	nextDay := checkAt(t, time.Date(2018, 11, 5, 0, 11, 0, 0, sp), log, m)
+	if nextDay.Status != domain.StatusDown {
+		t.Errorf("the next day: Status = %v (%s), want midnight enforced again", nextDay.Status, nextDay.Message)
+	}
+}
+
+func TestPushScheduleExpectsTheRepeatedHourOnceInSaoPaulo(t *testing.T) {
+	sp := mustLocation(t, "America/Sao_Paulo")
+	m := dstMonitor(t, "30 23 * * *", "America/Sao_Paulo")
+	// 16/02/2019, 23:31 no horário de verão (-02): a primeira 23:30.
+	log := &pushLog{at: time.Date(2019, 2, 17, 1, 31, 0, 0, time.UTC), has: true}
+
+	// 23:45 do horário padrão (-03): a segunda 23:30 passou com a folga.
+	if got := checkAt(t, time.Date(2019, 2, 17, 2, 45, 0, 0, time.UTC), log, m); got.Status == domain.StatusDown {
+		t.Errorf("after the repeated 23:30: Status = %v (%s), want no fault", got.Status, got.Message)
+	}
+
+	nextDay := checkAt(t, time.Date(2019, 2, 17, 23, 41, 0, 0, sp), log, m)
+	if nextDay.Status != domain.StatusDown {
+		t.Errorf("the next day: Status = %v (%s), want the 23:30 run enforced", nextDay.Status, nextDay.Message)
 	}
 }

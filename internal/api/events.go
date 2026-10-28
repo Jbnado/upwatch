@@ -1,7 +1,6 @@
 package api
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -147,12 +146,4 @@ func (a *API) handleEvents(w http.ResponseWriter, r *http.Request) {
 // que resta é deixar rastro no log para a investigação.
 func writeStreamFailure(_ http.ResponseWriter, err error) {
 	slog.Error("api: falha durante o envio da resposta", "erro", err)
-}
-
-// subtleEqual compara segredos em tempo constante.
-//
-// Comparação comum encerra no primeiro byte diferente, e a variação de
-// tempo permitiria descobrir um token caractere a caractere.
-func subtleEqual(a, b string) bool {
-	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }

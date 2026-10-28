@@ -307,6 +307,62 @@ O endereço do alvo nunca vira rótulo. Além de descrever a topologia
 interna, endereço em rótulo é cardinalidade alta — é assim que se derruba
 um Prometheus.
 
+## Push
+
+No monitor push quem bate é o serviço: um cron, um worker, um agente
+atrás de VPN. O sinal vai para `/api/v1/push/{token}`, por `GET` ou
+`POST`, sem sessão — o token no caminho é a credencial. Cada token
+pertence a um monitor só, e o endpoint limita a taxa por origem (300 de
+rajada, 5 por segundo depois disso; acima, 429 com `Retry-After`). Atrás de
+proxy reverso, todos os crons dividem o limite do proxy.
+
+```bash
+# Estou vivo (o mesmo que status=up)
+curl -fsS https://upwatch.exemplo.com/api/v1/push/SEU_TOKEN
+
+# Sei o que deu errado, e digo
+curl -fsS "https://upwatch.exemplo.com/api/v1/push/SEU_TOKEN?status=down&msg=fila+sem+worker"
+
+# Ou em JSON, com a duração medida pela própria tarefa
+curl -fsS -H "Content-Type: application/json"   -d '{"status":"degraded","msg":"fila com 5 mil itens","latency_ms":1840}'   https://upwatch.exemplo.com/api/v1/push/SEU_TOKEN
+```
+
+`status` aceita `up`, `down` e `degraded`. Um `down` não abre incidente na
+hora: cada sinal conta uma vez na confirmação de N falhas. As verificações
+seguintes, até o próximo sinal, repetem o estado informado sem contar de
+novo — com N=2 são precisos dois `down`, e um `down` seguido de silêncio
+cai pela regra do silêncio. A latência também entra uma vez por sinal.
+`msg` é cortada em 200 caracteres, perde caracteres de controle e de
+formatação invisível, vai para o incidente e para o aviso, e nunca aparece
+na página pública. `latency_ms` vai até um dia, e o corpo JSON até 16 KiB.
+
+Por padrão o sinal é esperado a cada intervalo, mais a folga. Para rotinas
+de horário fixo, informe uma agenda cron de 5 campos e o fuso:
+
+```json
+{ "token": "...", "schedule": "2 9,18 * * *", "timezone": "America/Sao_Paulo", "grace_period_seconds": 600 }
+```
+
+Com agenda, o monitor só cai quando falta o sinal de uma execução prevista
+até o fim da folga — o intervalo de 15h entre 18:02 e 09:02 não vira
+alarme. O fuso é obrigatório porque rotinas são agendadas no horário local
+e o horário de verão desloca a execução. Sem `grace_period_seconds`, a
+folga com agenda é de pelo menos 5 minutos. No horário de verão, a
+execução que cai na hora que some não é cobrada naquele dia, e a que cai
+na hora que se repete é esperada uma vez só, na primeira passagem — como
+no cron clássico. O detalhe do monitor mostra a
+próxima execução esperada.
+
+Um monitor que nunca recebeu sinal fica "aguardando" só durante a primeira
+janela depois de criado (com agenda, até a primeira execução prevista mais
+a folga). Depois disso cai: uma sonda que nunca subiu é justamente a falha
+que ninguém perceberia sozinho.
+
+Mudar a configuração ou o intervalo, ou religar o monitor, recomeça a
+espera: a janela conta do último sinal ou da mudança, o que vier depois.
+Sem isso, trocar a agenda de semanal para diária derrubaria o monitor na
+hora, cobrando execuções que ninguém estava vigiando.
+
 ## Desenvolvimento
 
 ```bash

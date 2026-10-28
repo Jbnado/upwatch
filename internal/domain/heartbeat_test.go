@@ -71,3 +71,24 @@ func TestHeartbeatNormalizeKeepsLatencyWhenResponsive(t *testing.T) {
 		})
 	}
 }
+
+// A batida que repete uma observação já contada — o mesmo sinal de push
+// relido na verificação seguinte — não mediu nada de novo. Gravar a
+// latência dela copiaria a amostra do sinal em cada batida até o próximo,
+// e os percentis passariam a refletir quantas vezes o sinal foi relido, e
+// não quanto a tarefa demorou.
+func TestHeartbeatNormalizeDropsLatencyOfRepeatedObservation(t *testing.T) {
+	hb := domain.Heartbeat{
+		MonitorID: 1, Timestamp: time.Now(), Status: domain.StatusUp,
+		LatencyMS: 842, Repeated: true,
+	}
+
+	if got := hb.Normalize(); got.LatencyMS != 0 {
+		t.Errorf("LatencyMS = %d, want 0 for a repeated observation", got.LatencyMS)
+	}
+
+	hb.Repeated = false
+	if got := hb.Normalize(); got.LatencyMS != 842 {
+		t.Errorf("LatencyMS = %d, want the fresh measurement kept", got.LatencyMS)
+	}
+}

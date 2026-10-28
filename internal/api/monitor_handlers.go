@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -88,6 +89,12 @@ type monitorResponse struct {
 	Tags                  []string        `json:"tags"`
 	CreatedAt             time.Time       `json:"created_at"`
 	UpdatedAt             time.Time       `json:"updated_at"`
+
+	// NextExpectedPush é a próxima execução prevista de um push com
+	// agenda. Só aparece no detalhe, na criação e na edição: é ali que um
+	// fuso ou uma expressão errados precisam ficar visíveis, e não na
+	// primeira madrugada em que o aviso deveria ter chegado.
+	NextExpectedPush *time.Time `json:"next_expected_push,omitempty"`
 }
 
 // toMonitorResponse monta a representação pública do monitor.
@@ -95,7 +102,16 @@ type monitorResponse struct {
 // A configuração sai sem credencial: é por aqui que passam o GET, a
 // listagem, a resposta da escrita e o fluxo de eventos, e omitir num lugar
 // só garante que nenhum deles a esqueça.
-func toMonitorResponse(m domain.Monitor) monitorResponse {
+//
+// reveal diz se a configuração sai com os segredos que o administrador
+// precisa ler — hoje, o token do push, porque é ele quem cadastra a rotina
+// e copia o endereço; o padrão, e o que vai no fluxo de eventos para todo
+// mundo conectado, é mascarado.
+func toMonitorResponse(m domain.Monitor, reveal bool) monitorResponse {
+	config := checker.RedactConfig(m.Type, m.Config)
+	if !reveal {
+		config = checker.RedactPushToken(m.Type, config)
+	}
 	tags := m.Tags
 	if tags == nil {
 		// Lista vazia em vez de null: o cliente pode iterar sem checar.
@@ -107,11 +123,26 @@ func toMonitorResponse(m domain.Monitor) monitorResponse {
 		TimeoutSeconds:        int(m.Timeout.Seconds()),
 		ConfirmationThreshold: m.ConfirmationThreshold,
 		DegradedLatencyMillis: int(m.DegradedLatency.Milliseconds()),
-		Config:                checker.RedactConfig(m.Type, m.Config),
+		Config:                config,
 		ParentID:              m.ParentID,
 		Enabled:               m.Enabled, Tags: tags,
 		CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt,
 	}
+}
+
+// detailResponse é a resposta de um monitor isolado, com o que só faz
+// sentido calcular para um de cada vez.
+func (a *API) detailResponse(m domain.Monitor, reveal bool) monitorResponse {
+	resp := toMonitorResponse(m, reveal)
+	if m.Type != domain.MonitorPush {
+		return resp
+	}
+	// Configuração que não interpreta aqui já foi recusada no cadastro;
+	// se aparecer, a falta do campo é a resposta menos enganosa.
+	if next, ok, err := checker.NextPushRun(m.Config, a.clock.Now()); err == nil && ok {
+		resp.NextExpectedPush = &next
+	}
+	return resp
 }
 
 // handleListMonitors devolve uma página de monitores.
@@ -134,9 +165,10 @@ func (a *API) handleListMonitors(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	reveal := canSeeSecrets(r)
 	items := make([]monitorResponse, 0, len(page.Items))
 	for _, m := range page.Items {
-		items = append(items, toMonitorResponse(m))
+		items = append(items, toMonitorResponse(m, reveal))
 	}
 
 	body := map[string]any{"items": items, "has_more": page.HasMore}
@@ -168,7 +200,7 @@ func (a *API) handleCreateMonitor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m.Config = cfg
-	if !a.validateMonitor(w, &m) {
+	if !a.validateMonitor(w, &m) || !a.pushTokenFree(w, r, m) {
 		return
 	}
 
@@ -178,8 +210,8 @@ func (a *API) handleCreateMonitor(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.notifyScheduler(m)
-	a.events.publish(event{Type: "monitor.created", Data: toMonitorResponse(m)})
-	writeJSON(w, http.StatusCreated, toMonitorResponse(m))
+	a.events.publish(event{Type: "monitor.created", Data: toMonitorResponse(m, false)})
+	writeJSON(w, http.StatusCreated, a.detailResponse(m, true))
 }
 
 // handleGetMonitor devolve um monitor.
@@ -194,7 +226,7 @@ func (a *API) handleGetMonitor(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toMonitorResponse(m))
+	writeJSON(w, http.StatusOK, a.detailResponse(m, canSeeSecrets(r)))
 }
 
 // handleUpdateMonitor sobrescreve um monitor.
@@ -218,7 +250,7 @@ func (a *API) handleUpdateMonitor(w http.ResponseWriter, r *http.Request) {
 	if !a.carrySecrets(w, r, &m) {
 		return
 	}
-	if !a.validateMonitor(w, &m) {
+	if !a.validateMonitor(w, &m) || !a.pushTokenFree(w, r, m) {
 		return
 	}
 
@@ -227,9 +259,19 @@ func (a *API) handleUpdateMonitor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Relido do banco: o corpo da edição não traz a data de criação, e o
+	// push conta dela a primeira janela. Entregar ao agendador o monitor
+	// montado do pedido deixaria um push sem sinal "aguardando" para
+	// sempre só porque alguém mudou o nome.
+	m, err = a.store.Monitors().Get(r.Context(), id)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+
 	a.notifyScheduler(m)
-	a.events.publish(event{Type: "monitor.updated", Data: toMonitorResponse(m)})
-	writeJSON(w, http.StatusOK, toMonitorResponse(m))
+	a.events.publish(event{Type: "monitor.updated", Data: toMonitorResponse(m, false)})
+	writeJSON(w, http.StatusOK, a.detailResponse(m, true))
 }
 
 // handleDeleteMonitor remove um monitor e seu histórico.
@@ -257,6 +299,10 @@ func (a *API) handleDeleteMonitor(w http.ResponseWriter, r *http.Request) {
 // execução: descobrir uma regex inválida só quando o monitor rodar
 // deixaria um alvo sem vigilância sem que nada avisasse.
 func (a *API) validateMonitor(w http.ResponseWriter, m *domain.Monitor) bool {
+	// O token vai para a coluna que o /push consulta. Quem o lê da
+	// configuração é o checker, o único que a interpreta.
+	m.PushToken = checker.PushTokenOf(*m)
+
 	if err := m.Validate(); err != nil {
 		writeStoreError(w, err)
 		return false
@@ -287,6 +333,37 @@ func (a *API) carrySecrets(w http.ResponseWriter, r *http.Request, m *domain.Mon
 		return false
 	}
 	m.Config = cfg
+	return true
+}
+
+// canSeeSecrets diz se quem pede pode receber os segredos da
+// configuração. Criação e edição nem perguntam: as rotas já são só de
+// administrador.
+func canSeeSecrets(r *http.Request) bool {
+	u, ok := userFrom(r.Context())
+	return ok && u.Role.CanWrite()
+}
+
+// pushTokenFree recusa o token de push que já pertence a outro monitor.
+//
+// O índice único do banco é a garantia; esta consulta existe para o erro
+// apontar o campo da configuração, onde o administrador sabe o que
+// corrigir, em vez de um conflito genérico.
+func (a *API) pushTokenFree(w http.ResponseWriter, r *http.Request, m domain.Monitor) bool {
+	if m.PushToken == "" {
+		return true
+	}
+	owner, err := a.store.Monitors().FindByPushToken(r.Context(), m.PushToken)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return true
+	case err != nil:
+		writeStoreError(w, err)
+		return false
+	case owner.ID != m.ID:
+		writeFieldError(w, "config", "este token já pertence a outro monitor; gere um novo")
+		return false
+	}
 	return true
 }
 

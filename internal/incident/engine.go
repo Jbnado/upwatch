@@ -122,6 +122,15 @@ func (e *Engine) evaluate(ctx context.Context, hb domain.Heartbeat) {
 		return
 	}
 
+	// A confirmação conta observações, não leituras. A batida que repete
+	// uma observação já contada — o mesmo sinal de push relido até chegar
+	// o próximo — não move a máquina nem zera a contagem, como a amostra
+	// sem medição: contá-la faria um único "down" abrir incidente sozinho
+	// depois de N verificações.
+	if hb.Repeated {
+		return
+	}
+
 	proximo, eventos := Next(anterior, hb.Status, hb.Timestamp,
 		Config{Threshold: monitor.ConfirmationThreshold})
 

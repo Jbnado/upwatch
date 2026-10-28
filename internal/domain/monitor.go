@@ -145,8 +145,28 @@ type Monitor struct {
 	Enabled bool     `json:"enabled"`
 	Tags    []string `json:"tags,omitempty"`
 
+	// PushToken é o segredo do monitor push, copiado da configuração para
+	// uma coluna própria, indexada e única.
+	//
+	// Existe para o /push achar o dono do token sem percorrer todos os
+	// monitores — o endpoint não tem login, e cada requisição custaria uma
+	// varredura — e para o banco impedir dois monitores com o mesmo token.
+	// Quem o preenche é a API, a partir do checker, que é quem interpreta a
+	// configuração; vazio fora do push.
+	PushToken string `json:"-"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+
+	// RearmedAt é o instante da última mudança que recomeça a espera de
+	// um monitor push: configuração, intervalo ou reativação. Começa na
+	// criação.
+	//
+	// Separado de UpdatedAt porque aquele muda em qualquer edição, e
+	// renomear não pode adiar um alarme legítimo. Sem ele, trocar a
+	// agenda ou religar um monitor parado o derrubaria na hora, cobrando
+	// uma janela que ninguém estava vigiando.
+	RearmedAt time.Time `json:"rearmed_at"`
 }
 
 // Validate confere as invariantes do monitor e devolve *ValidationError

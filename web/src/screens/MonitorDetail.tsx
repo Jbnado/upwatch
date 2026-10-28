@@ -7,6 +7,7 @@ import type { PulseSample } from "../components/pulse-bars";
 import { RangePicker } from "../components/RangePicker";
 import { Alert, Button, LinkButton, Loading, Nothing, StatusDot, TextLink } from "../components/ui";
 import { ago, duration, latency, stamp, uptime } from "../lib/format";
+import { proximaExecucao } from "../lib/push-config";
 import { DEFAULT_RANGE, windowFor, type Range } from "../lib/ranges";
 import { navigate } from "../lib/router";
 
@@ -122,6 +123,18 @@ export function MonitorDetail({ id }: { id: number }) {
             {monitor.type} · {monitor.target || "recebe sinal do próprio serviço"} · a cada{" "}
             {duration(monitor.interval_seconds)}
           </p>
+          {/* Mostrar a próxima execução no fuso do monitor é o que faz um
+              fuso ou uma expressão errados aparecerem agora, e não na
+              primeira madrugada em que o aviso deveria ter chegado. */}
+          {monitor.next_expected_push && (
+            <p className="tabular text-body text-ink-3">
+              próxima execução esperada:{" "}
+              {proximaExecucao(
+                monitor.next_expected_push,
+                String(monitor.config?.["timezone"] ?? "UTC"),
+              )}
+            </p>
+          )}
         </div>
 
         <div className="flex items-center gap-2">

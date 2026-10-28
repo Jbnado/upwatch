@@ -236,6 +236,36 @@ func TestHeartbeatRangeQueryUsesIndex(t *testing.T) {
 	}
 }
 
+// O /push não tem login: quem quiser pode mandar requisições sem parar.
+// Se achar o dono do token varresse a tabela de monitores, cada uma delas
+// custaria uma leitura completa, e o endpoint viraria alavanca para
+// derrubar o banco. O plano é verificado, não presumido.
+func TestPushTokenLookupUsesIndex(t *testing.T) {
+	s := newStore(t).(*sqlstore.Store)
+
+	rows, err := s.DB().QueryContext(context.Background(),
+		`EXPLAIN QUERY PLAN SELECT id FROM monitor WHERE push_token = ?`, "x")
+	if err != nil {
+		t.Fatalf("EXPLAIN QUERY PLAN returned unexpected error: %v", err)
+	}
+	defer rows.Close()
+
+	var plan strings.Builder
+	for rows.Next() {
+		var id, parent, notUsed int
+		var detail string
+		if err := rows.Scan(&id, &parent, &notUsed, &detail); err != nil {
+			t.Fatalf("scanning query plan returned unexpected error: %v", err)
+		}
+		plan.WriteString(detail)
+		plan.WriteString("\n")
+	}
+
+	if got := plan.String(); !strings.Contains(got, "idx_monitor_push_token") {
+		t.Errorf("plano de execução não usa idx_monitor_push_token:\n%s", got)
+	}
+}
+
 // Open precisa aceitar todo driver que o pacote implementa.
 //
 // Este teste existe por causa de um defeito real: o binário tinha um

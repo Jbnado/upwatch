@@ -132,6 +132,14 @@ type MonitorRepo interface {
 	// Delete remove o monitor e, em cascata, seu histórico.
 	Delete(ctx context.Context, id int64) error
 	List(ctx context.Context, f MonitorFilter) (Page[domain.Monitor], error)
+
+	// FindByPushToken devolve o monitor dono do token de push, ou
+	// ErrNotFound. Token vazio não acha ninguém.
+	//
+	// É o caminho do /push, que não tem login: a busca é indexada para
+	// uma requisição qualquer não custar uma varredura da tabela. O token
+	// é único entre os monitores — gravar um repetido devolve ErrConflict.
+	FindByPushToken(ctx context.Context, token string) (domain.Monitor, error)
 }
 
 // UserRepo é o CRUD de contas de acesso.
@@ -352,10 +360,24 @@ type TimeseriesStore interface {
 	// batida a cada verificação, então ler a última batida seria ler a
 	// que ele próprio acabou de escrever, e o monitor pareceria
 	// eternamente saudável.
-	RecordPush(ctx context.Context, monitorID int64, at time.Time) error
+	//
+	// Guarda só o último sinal, inteiro: status, causa e latência
+	// substituem os do anterior, para uma causa velha não grudar num sinal
+	// saudável.
+	RecordPush(ctx context.Context, monitorID int64, sig domain.PushSignal) error
 
-	// LastPush devolve o instante do último sinal, e se houve algum.
-	LastPush(ctx context.Context, monitorID int64) (time.Time, bool, error)
+	// LastPush devolve o último sinal, e se houve algum.
+	LastPush(ctx context.Context, monitorID int64) (domain.PushSignal, bool, error)
+
+	// MarkPushEvaluated registra que o sinal signalID já foi contado por
+	// uma verificação.
+	//
+	// O sinal fica guardado até chegar o seguinte, e cada verificação o
+	// relê. Sem a marca, o mesmo "down" contaria como falha nova a cada
+	// releitura, e um sinal só abriria incidente sozinho. Marcar um sinal
+	// que já foi substituído não tem efeito: a marca é do sinal, e o novo
+	// continua inédito.
+	MarkPushEvaluated(ctx context.Context, monitorID, signalID int64) error
 
 	// LatestHeartbeats devolve a batida mais recente de cada monitor.
 	//

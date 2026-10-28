@@ -291,6 +291,7 @@ func (s *Scheduler) runCheck(ctx context.Context, m domain.Monitor) {
 		Status:    res.Status,
 		LatencyMS: res.LatencyMS,
 		Message:   res.Message,
+		Repeated:  res.Repeated,
 	}
 
 	// O contexto do check pode já ter estourado; entregar a batida usando

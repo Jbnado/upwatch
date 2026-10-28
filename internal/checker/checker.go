@@ -24,6 +24,12 @@ type Result struct {
 	// Meta traz dados auxiliares do tipo de check — código de status HTTP,
 	// dias até o certificado expirar, IP resolvido.
 	Meta map[string]string
+
+	// Repeated diz que o resultado repete uma observação já contada, sem
+	// medição nova. É o push relendo o mesmo sinal: o status continua o
+	// que o serviço disse, mas o motor não o conta de novo para a
+	// confirmação.
+	Repeated bool
 }
 
 // Checker verifica um tipo de alvo.
