@@ -25,19 +25,27 @@ const maxBuckets = 500
 // instantaneamente", e afirmar isso sobre o que não se mediu é a forma
 // mais silenciosa de uma ferramenta de vigilância mentir.
 type summaryResponse struct {
-	MonitorID     int64      `json:"monitor_id"`
-	Status        string     `json:"status"`
-	Source        string     `json:"source"`
-	UptimePercent *float64   `json:"uptime_percent"`
-	LatencyP50MS  *float64   `json:"latency_p50_ms"`
-	LatencyP95MS  *float64   `json:"latency_p95_ms"`
-	LatencyP99MS  *float64   `json:"latency_p99_ms"`
-	LastCheckAt   *time.Time `json:"last_check_at"`
-	Up            int        `json:"up"`
-	Degraded      int        `json:"degraded"`
-	Down          int        `json:"down"`
-	Unknown       int        `json:"unknown"`
-	Series        []point    `json:"series"`
+	MonitorID int64 `json:"monitor_id"`
+	// Status é o estado confirmado do monitor, o mesmo do cartão de grupo
+	// e de "Problemas agora". Não é o da janela nem o da última batida:
+	// uma falha ainda não confirmada deixava o monitor fora do ar na lista
+	// e no ar no cartão.
+	Status string `json:"status"`
+	// LastCheckStatus é o resultado da última batida, sem confirmação — a
+	// informação de "acabou de falhar", à parte do estado. Nulo quando
+	// nunca houve batida.
+	LastCheckStatus *string    `json:"last_check_status"`
+	Source          string     `json:"source"`
+	UptimePercent   *float64   `json:"uptime_percent"`
+	LatencyP50MS    *float64   `json:"latency_p50_ms"`
+	LatencyP95MS    *float64   `json:"latency_p95_ms"`
+	LatencyP99MS    *float64   `json:"latency_p99_ms"`
+	LastCheckAt     *time.Time `json:"last_check_at"`
+	Up              int        `json:"up"`
+	Degraded        int        `json:"degraded"`
+	Down            int        `json:"down"`
+	Unknown         int        `json:"unknown"`
+	Series          []point    `json:"series"`
 }
 
 type point struct {
@@ -96,6 +104,11 @@ func (a *API) handleSummaries(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	estados, err := a.store.States().All(r.Context())
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
 
 	items := make([]summaryResponse, 0, len(page.Items))
 	for _, m := range page.Items {
@@ -104,11 +117,13 @@ func (a *API) handleSummaries(w http.ResponseWriter, r *http.Request) {
 			writeStoreError(w, err)
 			return
 		}
+		s.Status = estados[m.ID].Status
+		resp := toSummaryResponse(s, serie)
 		if hb, ok := ultimas[m.ID]; ok {
-			quando := hb.Timestamp
-			s.LastCheckAt = &quando
+			quando, ultimo := hb.Timestamp, hb.Status.String()
+			resp.LastCheckAt, resp.LastCheckStatus = &quando, &ultimo
 		}
-		items = append(items, toSummaryResponse(s, serie))
+		items = append(items, resp)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
