@@ -1,0 +1,56 @@
+# Imagem da upwatch-probe, a sonda para redes privadas.
+#
+# Ela roda numa VM de outra pessoa, muitas vezes de produção, então a
+# imagem é o mínimo: um binário estático sobre a distroless static, que
+# não tem shell, gerenciador de pacotes nem libc. Não há o que um invasor
+# use lá dentro, e a lista de CVEs de sistema operacional é praticamente
+# vazia. Os certificados raiz e a base de fusos já vêm na distroless.
+
+# ---------- binário ----------
+# O compilador roda na arquitetura de quem constrói e gera o binário da
+# arquitetura alvo: Go compila cruzado sem CGO, e emular arm64 só para
+# compilar multiplicaria o tempo do release.
+FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine@sha256:a2012b4a1d1f9f7e9f44e0d39b805a901e856b1dd80b4e6ee4338db547050308 AS build
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+ARG VERSION=dev
+ARG TARGETOS
+ARG TARGETARCH
+
+# CGO desligado: binário estático, sem libc na imagem final. trimpath e
+# -s -w pelos mesmos motivos do servidor: menos bytes e nenhum caminho da
+# máquina de build no binário.
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
+      -trimpath \
+      -ldflags="-s -w -X main.version=${VERSION}" \
+      -o /out/upwatch-probe ./cmd/upwatch-probe \
+ && mkdir -p /out/config \
+ && chmod 700 /out/config
+
+
+# ---------- imagem final ----------
+# Fixada pelo digest, não pela tag: a tag "nonroot" anda sozinha, e a
+# imagem que roda dentro da rede alheia não pode mudar sem um commit que
+# diga isso.
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:18f4cc26c9ffa7f20a359298be7deadac5c607c8e03a02b8119f1a5fc2f82c99
+
+COPY --from=build /out/upwatch-probe /usr/local/bin/upwatch-probe
+
+# O volume de configuração pertence ao usuário sem privilégio da
+# distroless (65532). Um volume nomeado novo herda essa posse, e a CLI
+# rodando por docker exec, com o mesmo usuário, grava no mesmo arquivo.
+COPY --from=build --chown=65532:65532 /out/config /config
+
+USER 65532:65532
+VOLUME ["/config"]
+
+# Nenhuma porta exposta: a sonda só abre conexão de saída. A interface
+# web é opcional e, quando ligada, escuta em loopback.
+ENTRYPOINT ["/usr/local/bin/upwatch-probe"]
+CMD ["run"]
