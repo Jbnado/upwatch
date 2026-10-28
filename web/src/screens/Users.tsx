@@ -1,7 +1,17 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client";
 import { ApiError, type Group, type Role, type Scope, type User } from "../api/types";
-import { Alert, Button, Field, Input, Loading, Select } from "../components/ui";
+import { CheckTree, type TreeItem } from "../components/CheckTree";
+import {
+  Alert,
+  Button,
+  Field,
+  FormActions,
+  Input,
+  Loading,
+  NewItem,
+  Select,
+} from "../components/ui";
 import { stamp } from "../lib/format";
 import { crumb } from "../lib/groups";
 import { covers, scopeLabel, toggleScopeGroup } from "../lib/scope";
@@ -86,7 +96,7 @@ export function Users({ eu }: { eu: User }) {
   return (
     <section className="flex flex-col gap-4">
       <div className="flex flex-col gap-1.5">
-        <h2 className="text-lead font-medium">Contas</h2>
+        <h2 className="text-lead font-medium">Contas e acesso</h2>
         <p className="text-body text-ink-2">
           Quem entra na interface e o que enxerga. Observador vê os monitores do acesso dele,
           inclusive endereço de alvo e causa de falha — é uma conta de dentro, não a página
@@ -95,13 +105,6 @@ export function Users({ eu }: { eu: User }) {
       </div>
 
       {erro && <Alert>{erro}</Alert>}
-
-      <NovaConta
-        onCreated={carregar}
-        onError={setErro}
-        grupos={grupos}
-        podeTodos={eu.scope.all_groups}
-      />
 
       {contas === null ? (
         <Loading what="contas" />
@@ -167,6 +170,21 @@ export function Users({ eu }: { eu: User }) {
           ))}
         </ul>
       )}
+
+      <NewItem label="Nova conta">
+        {(fechar) => (
+          <NovaConta
+            onCreated={async () => {
+              fechar();
+              await carregar();
+            }}
+            onError={setErro}
+            onCancel={fechar}
+            grupos={grupos}
+            podeTodos={eu.scope.all_groups}
+          />
+        )}
+      </NewItem>
     </section>
   );
 }
@@ -197,34 +215,30 @@ export function ScopePicker({
     (g) => g.parent_id !== null && !groups.some((s) => s.id === g.parent_id),
   );
 
-  const marcar = (id: number) =>
-    onChange({ all_groups: false, group_ids: toggleScopeGroup(value.group_ids, id, groups) });
+  const marcar = (key: string) =>
+    onChange({
+      all_groups: false,
+      group_ids: toggleScopeGroup(value.group_ids, Number(key), groups),
+    });
 
-  const caixa = (g: Group, recuo: boolean) => {
+  const item = (g: Group, recuo: boolean): TreeItem => {
     const peloSistema = !value.group_ids.includes(g.id) && covers(value.group_ids, g);
-    return (
-      <li key={g.id} className={recuo ? "pl-6" : ""}>
-        <label
-          className={[
-            "pressable flex items-center gap-2 rounded-sm px-1 py-1 text-body",
-            peloSistema
-              ? "cursor-not-allowed text-ink-3"
-              : "cursor-pointer hover:bg-sunken active:bg-pressed",
-          ].join(" ")}
-        >
-          <input
-            type="checkbox"
-            className="accent-ink"
-            checked={covers(value.group_ids, g)}
-            disabled={peloSistema}
-            onChange={() => marcar(g.id)}
-          />
-          <span>{recuo ? g.name : crumb(g.path)}</span>
-          {peloSistema && <span className="text-small">pelo sistema</span>}
-        </label>
-      </li>
-    );
+    return {
+      key: String(g.id),
+      label: recuo ? g.name : crumb(g.path),
+      state: covers(value.group_ids, g) ? "checked" : "unchecked",
+      disabled: peloSistema,
+      meta: peloSistema ? "pelo sistema" : undefined,
+    };
   };
+
+  const itens: TreeItem[] = [
+    ...sistemas.map((s) => ({
+      ...item(s, false),
+      children: groups.filter((g) => g.parent_id === s.id).map((g) => item(g, true)),
+    })),
+    ...soltos.map((g) => item(g, false)),
+  ];
 
   return (
     <div className="flex flex-col gap-2">
@@ -257,13 +271,7 @@ export function ScopePicker({
         (groups.length === 0 ? (
           <p className="text-small text-ink-3">Nenhum grupo cadastrado ainda.</p>
         ) : (
-          <ul className="-mx-1 flex flex-col">
-            {sistemas.flatMap((s) => [
-              caixa(s, false),
-              ...groups.filter((g) => g.parent_id === s.id).map((g) => caixa(g, true)),
-            ])}
-            {soltos.map((g) => caixa(g, false))}
-          </ul>
+          <CheckTree items={itens} onToggle={marcar} />
         ))}
 
       {!scopeOK(value) && groups.length > 0 && (
@@ -311,11 +319,13 @@ function EditarEscopo({
 function NovaConta({
   onCreated,
   onError,
+  onCancel,
   grupos,
   podeTodos,
 }: {
   onCreated: () => Promise<void>;
   onError: (msg: string) => void;
+  onCancel: () => void;
   grupos: Group[];
   podeTodos: boolean;
 }) {
@@ -361,6 +371,7 @@ function NovaConta({
             onChange={(e) => setUsername(e.target.value)}
             placeholder="ana"
             autoComplete="off"
+            autoFocus
             required
           />
         </Field>
@@ -409,14 +420,12 @@ function NovaConta({
         )}
       </fieldset>
 
-      <Button
-        type="submit"
-        variant="primary"
-        disabled={enviando || !scopeOK(escopo)}
-        className="self-start"
-      >
-        {enviando ? "Criando" : "Criar conta"}
-      </Button>
+      <FormActions
+        submit={enviando ? "Criando" : "Criar conta"}
+        busy={enviando}
+        disabled={!scopeOK(escopo)}
+        onCancel={onCancel}
+      />
     </form>
   );
 }

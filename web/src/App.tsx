@@ -8,7 +8,6 @@ import { MonitorDetail } from "./screens/MonitorDetail";
 import { MonitorForm } from "./screens/MonitorForm";
 import { Settings } from "./screens/Settings";
 import { Status } from "./screens/Status";
-import { StatusPageAdmin, StatusPages } from "./screens/StatusPages";
 import { TextLink } from "./components/ui";
 import { navigate, useRoute } from "./lib/router";
 
@@ -94,11 +93,14 @@ export function App() {
         )}
         {route.name === "monitor-new" && <MonitorForm />}
         {route.name === "monitor-edit" && <MonitorForm id={route.id} />}
-        {route.name === "settings" && (
-          <Settings onSignedOut={() => setSession({ kind: "anonymous" })} eu={session.user} />
+        {(route.name === "ajustes" || route.name === "ajustes-pagina") && (
+          <Settings
+            eu={session.user}
+            section={route.name === "ajustes" ? route.section : "paginas"}
+            pageId={route.name === "ajustes-pagina" ? route.id : undefined}
+            onSignedOut={() => setSession({ kind: "anonymous" })}
+          />
         )}
-        {route.name === "status-pages" && <StatusPages />}
-        {route.name === "status-page" && <StatusPageAdmin id={route.id} />}
       </main>
     </div>
   );
@@ -127,7 +129,7 @@ function TopBar({ user, onSignOut }: { user: User; onSignOut: () => void }) {
                 que não pode mexer ao tentar e receber uma recusa. */}
             {user.role === "viewer" && <span className="eyebrow">só leitura</span>}
           </span>
-          <TextLink onClick={() => navigate({ name: "settings" })}>ajustes</TextLink>
+          <TextLink onClick={() => navigate({ name: "ajustes" })}>ajustes</TextLink>
           <TextLink onClick={onSignOut}>sair</TextLink>
         </div>
       </div>

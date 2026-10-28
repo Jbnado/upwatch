@@ -7,6 +7,7 @@ import type {
   SelectHTMLAttributes,
   TextareaHTMLAttributes,
 } from "react";
+import { useState } from "react";
 import type { GroupStatus } from "../api/types";
 import { href, navigate, type Route } from "../lib/router";
 
@@ -93,16 +94,20 @@ export function LinkButton({
 export function RowLink({
   to,
   className = "",
+  current = false,
   children,
 }: {
   to: Route;
   className?: string;
+  /** Marca o item do menu onde a pessoa está, para o leitor de tela também. */
+  current?: boolean;
   children: ReactNode;
 }) {
   return (
     <a
       href={href(to)}
       onClick={interceptar(to)}
+      aria-current={current ? "page" : undefined}
       className={`pressable block hover:bg-sunken active:bg-pressed ${className}`}
     >
       {children}
@@ -159,6 +164,59 @@ export function TextLink({
       className={`pressable text-action eyebrow hover:text-ink hover:underline active:text-ink-2 ${className}`}
       {...props}
     />
+  );
+}
+
+/**
+ * NewItem guarda o formulário de criar atrás de "+ Novo …".
+ *
+ * Aberto o tempo todo, o formulário vinha antes da lista e empurrava para
+ * baixo justamente o que a pessoa veio conferir — o que já existe. Criar
+ * é a exceção; ver é a regra.
+ */
+export function NewItem({
+  label,
+  children,
+}: {
+  label: string;
+  /** Recebe o fechar, para o formulário se recolher ao criar ou cancelar. */
+  children: (close: () => void) => ReactNode;
+}) {
+  const [aberto, setAberto] = useState(false);
+
+  if (!aberto) {
+    return (
+      <Button onClick={() => setAberto(true)} className="self-start">
+        + {label}
+      </Button>
+    );
+  }
+  return <>{children(() => setAberto(false))}</>;
+}
+
+/**
+ * FormActions é o par enviar e cancelar no pé de um formulário de criar.
+ */
+export function FormActions({
+  submit,
+  busy = false,
+  disabled = false,
+  onCancel,
+}: {
+  submit: string;
+  busy?: boolean;
+  disabled?: boolean;
+  onCancel: () => void;
+}) {
+  return (
+    <span className="flex flex-wrap gap-2">
+      <Button type="submit" variant="primary" disabled={busy || disabled}>
+        {submit}
+      </Button>
+      <Button type="button" onClick={onCancel}>
+        Cancelar
+      </Button>
+    </span>
   );
 }
 

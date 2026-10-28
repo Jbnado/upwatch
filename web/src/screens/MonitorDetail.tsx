@@ -1017,7 +1017,7 @@ function Recipients({
           {grupo && (
             <p className="text-small text-ink-3">
               Os canais do grupo valem para todos os monitores dele e se mudam em{" "}
-              <InlineLink to={{ name: "settings" }}>ajustes</InlineLink>.
+              <InlineLink to={{ name: "ajustes", section: "grupos" }}>ajustes</InlineLink>.
             </p>
           )}
         </div>
