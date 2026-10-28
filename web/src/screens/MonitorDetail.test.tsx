@@ -243,6 +243,42 @@ describe("MonitorDetail: falhas repetidas", () => {
     expect(marcada).toHaveTextContent("do link");
   });
 
+  it("aberto pelo link, mostra só a vizinhança da falha, com o resto a um clique", async () => {
+    // Um grupo de trinta falhas iguais aberto inteiro devolvia a tela
+    // comprida que o agrupamento veio encurtar. Quem chega pelo link quer
+    // a falha e o entorno; o resto continua ali, a um clique.
+    const ancora = `falha-${Date.parse(nove[4]!.at)}`;
+    cenario({ status: "down", problema: QUEDA, eventos: nove });
+
+    render(<MonitorDetail id={12} tab="eventos" anchor={ancora} eu={EU} />);
+
+    await screen.findByRole("button", { name: /9 vezes/ });
+    const visiveis = () => screen.getAllByText(/connectex/).map((e) => e.textContent);
+    expect(visiveis()).toEqual([2, 3, 4, 5, 6].map((i) => nove[i]!.message));
+
+    const antes = screen.getByRole("button", { name: "mostrar as outras 2 mais recentes" });
+    const depois = screen.getByRole("button", { name: "mostrar as outras 2 mais antigas" });
+
+    fireEvent.click(antes);
+    expect(visiveis()).toHaveLength(7);
+    fireEvent.click(depois);
+    expect(visiveis()).toHaveLength(9);
+    expect(screen.queryByRole("button", { name: /mostrar as outras/ })).not.toBeInTheDocument();
+  });
+
+  it("aberto por clique, mostra o grupo inteiro mesmo com a falha do link dentro", async () => {
+    const ancora = `falha-${Date.parse(nove[4]!.at)}`;
+    cenario({ status: "down", problema: QUEDA, eventos: nove });
+
+    render(<MonitorDetail id={12} tab="eventos" anchor={ancora} eu={EU} />);
+
+    const linha = await screen.findByRole("button", { name: /9 vezes/ });
+    fireEvent.click(linha);
+    fireEvent.click(linha);
+
+    expect(screen.getAllByText(/connectex/)).toHaveLength(9);
+  });
+
   it("mostra o texto técnico de uma falha solta ao abrir a linha", async () => {
     cenario({ status: "down", problema: QUEDA, eventos: [FALHA] });
 

@@ -52,6 +52,9 @@ const PONTOS_DA_FAIXA = 60;
  */
 const SEQUENCIA = 1000;
 
+/** Falhas vizinhas mostradas de cada lado da falha do link num grupo. */
+const VIZINHAS = 2;
+
 /** Eventos por página da linha do tempo. */
 const POR_PAGINA = 50;
 
@@ -761,8 +764,36 @@ function EventGroup({
 }) {
   const id = `grupo-${group.lines[group.lines.length - 1]!.anchor}`;
   const primeiro = group.lines[0]!;
-  const temLink = group.lines.some((l) => l.anchor === anchor);
+  const posLink = group.lines.findIndex((l) => l.anchor === anchor);
+  const temLink = posLink >= 0;
   const quando = (iso: string) => (ehHoje(iso) ? HORA_SEG.format(new Date(iso)) : stamp(iso));
+
+  // Aberto pelo link, o grupo mostra só a falha e duas vizinhas de cada
+  // lado: trinta linhas iguais devolveriam a tela comprida que o
+  // agrupamento veio encurtar. Aberto por clique, mostra tudo — aí a
+  // pessoa pediu para ver.
+  const [inteiro, setInteiro] = useState({ recentes: !temLink, antigas: !temLink });
+  const inicio = inteiro.recentes ? 0 : Math.max(0, posLink - VIZINHAS);
+  const fim = inteiro.antigas ? group.lines.length : Math.min(group.lines.length, posLink + VIZINHAS + 1);
+  const visiveis = group.lines.slice(inicio, fim);
+  const restantesAntigas = group.lines.length - fim;
+
+  function clicar() {
+    if (!aberto) setInteiro({ recentes: true, antigas: true });
+    onToggle(!aberto);
+  }
+
+  const mais = (n: number, lado: "recentes" | "antigas") => (
+    <li className="border-b border-line py-1.5 pl-[110px] sm:pl-[158px]">
+      <button
+        type="button"
+        onClick={() => setInteiro((v) => ({ ...v, [lado]: true }))}
+        className="pressable rounded-sm text-small text-ink-2 underline decoration-line-strong hover:decoration-ink"
+      >
+        mostrar as outras {n} mais {lado}
+      </button>
+    </li>
+  );
 
   return (
     <li>
@@ -773,7 +804,7 @@ function EventGroup({
           type="button"
           aria-expanded={aberto}
           aria-controls={id}
-          onClick={() => onToggle(!aberto)}
+          onClick={clicar}
           className="pressable flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 rounded-sm text-left hover:underline"
         >
           <span className="sr-only">falhas seguidas: </span>
@@ -789,7 +820,8 @@ function EventGroup({
       </div>
       {aberto && (
         <ol id={id} className="bg-sunken">
-          {group.lines.map((l) => (
+          {inicio > 0 && mais(inicio, "recentes")}
+          {visiveis.map((l) => (
             <li
               key={l.anchor + l.event.probe_id}
               id={l.anchor}
@@ -804,6 +836,7 @@ function EventGroup({
               {l.anchor === anchor && <span className="eyebrow shrink-0 text-down">do link</span>}
             </li>
           ))}
+          {restantesAntigas > 0 && mais(restantesAntigas, "antigas")}
         </ol>
       )}
     </li>
