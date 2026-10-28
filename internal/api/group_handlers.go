@@ -249,7 +249,8 @@ type groupSummary struct {
 	Name     string `json:"name"`
 	Path     string `json:"path"`
 	// Status é o pior estado entre os monitores ativos, na ordem fora do
-	// ar, degradado, sem medição, no ar.
+	// ar, degradado, sem medição, no ar. "empty" é o grupo sem monitor
+	// nenhum (groupEmpty).
 	Status   string `json:"status"`
 	Total    int    `json:"total"`
 	Up       int    `json:"up"`
@@ -284,9 +285,20 @@ func (g *groupSummary) add(m domain.Monitor, s domain.Status) {
 	}
 }
 
+// groupEmpty é o estado do grupo sem monitor nenhum.
+//
+// Não é "unknown": "sem medição" é o monitor que deveria responder e não
+// está sendo medido, um problema a olhar. O grupo recém-criado não tem o
+// que medir, e confundir os dois punha um ao lado do outro na tela.
+const groupEmpty = "empty"
+
 func (g *groupSummary) close() {
 	g.Problems = g.Down + g.Degraded + g.Unknown
-	if len(g.statuses) == 0 && g.Total > 0 {
+	if g.Total == 0 {
+		g.Status = groupEmpty
+		return
+	}
+	if len(g.statuses) == 0 {
 		// Só pausados: nada está sendo medido, e dizer "no ar" seria
 		// afirmar o que ninguém conferiu.
 		g.Status = domain.StatusUnknown.String()

@@ -485,3 +485,37 @@ func TestLinkingUnknownChannelIsNotFound(t *testing.T) {
 		}
 	}
 }
+
+// Grupo sem monitor nenhum não é "sem medição": não há o que medir. Dizer
+// "unknown" punha o grupo recém-criado ao lado do monitor que parou de
+// responder, e a tela não tinha como distinguir um do outro.
+func TestEmptyGroupSummaryIsEmpty(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+
+	rpa := s.criarGrupo(t, "RPA", nil)
+	s.criarGrupo(t, "prod", &rpa)
+	novo := s.criarGrupo(t, "Novo", nil)
+	semMedicao := s.criarGrupo(t, "Sem medição", nil)
+	s.createMonitor(t, monitorNoGrupo("worker", &semMedicao))
+
+	resp := s.do(t, http.MethodGet, "/api/v1/groups/summary", nil)
+	assertStatus(t, resp, http.StatusOK)
+	porID := map[int64]resumoGrupo{}
+	for _, c := range decode[struct {
+		Items []resumoGrupo `json:"items"`
+	}](t, resp).Items {
+		if c.GroupID != nil {
+			porID[*c.GroupID] = c
+		}
+	}
+
+	for _, id := range []int64{rpa, novo} {
+		if c := porID[id]; c.Status != "empty" || c.Total != 0 || c.Problems != 0 {
+			t.Errorf("%s = %+v, want status empty", c.Path, c)
+		}
+	}
+	if c := porID[semMedicao]; c.Status != "unknown" {
+		t.Errorf("grupo com monitor nunca medido = %q, want unknown", c.Status)
+	}
+}
