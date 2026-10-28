@@ -66,7 +66,16 @@ func parsePostgresConfig(raw json.RawMessage) (PostgresConfig, error) {
 	return cfg, nil
 }
 
-// connConfig monta a configuração do pgx.
+// connConfig monta a configuração do pgx só com o que está no cadastro.
+//
+// O pgx lê as variáveis PG* e os arquivos em ~/.postgresql do host, como
+// o libpq, e não há como desligar essa leitura; o pgx também exige que a
+// configuração saia do ParseConfig. Por isso cada parâmetro que o
+// ambiente poderia preencher vai explícito na URL, e o que não tem como
+// ir (a senha, o banco vazio, os parâmetros de sessão) é sobrescrito
+// depois. Sem isso, um PGSSLCERT que não existe derrubaria todos os
+// monitores, um PGOPTIONS mudaria a sessão no banco monitorado e um
+// PGDATABASE trocaria o banco de quem deixou o campo vazio.
 func (cfg PostgresConfig) connConfig(target string, timeout time.Duration) (*pgx.ConnConfig, error) {
 	sslmode := cfg.SSLMode
 	if sslmode == "" {
@@ -78,14 +87,30 @@ func (cfg PostgresConfig) connConfig(target string, timeout time.Duration) (*pgx
 		Host:   target,
 		Path:   "/" + cfg.Database,
 		RawQuery: url.Values{
-			"sslmode":         {sslmode},
-			"connect_timeout": {strconv.Itoa(max(1, int(timeout.Seconds())))},
+			"sslmode":              {sslmode},
+			"connect_timeout":      {strconv.Itoa(max(1, int(timeout.Seconds())))},
+			"sslcert":              {""},
+			"sslkey":               {""},
+			"sslrootcert":          {""},
+			"sslpassword":          {""},
+			"sslsni":               {"1"},
+			"sslnegotiation":       {"postgres"},
+			"target_session_attrs": {"any"},
+			"channel_binding":      {"prefer"},
+			"require_auth":         {""},
+			"min_protocol_version": {"3.0"},
+			"max_protocol_version": {"3.0"},
 		}.Encode(),
 	}
 	cc, err := pgx.ParseConfig(u.String())
 	if err != nil {
 		return nil, err
 	}
+	cc.User = cfg.Username
+	cc.Database = cfg.Database
+	// Parâmetros de sessão (options, application_name, TimeZone) só viriam
+	// do ambiente: o cadastro não tem nenhum.
+	cc.RuntimeParams = map[string]string{}
 	// A senha entra depois do parse, e sempre: senão uma senha vazia
 	// cairia no PGPASSWORD ou no .pgpass do host do monitor, e a
 	// verificação passaria com uma credencial que ninguém configurou.
