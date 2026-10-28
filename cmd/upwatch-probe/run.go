@@ -70,8 +70,8 @@ func (a *app) dryRunSend() probe.SendFunc {
 	return func(_ context.Context, pushURL string, sig probe.Signal) error {
 		mu.Lock()
 		defer mu.Unlock()
-		fmt.Fprintf(a.stdout, "dry-run POST %s %s\n", probe.MaskURL(pushURL), sig.Body())
-		return nil
+		_, err := fmt.Fprintf(a.stdout, "dry-run POST %s %s\n", probe.MaskURL(pushURL), sig.Body())
+		return err
 	}
 }
 

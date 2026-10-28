@@ -488,18 +488,22 @@ func writeAtomic(path string, data []byte) error {
 		return err
 	}
 	name := tmp.Name()
-	defer os.Remove(name)
+	// Depois do Rename o temporário não existe mais e a remoção falha;
+	// ela só importa quando algo deu errado antes.
+	defer func() { _ = os.Remove(name) }()
 
+	// Nos caminhos de erro, o erro que importa é o da escrita, não o do
+	// Close do arquivo que vai ser descartado.
 	if err := tmp.Chmod(0o600); err != nil && !isWindows() {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {

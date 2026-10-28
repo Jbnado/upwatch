@@ -61,6 +61,30 @@ type app struct {
 
 	// measure roda uma verificação uma vez. Nil usa os checkers reais.
 	measure func(context.Context, probe.Check) probe.Signal
+
+	// outErr é o primeiro erro de escrita na saída padrão.
+	outErr error
+}
+
+// printf escreve na saída padrão e guarda o primeiro erro. Uma saída que
+// falha (pipe fechado, disco cheio no redirecionamento) vira erro do
+// comando uma vez, em vez de cada linha conferir o próprio retorno.
+func (a *app) printf(format string, args ...any) {
+	if a.outErr == nil {
+		_, a.outErr = fmt.Fprintf(a.stdout, format, args...)
+	}
+}
+
+func (a *app) println(args ...any) {
+	if a.outErr == nil {
+		_, a.outErr = fmt.Fprintln(a.stdout, args...)
+	}
+}
+
+// eprintf escreve na saída de erro. A falha dela é ignorada: não sobra
+// lugar onde dizer que não deu para dizer o erro.
+func (a *app) eprintf(format string, args ...any) {
+	_, _ = fmt.Fprintf(a.stderr, format, args...)
 }
 
 type command struct {
@@ -88,7 +112,7 @@ func (a *app) main(ctx context.Context, args []string) int {
 	name, rest := args[0], args[1:]
 	switch name {
 	case "version", "--version", "-version":
-		fmt.Fprintln(a.stdout, "upwatch-probe", a.version)
+		a.println("upwatch-probe", a.version)
 		return 0
 	case "help", "--help", "-h", "-help":
 		a.usage()
@@ -96,17 +120,21 @@ func (a *app) main(ctx context.Context, args []string) int {
 	}
 	cmd, ok := commands[name]
 	if !ok {
-		fmt.Fprintf(a.stderr, "comando desconhecido: %s\n\n", name)
+		a.eprintf("comando desconhecido: %s\n\n", name)
 		a.usage()
 		return 2
 	}
 
 	cfgPath, rest := a.configFlag(rest)
-	if err := cmd.run(a, ctx, cfgPath, rest); err != nil {
+	err := cmd.run(a, ctx, cfgPath, rest)
+	if err == nil {
+		err = a.outErr
+	}
+	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
-		fmt.Fprintln(a.stderr, "erro:", err)
+		a.eprintf("erro: %v\n", err)
 		return 1
 	}
 	return 0
@@ -142,14 +170,11 @@ func (a *app) usage() {
 	}
 	sort.Strings(names)
 
-	w := a.stderr
-	fmt.Fprintln(w, "uso: upwatch-probe <comando> [opções] [--config /config/probe.yaml]")
-	fmt.Fprintln(w)
+	a.eprintf("uso: upwatch-probe <comando> [opções] [--config /config/probe.yaml]\n\n")
 	for _, n := range names {
-		fmt.Fprintf(w, "  %-9s %s\n", n, commands[n].summary)
+		a.eprintf("  %-9s %s\n", n, commands[n].summary)
 	}
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Cada comando aceita --help. O arquivo também vem de UPWATCH_PROBE_CONFIG.")
+	a.eprintf("\nCada comando aceita --help. O arquivo também vem de UPWATCH_PROBE_CONFIG.\n")
 }
 
 // newFlags cria o FlagSet do comando, escrevendo a ajuda na saída de erro.
@@ -157,7 +182,7 @@ func (a *app) newFlags(name, usage string) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(a.stderr)
 	fs.Usage = func() {
-		fmt.Fprintf(a.stderr, "uso: upwatch-probe %s %s\n", name, usage)
+		a.eprintf("uso: upwatch-probe %s %s\n", name, usage)
 		fs.PrintDefaults()
 	}
 	return fs

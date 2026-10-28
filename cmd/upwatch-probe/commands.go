@@ -71,13 +71,13 @@ func (a *app) cmdInit(_ context.Context, cfgPath string, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(a.stdout, "sonda %q gravada em %s", cfg.Name, cfgPath)
+	a.printf("sonda %q gravada em %s", cfg.Name, cfgPath)
 	if cfg.Heartbeat.PushURL != "" {
-		fmt.Fprintf(a.stdout, "; sinal de vida a cada %s para %s", cfg.Heartbeat.Interval, probe.MaskURL(cfg.Heartbeat.PushURL))
+		a.printf("; sinal de vida a cada %s para %s", cfg.Heartbeat.Interval, probe.MaskURL(cfg.Heartbeat.PushURL))
 	} else {
-		fmt.Fprint(a.stdout, "; sem sinal de vida (configure com --heartbeat-url)")
+		a.printf("; sem sinal de vida (configure com --heartbeat-url)")
 	}
-	fmt.Fprintln(a.stdout)
+	a.println()
 	return nil
 }
 
@@ -138,9 +138,9 @@ func (a *app) cmdAdd(_ context.Context, cfgPath string, args []string) error {
 	if _, err := probe.Update(cfgPath, func(c *probe.Config) error { return c.Add(ch, *replace) }); err != nil {
 		return err
 	}
-	fmt.Fprintf(a.stdout, "verificação %q gravada: %s %s a cada %s, push para %s\n",
+	a.printf("verificação %q gravada: %s %s a cada %s, push para %s\n",
 		ch.Name, ch.Type, ch.Target, ch.Interval, probe.MaskURL(ch.PushURL))
-	fmt.Fprintf(a.stdout, "o daemon aplica sozinho; confira com: upwatch-probe test %s\n", ch.Name)
+	a.printf("o daemon aplica sozinho; confira com: upwatch-probe test %s\n", ch.Name)
 	return nil
 }
 
@@ -156,7 +156,7 @@ func (a *app) cmdRemove(_ context.Context, cfgPath string, args []string) error 
 	if _, err := probe.Update(cfgPath, func(c *probe.Config) error { return c.Remove(pos[0]) }); err != nil {
 		return err
 	}
-	fmt.Fprintf(a.stdout, "verificação %q removida\n", pos[0])
+	a.printf("verificação %q removida\n", pos[0])
 	return nil
 }
 
@@ -198,22 +198,22 @@ func (a *app) cmdList(_ context.Context, cfgPath string, args []string) error {
 	}
 
 	if cfg.Name != "" || cfg.Heartbeat.PushURL != "" {
-		fmt.Fprintf(a.stdout, "sonda %s", cfg.Name)
+		a.printf("sonda %s", cfg.Name)
 		if cfg.Heartbeat.PushURL != "" {
-			fmt.Fprintf(a.stdout, " · sinal de vida a cada %s para %s", cfg.Heartbeat.Interval, probe.MaskURL(cfg.Heartbeat.PushURL))
+			a.printf(" · sinal de vida a cada %s para %s", cfg.Heartbeat.Interval, probe.MaskURL(cfg.Heartbeat.PushURL))
 		}
-		fmt.Fprintln(a.stdout)
+		a.println()
 	}
 	if len(items) == 0 {
-		fmt.Fprintln(a.stdout, "nenhuma verificação; inclua com upwatch-probe add ou upwatch-probe setup")
+		a.println("nenhuma verificação; inclua com upwatch-probe add ou upwatch-probe setup")
 		return nil
 	}
 	tw := tabwriter.NewWriter(a.stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NOME\tTIPO\tALVO\tINTERVALO\tPUSH")
+	_, _ = fmt.Fprintln(tw, "NOME\tTIPO\tALVO\tINTERVALO\tPUSH")
 	for _, c := range items {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", c.Name, c.Type, c.Target, c.Interval, c.PushURL)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", c.Name, c.Type, c.Target, c.Interval, c.PushURL)
 		if c.Summary != "" {
-			fmt.Fprintf(tw, "\t\t  %s\t\t\n", c.Summary)
+			_, _ = fmt.Fprintf(tw, "\t\t  %s\t\t\n", c.Summary)
 		}
 	}
 	return tw.Flush()
@@ -252,23 +252,22 @@ func (a *app) cmdTest(ctx context.Context, cfgPath string, args []string) error 
 	}
 
 	sig := a.measureOnce(ctx, *c)
-	w := a.stdout
-	fmt.Fprintf(w, "verificação: %s (%s %s)\n", c.Name, c.Type, c.Target)
-	fmt.Fprintf(w, "resultado:   %s, %dms\n", a.paint(sig.Status), sig.LatencyMS)
+	a.printf("verificação: %s (%s %s)\n", c.Name, c.Type, c.Target)
+	a.printf("resultado:   %s, %dms\n", a.paint(sig.Status), sig.LatencyMS)
 	if sig.Msg != "" {
-		fmt.Fprintf(w, "causa:       %s\n", sig.Msg)
+		a.printf("causa:       %s\n", sig.Msg)
 	}
-	fmt.Fprintf(w, "envio:       POST %s\n", probe.MaskURL(c.PushURL))
-	fmt.Fprintf(w, "corpo:       %s\n", sig.Body())
+	a.printf("envio:       POST %s\n", probe.MaskURL(c.PushURL))
+	a.printf("corpo:       %s\n", sig.Body())
 
 	if *dryRun {
-		fmt.Fprintln(w, "dry-run:     nada foi enviado")
+		a.println("dry-run:     nada foi enviado")
 		return nil
 	}
 	if err := probe.NewSender(a.version).Send(ctx, c.PushURL, sig); err != nil {
 		return fmt.Errorf("envio falhou: %w", err)
 	}
-	fmt.Fprintln(w, "entregue:    ok")
+	a.println("entregue:    ok")
 	return nil
 }
 
@@ -287,7 +286,7 @@ func (a *app) cmdUIToken(_ context.Context, cfgPath string, args []string) error
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(a.stdout, cfg.UIToken)
+	a.println(cfg.UIToken)
 	return nil
 }
 
@@ -333,7 +332,7 @@ func (a *app) cmdStatus(_ context.Context, cfgPath string, args []string) error 
 	statePath := probe.StatePath(cfgPath)
 	st, err := probe.ReadState(statePath)
 	if errors.Is(err, os.ErrNotExist) {
-		fmt.Fprintf(a.stdout, "o daemon ainda não gravou estado em %s; ele está rodando? (docker ps, docker logs)\n", statePath)
+		a.printf("o daemon ainda não gravou estado em %s; ele está rodando? (docker ps, docker logs)\n", statePath)
 		return nil
 	}
 	if err != nil {
@@ -348,7 +347,7 @@ func (a *app) cmdStatus(_ context.Context, cfgPath string, args []string) error 
 		longest = max(longest, time.Duration(c.Interval))
 	}
 	if longest > 0 && now.Sub(st.UpdatedAt) > 3*longest {
-		fmt.Fprintf(a.stdout, "atenção: o estado não muda %s; o daemon está rodando?\n", ago(now, st.UpdatedAt))
+		a.printf("atenção: o estado não muda %s; o daemon está rodando?\n", ago(now, st.UpdatedAt))
 	}
 
 	names := make([]string, 0, len(cfg.Checks)+1)
@@ -372,16 +371,16 @@ func (a *app) cmdStatus(_ context.Context, cfgPath string, args []string) error 
 		}
 		s, ok := st.Checks[n]
 		if !ok || s.Result == nil {
-			fmt.Fprintf(a.stdout, "%s: aguardando a primeira medição\n", label)
+			a.printf("%s: aguardando a primeira medição\n", label)
 			continue
 		}
 		r := s.Result
-		fmt.Fprintf(a.stdout, "%s: %s, %dms, %s", label, a.paint(r.Status), r.LatencyMS, ago(now, r.At))
+		a.printf("%s: %s, %dms, %s", label, a.paint(r.Status), r.LatencyMS, ago(now, r.At))
 		if r.Msg != "" && n != probe.HeartbeatName {
-			fmt.Fprintf(a.stdout, " · %s", r.Msg)
+			a.printf(" · %s", r.Msg)
 		}
-		fmt.Fprintln(a.stdout)
-		fmt.Fprintf(a.stdout, "  envio: %s\n", describeDelivery(now, s.Delivery))
+		a.println()
+		a.printf("  envio: %s\n", describeDelivery(now, s.Delivery))
 	}
 	return nil
 }

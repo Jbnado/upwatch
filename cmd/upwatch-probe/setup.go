@@ -26,7 +26,7 @@ var errInputClosed = errors.New("a entrada terminou antes do fim do assistente; 
 // repete sem perder as anteriores.
 type asker struct {
 	r *bufio.Reader
-	w io.Writer
+	a *app
 }
 
 func (q *asker) readLine() (string, error) {
@@ -40,20 +40,20 @@ func (q *asker) readLine() (string, error) {
 func (q *asker) ask(prompt, def string, check func(string) error) (string, error) {
 	for {
 		if def != "" {
-			fmt.Fprintf(q.w, "%s [%s]: ", prompt, def)
+			q.a.printf("%s [%s]: ", prompt, def)
 		} else {
-			fmt.Fprintf(q.w, "%s: ", prompt)
+			q.a.printf("%s: ", prompt)
 		}
 		s, err := q.readLine()
 		if err != nil {
-			fmt.Fprintln(q.w)
+			q.a.println()
 			return "", err
 		}
 		if s == "" {
 			s = def
 		}
 		if err := check(s); err != nil {
-			fmt.Fprintf(q.w, "  não aceito: %v\n", err)
+			q.a.printf("  não aceito: %v\n", err)
 			continue
 		}
 		return s, nil
@@ -194,10 +194,10 @@ func (a *app) cmdSetup(ctx context.Context, cfgPath string, args []string) error
 		return err
 	}
 
-	z := &wizard{app: a, q: &asker{r: bufio.NewReader(a.stdin), w: a.stdout}, allowHTTP: current.AllowHTTPPush}
-	fmt.Fprintln(a.stdout, "upwatch-probe setup: uma pergunta por linha. Enter aceita o valor entre colchetes.")
-	fmt.Fprintln(a.stdout, "Cada verificação precisa de um monitor push no UpWatch central; tenha os endereços de push à mão.")
-	fmt.Fprintln(a.stdout)
+	z := &wizard{app: a, q: &asker{r: bufio.NewReader(a.stdin), a: a}, allowHTTP: current.AllowHTTPPush}
+	a.println("upwatch-probe setup: uma pergunta por linha. Enter aceita o valor entre colchetes.")
+	a.println("Cada verificação precisa de um monitor push no UpWatch central; tenha os endereços de push à mão.")
+	a.println()
 
 	defName := current.Name
 	if defName == "" {
@@ -262,17 +262,17 @@ func (a *app) cmdSetup(ctx context.Context, cfgPath string, args []string) error
 		return err
 	}
 
-	fmt.Fprintln(a.stdout)
-	fmt.Fprintf(a.stdout, "Configuração gravada em %s, com %d verificação(ões). O daemon aplica sozinho.\n", cfgPath, len(cfg.Checks))
-	fmt.Fprintf(a.stdout, "Token da interface web (só se usar --ui): %s\n", cfg.UIToken)
-	fmt.Fprintln(a.stdout, "Confira com: upwatch-probe status")
+	a.println()
+	a.printf("Configuração gravada em %s, com %d verificação(ões). O daemon aplica sozinho.\n", cfgPath, len(cfg.Checks))
+	a.printf("Token da interface web (só se usar --ui): %s\n", cfg.UIToken)
+	a.println("Confira com: upwatch-probe status")
 	return nil
 }
 
 // askCheck pergunta uma verificação, testa e confirma. Devolve nil quando
 // a pessoa desiste de gravá-la.
 func (z *wizard) askCheck(ctx context.Context) (*probe.Check, error) {
-	q, out := z.q, z.app.stdout
+	q, a := z.q, z.app
 	var in probe.CheckInput
 	var err error
 
@@ -298,7 +298,7 @@ func (z *wizard) askCheck(ctx context.Context) (*probe.Check, error) {
 
 	switch in.Type {
 	case "redis":
-		fmt.Fprintln(out, "  Asserções de leitura, uma por linha (ex.: SCARD rq:workers:default >= 1); vazio termina.")
+		a.println("  Asserções de leitura, uma por linha (ex.: SCARD rq:workers:default >= 1); vazio termina.")
 		for {
 			s, err := q.ask("  Asserção", "", func(s string) error {
 				if s == "" {
@@ -348,13 +348,13 @@ func (z *wizard) askCheck(ctx context.Context) (*probe.Check, error) {
 		return nil, err
 	}
 
-	fmt.Fprintf(out, "  Testando %s...\n", c.Name)
-	sig := z.app.measureOnce(ctx, c)
-	fmt.Fprintf(out, "  Resultado: %s, %dms", z.app.paint(sig.Status), sig.LatencyMS)
+	a.printf("  Testando %s...\n", c.Name)
+	sig := a.measureOnce(ctx, c)
+	a.printf("  Resultado: %s, %dms", a.paint(sig.Status), sig.LatencyMS)
 	if sig.Msg != "" {
-		fmt.Fprintf(out, " · %s", sig.Msg)
+		a.printf(" · %s", sig.Msg)
 	}
-	fmt.Fprintln(out)
+	a.println()
 
 	prompt, def := "  Salvar esta verificação?", true
 	if sig.Status != "up" {
