@@ -19,6 +19,10 @@ upwatch.exe
 *.db-wal
 coverage.out
 
+# Segredos locais: não podem acabar dentro da imagem.
+secrets
+secret.key
+
 # Saída de conferência de interface.
 .playwright-mcp
 *.png

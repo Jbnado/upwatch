@@ -87,8 +87,11 @@ USER upwatch:upwatch
 WORKDIR /data
 VOLUME ["/data"]
 
-ENV UPWATCH_DB_DSN=/data/upwatch.db \
-    UPWATCH_LISTEN=0.0.0.0:8080
+# O banco não é fixado aqui: o padrão do próprio UpWatch já é
+# /data/upwatch.db. Uma UPWATCH_DB_DSN herdada da imagem colidiria com a
+# UPWATCH_DB_DSN_FILE de quem passa o DSN do PostgreSQL por secret, e a
+# partida pararia por haver as duas.
+ENV UPWATCH_LISTEN=0.0.0.0:8080
 
 EXPOSE 8080
 

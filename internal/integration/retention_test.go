@@ -11,6 +11,7 @@ import (
 	"github.com/Jbnado/upwatch/internal/clock"
 	"github.com/Jbnado/upwatch/internal/domain"
 	"github.com/Jbnado/upwatch/internal/rollup"
+	"github.com/Jbnado/upwatch/internal/secretbox"
 	"github.com/Jbnado/upwatch/internal/store"
 	"github.com/Jbnado/upwatch/internal/store/sqlstore"
 )
@@ -54,7 +55,7 @@ func TestRetentionKeepsDatabaseFromGrowingWithTime(t *testing.T) {
 	)
 
 	path := filepath.Join(t.TempDir(), "upwatch.db")
-	st, err := sqlstore.OpenSQLite(path)
+	st, err := sqlstore.OpenSQLite(path, secretbox.Ephemeral())
 	if err != nil {
 		t.Fatalf("OpenSQLite returned unexpected error: %v", err)
 	}
@@ -175,7 +176,7 @@ func TestRetentionKeepsDatabaseFromGrowingWithTime(t *testing.T) {
 // precisa continuar existindo mesmo depois de o dado cru ser descartado.
 func TestRetentionKeepsThreeMonthHistoryWithoutRawData(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "upwatch.db")
-	st, err := sqlstore.OpenSQLite(path)
+	st, err := sqlstore.OpenSQLite(path, secretbox.Ephemeral())
 	if err != nil {
 		t.Fatalf("OpenSQLite returned unexpected error: %v", err)
 	}

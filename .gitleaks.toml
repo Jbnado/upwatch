@@ -31,4 +31,8 @@ regexes = [
   # Placeholder dos exemplos de DSN na documentação
   # ("postgres://usuario:senha@host").
   '''^senha$''',
+  # DSN fictício do teste de UPWATCH_DB_DSN_FILE em
+  # internal/config/secret_file_test.go: o teste prova que o valor é lido
+  # do arquivo, e um DSN sem senha não exercitaria o caso real.
+  '''^s3nh4$''',
 ]

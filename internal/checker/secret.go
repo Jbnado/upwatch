@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/Jbnado/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/secretbox"
 )
 
 // secretMask substitui a credencial onde quer que ela apareça.
@@ -51,6 +52,9 @@ type secretKind struct {
 	// que a substitui na saída.
 	field, marker string
 	decode        func(json.RawMessage) (secretHolder, error)
+	// headers é o campo dos cabeçalhos, nos tipos que os têm; os de nome
+	// sensível são credencial também.
+	headers string
 }
 
 // decodeAs lê a configuração na struct do checker, com as mesmas regras
@@ -107,10 +111,32 @@ var operatorSecrets = map[domain.MonitorType]string{
 // volta para ninguém. A lista mora aqui, e não em cada handler, para a
 // omissão no GET e a preservação na edição nunca divergirem.
 var secretKinds = map[domain.MonitorType]secretKind{
-	domain.MonitorRedis:    {"password", "password_set", decodeAs[RedisConfig]},
-	domain.MonitorPostgres: {"password", "password_set", decodeAs[PostgresConfig]},
-	domain.MonitorMySQL:    {"password", "password_set", decodeAs[MySQLConfig]},
-	domain.MonitorHTTP:     {"basic_auth_pass", "basic_auth_pass_set", decodeAs[HTTPConfig]},
+	domain.MonitorRedis:    {"password", "password_set", decodeAs[RedisConfig], ""},
+	domain.MonitorPostgres: {"password", "password_set", decodeAs[PostgresConfig], ""},
+	domain.MonitorMySQL:    {"password", "password_set", decodeAs[MySQLConfig], ""},
+	domain.MonitorHTTP:     {"basic_auth_pass", "basic_auth_pass_set", decodeAs[HTTPConfig], "headers"},
+}
+
+// SecretFields diz onde a configuração do tipo guarda segredo, para a
+// cifragem em repouso.
+//
+// Sai das mesmas listas que RedactConfig usa: com duas, um campo novo de
+// senha entraria numa e não na outra, e ficaria oculto na tela e em texto
+// puro no backup. O token do push entra também: o administrador o lê de
+// volta pela API, mas no banco é a credencial do /push como qualquer
+// outra.
+func SecretFields(t domain.MonitorType) secretbox.Fields {
+	var f secretbox.Fields
+	if field, ok := operatorSecrets[t]; ok {
+		f.Names = append(f.Names, field)
+	}
+	if kind, ok := secretKinds[t]; ok {
+		f.Names = append(f.Names, kind.field)
+		if kind.headers != "" {
+			f.Map, f.MapSecret = kind.headers, sensitiveHeader
+		}
+	}
+	return f
 }
 
 func (c *RedisConfig) secretField() *string             { return &c.Password }

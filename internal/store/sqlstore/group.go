@@ -285,7 +285,7 @@ func (r *channelRepo) ListFor(ctx context.Context, sel store.GroupSelection) ([]
 	}
 	defer rows.Close()
 
-	return collectChannels(rows)
+	return r.db.collectChannels(rows)
 }
 
 // ForGroup devolve os canais habilitados vinculados direto ao grupo.
@@ -301,7 +301,7 @@ func (r *channelRepo) ForGroup(ctx context.Context, groupID int64) ([]domain.Cha
 	}
 	defer rows.Close()
 
-	return collectChannels(rows)
+	return r.db.collectChannels(rows)
 }
 
 // Destinations reúne os canais do monitor, do grupo dele e do sistema do
@@ -329,7 +329,7 @@ func (r *channelRepo) Destinations(ctx context.Context, monitorID int64) ([]doma
 	}
 	defer rows.Close()
 
-	return collectChannels(rows)
+	return r.db.collectChannels(rows)
 }
 
 // ---------- mudanças de estado ----------
