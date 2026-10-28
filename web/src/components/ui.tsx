@@ -122,7 +122,7 @@ export function InlineLink({ to, children }: { to: Route; children: ReactNode })
     <a
       href={href(to)}
       onClick={interceptar(to)}
-      className="pressable underline decoration-line-strong hover:decoration-ink active:text-ink-2"
+      className="pressable text-action underline decoration-line-strong hover:decoration-ink active:text-ink-2"
     >
       {children}
     </a>
@@ -156,7 +156,7 @@ export function TextLink({
 }: ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
     <button
-      className={`pressable eyebrow hover:text-ink hover:underline active:text-ink-2 ${className}`}
+      className={`pressable text-action eyebrow hover:text-ink hover:underline active:text-ink-2 ${className}`}
       {...props}
     />
   );
