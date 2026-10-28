@@ -1,0 +1,31 @@
+# Varredura de segredos (gitleaks).
+#
+# Parte das regras padrão e só abre exceção para valor fictício de teste.
+# Cada exceção é um valor exato, não um caminho inteiro: liberar
+# "*_test.go" deixaria passar um segredo de verdade colado num teste, que
+# é justamente onde ele costuma aparecer por engano.
+
+[extend]
+useDefault = true
+
+# DSN e URL com senha embutida (postgres://usuario:senha@host). É o
+# vazamento mais provável neste projeto, e as regras padrão não pegam.
+[[rules]]
+id = "url-with-password"
+description = "URL com senha embutida"
+regex = '''[a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@'"`]+:([^\s@'"`$]{4,})@[^\s'"`]+'''
+secretGroup = 1
+keywords = ["://"]
+
+[allowlist]
+description = "valores fictícios dos testes"
+regexTarget = "secret"
+regexes = [
+  # Senha do servidor Redis falso em internal/checker/redis_test.go. O
+  # teste prova que ela NÃO aparece na causa da falha, então precisa ser
+  # um texto que pareça senha.
+  '''^s3nha-que-nao-pode-vazar$''',
+  # Senha do PostgreSQL descartável dos testes (CONTRIBUTING e CI): o
+  # contêiner nasce e morre com a suíte.
+  '''^upwatch$''',
+]
