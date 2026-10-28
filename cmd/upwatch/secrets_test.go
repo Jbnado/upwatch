@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"os"
@@ -132,5 +133,98 @@ func TestStartupWithTheWrongKeySaysWhatToDo(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "UPWATCH_SECRET_KEY") {
 		t.Errorf("error %q does not name the variable to check", err)
+	}
+}
+
+// A troca de chave pela linha de comando: as duas chaves por arquivo,
+// e depois só a nova abre o banco, com a senha intacta.
+func TestRotateSecretKeyCommand(t *testing.T) {
+	cfg := sqliteConfig(t)
+	oldKey, newKey := generate(t), generate(t)
+	id := seedRedis(t, cfg.Database.DSN, oldKey)
+	t.Setenv("UPWATCH_DB_DSN", cfg.Database.DSN)
+
+	err := rotateSecretKey([]string{"--old-key-file", keyFile(t, oldKey), "--new-key-file", keyFile(t, newKey)})
+	if err != nil {
+		t.Fatalf("rotate-secret-key returned unexpected error: %v", err)
+	}
+
+	if got, err := passwordWith(t, cfg.Database.DSN, newKey, id); err != nil || got != "senha-do-cache" {
+		t.Errorf("with the new key: (%q, %v), want the password", got, err)
+	}
+	if _, err := passwordWith(t, cfg.Database.DSN, oldKey, id); !errors.Is(err, secretbox.ErrWrongKey) {
+		t.Errorf("the old key still opens the database: %v", err)
+	}
+}
+
+// Sem as opções, as chaves vêm do ambiente: a atual de onde a partida a
+// lê, a nova de UPWATCH_NEW_SECRET_KEY, por variável ou arquivo.
+func TestRotateSecretKeyReadsTheEnvironment(t *testing.T) {
+	cfg := sqliteConfig(t)
+	oldKey, newKey := generate(t), generate(t)
+	id := seedRedis(t, cfg.Database.DSN, oldKey)
+	t.Setenv("UPWATCH_DB_DSN", cfg.Database.DSN)
+	t.Setenv("UPWATCH_SECRET_KEY", oldKey.Encode())
+	t.Setenv("UPWATCH_NEW_SECRET_KEY_FILE", keyFile(t, newKey))
+
+	if err := rotateSecretKey(nil); err != nil {
+		t.Fatalf("rotate-secret-key returned unexpected error: %v", err)
+	}
+	if got, err := passwordWith(t, cfg.Database.DSN, newKey, id); err != nil || got != "senha-do-cache" {
+		t.Errorf("with the new key: (%q, %v), want the password", got, err)
+	}
+}
+
+// Trocar para uma chave que não abre nada, ou sem dizer qual é a nova,
+// não pode começar: a mensagem diz o que falta.
+func TestRotateSecretKeyRefusesMissingOrWrongKeys(t *testing.T) {
+	cfg := sqliteConfig(t)
+	oldKey := generate(t)
+	seedRedis(t, cfg.Database.DSN, oldKey)
+	t.Setenv("UPWATCH_DB_DSN", cfg.Database.DSN)
+
+	err := rotateSecretKey([]string{"--old-key-file", keyFile(t, oldKey)})
+	if err == nil || !strings.Contains(err.Error(), "--new-key-file") {
+		t.Errorf("without a new key: %v, want the option named", err)
+	}
+
+	err = rotateSecretKey([]string{"--old-key-file", keyFile(t, generate(t)), "--new-key-file", keyFile(t, generate(t))})
+	if !errors.Is(err, secretbox.ErrWrongKey) {
+		t.Errorf("with a wrong old key: %v, want ErrWrongKey", err)
+	}
+}
+
+// No PostgreSQL não há chave gerada: as instâncias que dividem o banco
+// sorteariam cada uma a sua. Sem chave configurada, a partida para e
+// explica como gerar uma.
+func TestPostgresStartupWithoutKeyRefuses(t *testing.T) {
+	dsn := os.Getenv("UPWATCH_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("defina UPWATCH_TEST_POSTGRES_DSN para rodar contra PostgreSQL")
+	}
+	admin, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open returned unexpected error: %v", err)
+	}
+	defer admin.Close()
+	const schema = "upw_startup_sem_chave"
+	if _, err := admin.Exec(`DROP SCHEMA IF EXISTS ` + schema + ` CASCADE; CREATE SCHEMA ` + schema); err != nil {
+		t.Fatalf("creating the schema returned unexpected error: %v", err)
+	}
+	t.Cleanup(func() { _, _ = admin.Exec(`DROP SCHEMA IF EXISTS ` + schema + ` CASCADE`) })
+
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	cfg := config.Default()
+	cfg.Database.Driver, cfg.Database.DSN = "postgres", dsn+sep+"search_path="+schema
+
+	_, err = openStore(cfg)
+	if !errors.Is(err, secretbox.ErrKeyMissing) {
+		t.Fatalf("openStore error = %v, want ErrKeyMissing", err)
+	}
+	if !strings.Contains(err.Error(), "openssl rand -base64 32") {
+		t.Errorf("error %q does not say how to generate a key", err)
 	}
 }

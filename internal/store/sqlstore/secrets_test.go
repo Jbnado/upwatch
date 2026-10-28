@@ -350,3 +350,62 @@ func TestPlaintextDatabaseIsCipheredOnFirstStart(t *testing.T) {
 		}
 	})
 }
+
+// Trocar a chave recifra tudo: depois, só a nova abre o banco, e cada
+// credencial continua lá. Rodar a troca de novo — porque a primeira
+// pareceu travar, por exemplo — não estraga nada: a chave antiga é aceita
+// para leitura enquanto a troca não acaba.
+func TestRotateSecretKeyReciphersEverything(t *testing.T) {
+	eachBackend(t, func(t *testing.T, b backend) {
+		oldKey, newerKey := newKey(t), newKey(t)
+
+		s := b.mustOpen(t, keysOf(oldKey))
+		m := createRedis(t, s, "cache", "senha-do-cache")
+		c := createNtfy(t, s, "token-do-ntfy")
+		before := resting(t, s)
+
+		if err := s.RotateSecretKey(context.Background(), newerKey); err != nil {
+			t.Fatalf("RotateSecretKey returned unexpected error: %v", err)
+		}
+		_ = s.Close()
+
+		if _, err := b.open(t, keysOf(oldKey)); !errors.Is(err, secretbox.ErrWrongKey) {
+			t.Errorf("the old key still opens the database after rotation: %v", err)
+		}
+
+		// Uma segunda troca para a mesma chave, com a antiga ainda à mão.
+		again := b.mustOpen(t, keysOf(oldKey, newerKey))
+		if err := again.RotateSecretKey(context.Background(), newerKey); err != nil {
+			t.Fatalf("running the rotation again returned unexpected error: %v", err)
+		}
+		_ = again.Close()
+
+		rotated := b.mustOpen(t, keysOf(newerKey))
+		after := resting(t, rotated)
+		if after == before {
+			t.Error("the stored values did not change with the rotation")
+		}
+		for _, secret := range []string{"senha-do-cache", "token-do-ntfy"} {
+			if strings.Contains(after, secret) {
+				t.Errorf("%q is in plaintext after the rotation", secret)
+			}
+		}
+		gotM, err := rotated.Monitors().Get(context.Background(), m.ID)
+		if err != nil || !strings.Contains(string(gotM.Config), "senha-do-cache") {
+			t.Errorf("monitor after rotation = (%s, %v), want the password back", gotM.Config, err)
+		}
+		gotC, err := rotated.Channels().Get(context.Background(), c.ID)
+		if err != nil || !strings.Contains(string(gotC.Config), "token-do-ntfy") {
+			t.Errorf("channel after rotation = (%s, %v), want the token back", gotC.Config, err)
+		}
+	})
+}
+
+// Uma chave nova que seja a própria antiga não troca nada, e quem a pediu
+// provavelmente apontou o arquivo errado.
+func TestRotateSecretKeyRefusesTheSameKey(t *testing.T) {
+	s := newStore(t).(*sqlstore.Store)
+	if err := s.RotateSecretKey(context.Background(), testKey); err == nil {
+		t.Error("rotating to the key in use was accepted")
+	}
+}

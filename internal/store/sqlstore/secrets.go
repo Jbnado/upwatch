@@ -246,6 +246,79 @@ func sealAtRest(ctx context.Context, t *tx, box *secretbox.Box) error {
 	return nil
 }
 
+// RotateSecretKey recifra todas as credenciais com a chave nova, numa
+// transação só: ou tudo passa para a nova, ou nada muda.
+//
+// A caixa em uso lê; aberta com a chave antiga e a nova (ver
+// secretbox.New), uma troca interrompida e rodada de novo encontra parte
+// já na nova e segue. Depois de confirmada, o store passa a usar só a
+// nova, e a antiga deixa de abrir o banco.
+func (s *Store) RotateSecretKey(ctx context.Context, newKey secretbox.Key) error {
+	reader := s.db.secrets
+	if reader == nil {
+		return fmt.Errorf("sqlstore: %w", secretbox.ErrKeyMissing)
+	}
+	if reader.SealsWith(newKey) {
+		return errors.New("sqlstore: a chave nova é a que já está em uso; confira se o arquivo apontado é o certo")
+	}
+	writer, err := secretbox.New(newKey)
+	if err != nil {
+		return err
+	}
+
+	reseal := func(t *tx, table string, rows []storedConfig, fieldsOf func(string) secretbox.Fields) error {
+		for _, r := range rows {
+			fields := fieldsOf(r.typ)
+			plain, err := reader.OpenConfig(json.RawMessage(r.config), fields, table, r.id)
+			if err != nil {
+				return fmt.Errorf("sqlstore: %w", err)
+			}
+			sealed, err := writer.SealConfig(plain, fields, table, r.id)
+			if err != nil {
+				return fmt.Errorf("sqlstore: recifrando %s %d: %w", table, r.id, err)
+			}
+			if bytes.Equal(sealed, json.RawMessage(r.config)) {
+				continue
+			}
+			if _, err := t.ExecContext(ctx, `UPDATE `+table+` SET config = ? WHERE id = ?`, string(sealed), r.id); err != nil {
+				return fmt.Errorf("sqlstore: recifrando %s %d: %w", table, r.id, err)
+			}
+		}
+		return nil
+	}
+
+	err = s.db.inTx(ctx, func(t *tx) error {
+		if err := verifyKey(ctx, t, reader); err != nil {
+			return err
+		}
+		monitors, err := readConfigs(ctx, t, `SELECT id, type, config FROM monitor`, false)
+		if err != nil {
+			return err
+		}
+		if err := reseal(t, monitorTable, monitors, monitorFields); err != nil {
+			return err
+		}
+		channels, err := readConfigs(ctx, t, `SELECT id, type, config FROM notification_channel`, false)
+		if err != nil {
+			return err
+		}
+		if err := reseal(t, channelTable, channels, notifier.SecretFields); err != nil {
+			return err
+		}
+		check, err := writer.Seal(keyCheck, keyCheckSlot)
+		if err != nil {
+			return err
+		}
+		_, err = t.ExecContext(ctx, `UPDATE secret_key_check SET value = ? WHERE id = 1`, check)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	s.db.secrets = writer
+	return nil
+}
+
 // sealForWrite cifra a configuração a gravar no registro dado.
 func (d *db) sealForWrite(config string, fields secretbox.Fields, table string, id int64) (string, error) {
 	if fields.Empty() {

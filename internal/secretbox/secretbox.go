@@ -17,6 +17,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -109,14 +110,15 @@ func (s Slot) aad() []byte {
 
 // Box cifra com a chave principal e decifra com ela ou com as anteriores.
 type Box struct {
-	seal cipher.AEAD
-	open []cipher.AEAD
+	primary Key
+	seal    cipher.AEAD
+	open    []cipher.AEAD
 }
 
 // New monta a caixa. As chaves de fallbacks só leem: existem para a troca
 // de chave, quando parte dos valores ainda está na antiga.
 func New(primary Key, fallbacks ...Key) (*Box, error) {
-	b := &Box{}
+	b := &Box{primary: primary}
 	for i, k := range append([]Key{primary}, fallbacks...) {
 		block, err := aes.NewCipher(k[:])
 		if err != nil {
@@ -132,6 +134,11 @@ func New(primary Key, fallbacks ...Key) (*Box, error) {
 		b.open = append(b.open, aead)
 	}
 	return b, nil
+}
+
+// SealsWith informa se a caixa grava com a chave dada.
+func (b *Box) SealsWith(k Key) bool {
+	return subtle.ConstantTimeCompare(b.primary[:], k[:]) == 1
 }
 
 // IsSealed informa se o valor foi gravado cifrado.

@@ -51,6 +51,12 @@ func main() {
 }
 
 func run() error {
+	// Subcomando de manutenção, fora do fluxo do servidor.
+	if len(os.Args) > 1 && os.Args[1] == "rotate-secret-key" {
+		setupLogging()
+		return rotateSecretKey(os.Args[2:])
+	}
+
 	configPath := flag.String("config", os.Getenv("UPWATCH_CONFIG"),
 		"caminho do arquivo de configuração (opcional)")
 	showVersion := flag.Bool("version", false, "mostra a versão e sai")
