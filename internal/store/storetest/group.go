@@ -191,7 +191,7 @@ func testGroupDepthIsEnforcedByTheStore(t *testing.T, newStore Factory) {
 	}
 
 	for nome, g := range map[string]domain.Group{
-		"grupo de topo para dentro de um ambiente": {ID: solto.ID, Name: "Solto", Slug: "solto", ParentID: &prod.ID},
+		"grupo de topo para dentro de um ambiente":   {ID: solto.ID, Name: "Solto", Slug: "solto", ParentID: &prod.ID},
 		"sistema com ambientes para dentro de outro": {ID: ret.ID, Name: "Retaguarda", Slug: "retaguarda", ParentID: &rpa.ID},
 	} {
 		if err := s.Groups().Update(ctx, g); !errors.Is(err, store.ErrConflict) {
