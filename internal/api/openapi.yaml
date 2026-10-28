@@ -1496,7 +1496,12 @@ components:
             Para os tipos de protocolo, ver RedisConfig, PostgresConfig e
             MySQLConfig: a senha é aceita na escrita e nunca devolvida;
             numa edição, omiti-la mantém a guardada, desde que o endereço
-            não mude e o TLS não fique mais fraco.
+            não mude e o TLS não fique mais fraco. No tipo http vale o
+            mesmo para basic_auth_pass (a leitura traz
+            basic_auth_pass_set), e os cabeçalhos de credencial
+            (Authorization, Cookie e nomes com auth, token, key, secret,
+            password, session ou credential) voltam com o valor "***";
+            reenviar "***" mantém o valor guardado.
           additionalProperties: true
         parent_id: { type: integer, format: int64 }
         enabled: { type: boolean, default: true }

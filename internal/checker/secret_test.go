@@ -217,6 +217,7 @@ func TestCarrySecretsRefusesToCarryToWeakerTLS(t *testing.T) {
 		{"mysql true para preferred", domain.MonitorMySQL, `{"username":"u","password":"p","tls":"true"}`, `{"username":"u","tls":"preferred"}`, true},
 		{"mysql true para skip-verify", domain.MonitorMySQL, `{"username":"u","password":"p","tls":"true"}`, `{"username":"u","tls":"skip-verify"}`, true},
 		{"mysql false para true", domain.MonitorMySQL, `{"username":"u","password":"p"}`, `{"username":"u","tls":"true"}`, false},
+		{"http sem verificar", domain.MonitorHTTP, `{"basic_auth_user":"u","basic_auth_pass":"p"}`, `{"basic_auth_user":"u","skip_tls_verify":true}`, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			prev := domain.Monitor{Type: tt.typ, Target: "db:5432", Config: json.RawMessage(tt.prev)}
@@ -231,5 +232,80 @@ func TestCarrySecretsRefusesToCarryToWeakerTLS(t *testing.T) {
 				t.Errorf("CarrySecrets returned unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+const httpWithSecrets = `{
+	"basic_auth_user": "monitor",
+	"basic_auth_pass": "senha-do-basic",
+	"headers": {
+		"Authorization": "Bearer tok-do-bearer",
+		"X-Api-Key": "chave-da-api",
+		"x-auth-token": "tok-do-header",
+		"X-Client-Secret": "segredo-do-cliente",
+		"Accept": "application/json"
+	}
+}`
+
+// A senha do basic auth e os cabeçalhos de credencial do monitor HTTP são
+// tão segredo quanto a senha de um banco, e voltavam inteiros no GET e no
+// fluxo de eventos (issue #54). Os cabeçalhos ficam na lista, com o valor
+// mascarado: a interface precisa mostrar que existem, e o que não tem
+// segredo nenhum (Accept) continua legível.
+func TestRedactConfigHidesHTTPCredentials(t *testing.T) {
+	got := checker.RedactConfig(domain.MonitorHTTP, json.RawMessage(httpWithSecrets))
+
+	for _, secret := range []string{"senha-do-basic", "tok-do-bearer", "chave-da-api", "tok-do-header", "segredo-do-cliente"} {
+		if strings.Contains(string(got), secret) {
+			t.Errorf("redacted config carries %q: %s", secret, got)
+		}
+	}
+	m := configMap(t, got)
+	if m["basic_auth_pass_set"] != true || m["basic_auth_user"] != "monitor" {
+		t.Errorf("redacted config = %s, want basic_auth_pass_set and the user kept", got)
+	}
+	headers, _ := m["headers"].(map[string]any)
+	if headers["Accept"] != "application/json" {
+		t.Errorf("Accept = %v, want non-secret headers kept", headers["Accept"])
+	}
+	if headers["Authorization"] != "***" {
+		t.Errorf("Authorization = %v, want it listed with the value masked", headers["Authorization"])
+	}
+}
+
+// O formulário reenvia o que recebeu: a senha do basic auth ausente e os
+// cabeçalhos mascarados. Salvar não pode apagar nem gravar a máscara no
+// lugar da credencial; e, como a senha, os valores guardados não
+// acompanham o monitor para outro endereço.
+func TestCarrySecretsKeepsHTTPCredentials(t *testing.T) {
+	prev := domain.Monitor{Type: domain.MonitorHTTP, Target: "https://api.exemplo.com/saude", Config: json.RawMessage(httpWithSecrets)}
+	redacted := checker.RedactConfig(domain.MonitorHTTP, prev.Config)
+	next := domain.Monitor{Type: domain.MonitorHTTP, Target: prev.Target, Config: redacted}
+
+	got, err := checker.CarrySecrets(next, prev)
+	if err != nil {
+		t.Fatalf("CarrySecrets returned unexpected error: %v", err)
+	}
+	m := configMap(t, got)
+	if m["basic_auth_pass"] != "senha-do-basic" {
+		t.Errorf("basic_auth_pass = %v, want the stored one kept", m["basic_auth_pass"])
+	}
+	headers, _ := m["headers"].(map[string]any)
+	if headers["Authorization"] != "Bearer tok-do-bearer" || headers["X-Api-Key"] != "chave-da-api" {
+		t.Errorf("headers = %v, want the stored values back in place of the mask", headers)
+	}
+	if _, ok := m["basic_auth_pass_set"]; ok {
+		t.Errorf("basic_auth_pass_set was stored: %s", got)
+	}
+
+	next.Target = "https://servidor-de-quem-quer-a-senha/"
+	if _, err := checker.CarrySecrets(next, prev); err == nil {
+		t.Error("CarrySecrets carried the HTTP credentials to a new target")
+	}
+
+	// Máscara sem valor guardado não pode virar o valor literal "***".
+	fresh := domain.Monitor{Type: domain.MonitorHTTP, Target: prev.Target, Config: json.RawMessage(`{"headers":{"Authorization":"***"}}`)}
+	if _, err := checker.CanonicalConfig(fresh); err == nil {
+		t.Error("CanonicalConfig stored a masked header with nothing to carry")
 	}
 }

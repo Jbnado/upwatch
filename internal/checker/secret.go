@@ -40,6 +40,9 @@ type secretHolder interface {
 	// transportLevel ordena a proteção da conexão que leva a senha: maior
 	// é mais forte.
 	transportLevel() int
+	// secretHeaders devolve os cabeçalhos da requisição, nos tipos que os
+	// têm; os de nome sensível são credencial também.
+	secretHeaders() map[string]string
 }
 
 // secretKind descreve como cada tipo guarda a credencial.
@@ -75,9 +78,11 @@ var secretKinds = map[domain.MonitorType]secretKind{
 	domain.MonitorRedis:    {"password", "password_set", decodeAs[RedisConfig]},
 	domain.MonitorPostgres: {"password", "password_set", decodeAs[PostgresConfig]},
 	domain.MonitorMySQL:    {"password", "password_set", decodeAs[MySQLConfig]},
+	domain.MonitorHTTP:     {"basic_auth_pass", "basic_auth_pass_set", decodeAs[HTTPConfig]},
 }
 
-func (c *RedisConfig) secretField() *string { return &c.Password }
+func (c *RedisConfig) secretField() *string             { return &c.Password }
+func (c *RedisConfig) secretHeaders() map[string]string { return nil }
 func (c *RedisConfig) transportLevel() int {
 	switch {
 	case !c.TLS:
@@ -94,8 +99,9 @@ var postgresSSLLevels = map[string]int{
 	"require": 3, "verify-ca": 4, "verify-full": 5,
 }
 
-func (c *PostgresConfig) secretField() *string { return &c.Password }
-func (c *PostgresConfig) transportLevel() int  { return postgresSSLLevels[c.SSLMode] }
+func (c *PostgresConfig) secretField() *string             { return &c.Password }
+func (c *PostgresConfig) secretHeaders() map[string]string { return nil }
+func (c *PostgresConfig) transportLevel() int              { return postgresSSLLevels[c.SSLMode] }
 
 // mysqlTLSLevels ordena os modos de TLS do driver: preferred aceita
 // conexão sem TLS, skip-verify cifra sem conferir o certificado.
@@ -103,15 +109,44 @@ var mysqlTLSLevels = map[string]int{
 	"": 0, "false": 0, "preferred": 1, "skip-verify": 2, "true": 3,
 }
 
-func (c *MySQLConfig) secretField() *string { return &c.Password }
-func (c *MySQLConfig) transportLevel() int  { return mysqlTLSLevels[c.TLS] }
+func (c *MySQLConfig) secretField() *string             { return &c.Password }
+func (c *MySQLConfig) secretHeaders() map[string]string { return nil }
+func (c *MySQLConfig) transportLevel() int              { return mysqlTLSLevels[c.TLS] }
+
+// No HTTP, sair de HTTPS é troca de alvo e já cai na regra do endereço;
+// aqui resta a verificação do certificado.
+func (c *HTTPConfig) secretField() *string             { return &c.BasicAuthPass }
+func (c *HTTPConfig) secretHeaders() map[string]string { return c.Headers }
+func (c *HTTPConfig) transportLevel() int {
+	if c.SkipTLSVerify {
+		return 0
+	}
+	return 1
+}
+
+// sensitiveHeaderWords marcam um cabeçalho como credencial quando aparecem
+// no nome, sem diferenciar caixa: Authorization, Cookie, X-Api-Key,
+// X-Auth-Token, X-Client-Secret. Mascarar um cabeçalho inofensivo custa
+// pouco; deixar passar um token custa a credencial.
+var sensitiveHeaderWords = []string{"auth", "cookie", "token", "key", "secret", "password", "passwd", "session", "credential"}
+
+func sensitiveHeader(name string) bool {
+	lower := strings.ToLower(name)
+	for _, w := range sensitiveHeaderWords {
+		if strings.Contains(lower, w) {
+			return true
+		}
+	}
+	return false
+}
 
 // RedactConfig devolve a configuração sem a credencial, para sair pela
 // API.
 //
-// A senha é trocada pelo marcador password_set: a interface precisa saber
-// que existe uma para dizer "deixe em branco para manter", sem saber qual
-// é.
+// A senha é trocada pelo marcador (password_set, basic_auth_pass_set): a
+// interface precisa saber que existe uma para dizer "deixe em branco para
+// manter", sem saber qual é. Os cabeçalhos de credencial continuam na
+// lista com o valor mascarado, para a interface mostrar que existem.
 // Uma configuração que não se consegue interpretar sai vazia, nunca crua:
 // na dúvida, não se publica o que pode conter segredo.
 func RedactConfig(t domain.MonitorType, raw json.RawMessage) json.RawMessage {
@@ -125,6 +160,12 @@ func RedactConfig(t domain.MonitorType, raw json.RawMessage) json.RawMessage {
 	}
 	had := *cfg.secretField() != ""
 	*cfg.secretField() = ""
+	headers := cfg.secretHeaders()
+	for name, value := range headers {
+		if value != "" && sensitiveHeader(name) {
+			headers[name] = secretMask
+		}
+	}
 
 	out, err := json.Marshal(cfg)
 	if err != nil {
@@ -157,7 +198,8 @@ func CanonicalConfig(m domain.Monitor) (json.RawMessage, error) {
 // Como a senha não volta no GET, editar qualquer outro campo chega sem
 // ela; tratar a ausência como "sem senha" apagaria a credencial a cada
 // salvamento. Senha presente, mesmo vazia e em qualquer grafia que o
-// checker aceite, é a nova.
+// checker aceite, é a nova. Um cabeçalho de credencial que volta com a
+// máscara retoma o valor guardado.
 //
 // A configuração sai reescrita pela struct do checker, então só a grafia
 // canônica chega ao banco, sem o marcador nem campo desconhecido.
@@ -199,6 +241,21 @@ func CarrySecrets(next, prev domain.Monitor) (json.RawMessage, error) {
 		*cfg.secretField() = *old.secretField()
 	}
 
+	headers := cfg.secretHeaders()
+	for name, value := range headers {
+		if value != secretMask || !sensitiveHeader(name) {
+			continue
+		}
+		stored, ok := storedHeader(old, name)
+		if !ok {
+			return nil, fmt.Errorf("checker: o cabeçalho %s chegou mascarado e não há valor guardado; informe o valor", name)
+		}
+		if err := mayCarry("o valor do cabeçalho " + name); err != nil {
+			return nil, err
+		}
+		headers[name] = stored
+	}
+
 	return json.Marshal(cfg)
 }
 
@@ -215,4 +272,22 @@ func fieldSent(raw json.RawMessage, field string) bool {
 		}
 	}
 	return false
+}
+
+// storedHeader procura o valor guardado de um cabeçalho, pelo nome exato
+// e, na falta, sem diferenciar caixa, como o HTTP trata nomes.
+func storedHeader(old secretHolder, name string) (string, bool) {
+	if old == nil {
+		return "", false
+	}
+	headers := old.secretHeaders()
+	if v, ok := headers[name]; ok && v != secretMask {
+		return v, true
+	}
+	for k, v := range headers {
+		if strings.EqualFold(k, name) && v != secretMask {
+			return v, true
+		}
+	}
+	return "", false
 }
