@@ -16,6 +16,7 @@ import (
 
 	"github.com/pressly/goose/v3"
 
+	"github.com/Jbnado/upwatch/internal/secretbox"
 	"github.com/Jbnado/upwatch/internal/store"
 	"github.com/Jbnado/upwatch/internal/store/migrations"
 
@@ -31,11 +32,27 @@ type Store struct {
 
 // OpenSQLite abre (ou cria) o banco SQLite em path e aplica as migrations.
 //
-// path pode ser um arquivo ou ":memory:". Pragmas são passados na DSN
+// path pode ser um arquivo ou ":memory:". keys entrega a chave das
+// credenciais depois de o store olhar o banco (ver secretbox.Source).
+//
+// Pragmas são passados na DSN
 // porque valem por conexão — configurá-los uma vez só depois de abrir
 // deixaria as demais conexões do pool sem eles, e a cascata de chaves
 // estrangeiras silenciosamente desligada.
-func OpenSQLite(path string) (*Store, error) {
+func OpenSQLite(path string, keys secretbox.Source) (*Store, error) {
+	s, err := connectSQLite(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.start(keys); err != nil {
+		_ = s.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+// connectSQLite abre a conexão, sem migrar nem destravar as credenciais.
+func connectSQLite(path string) (*Store, error) {
 	params := url.Values{}
 	// Sem isto ON DELETE CASCADE não age e o histórico de um monitor
 	// apagado vira lixo órfão. SQLite chega com a checagem desligada.
@@ -59,12 +76,7 @@ func OpenSQLite(path string) (*Store, error) {
 		return nil, fmt.Errorf("sqlstore: abrindo %q: %w", path, err)
 	}
 
-	s := &Store{db: &db{sql: conn, dialect: migrations.SQLite}, dialect: migrations.SQLite}
-	if err := s.migrate(); err != nil {
-		_ = conn.Close()
-		return nil, err
-	}
-	return s, nil
+	return &Store{db: &db{sql: conn, dialect: migrations.SQLite}, dialect: migrations.SQLite}, nil
 }
 
 // OpenPostgres abre a conexão com PostgreSQL e aplica as migrations.
@@ -77,7 +89,21 @@ func OpenSQLite(path string) (*Store, error) {
 // O mesmo SQL serve aos dois bancos. As duas diferenças que o schema não
 // resolve — marcador de parâmetro e descoberta do id gerado — vivem em
 // db.go, na borda, e não espalhadas pelos repositórios.
-func OpenPostgres(dsn string) (*Store, error) {
+func OpenPostgres(dsn string, keys secretbox.Source) (*Store, error) {
+	s, err := connectPostgres(dsn)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.start(keys); err != nil {
+		_ = s.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+// connectPostgres abre a conexão, sem migrar nem destravar as
+// credenciais.
+func connectPostgres(dsn string) (*Store, error) {
 	conn, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("sqlstore: abrindo postgres: %w", err)
@@ -101,12 +127,7 @@ func OpenPostgres(dsn string) (*Store, error) {
 		return nil, fmt.Errorf("sqlstore: conectando ao postgres: %w", err)
 	}
 
-	s := &Store{db: &db{sql: conn, dialect: migrations.Postgres}, dialect: migrations.Postgres}
-	if err := s.migrate(); err != nil {
-		_ = conn.Close()
-		return nil, err
-	}
-	return s, nil
+	return &Store{db: &db{sql: conn, dialect: migrations.Postgres}, dialect: migrations.Postgres}, nil
 }
 
 const (
@@ -121,15 +142,42 @@ const (
 //
 // Existe para o binário não precisar de um switch na inicialização, e
 // para "banco plugável" ter um ponto de entrada só.
-func Open(driver, dsn string) (*Store, error) {
+func Open(driver, dsn string, keys secretbox.Source) (*Store, error) {
 	switch driver {
 	case string(migrations.SQLite):
-		return OpenSQLite(dsn)
+		return OpenSQLite(dsn, keys)
 	case string(migrations.Postgres):
-		return OpenPostgres(dsn)
+		return OpenPostgres(dsn, keys)
 	default:
-		return nil, fmt.Errorf("sqlstore: driver desconhecido %q; use sqlite ou postgres", driver)
+		return nil, unknownDriver(driver)
 	}
+}
+
+// connect abre a conexão do driver configurado, sem migrar nem destravar
+// as credenciais. Serve a quem precisa mexer no banco sem a chave.
+func connect(driver, dsn string) (*Store, error) {
+	switch driver {
+	case string(migrations.SQLite):
+		return connectSQLite(dsn)
+	case string(migrations.Postgres):
+		return connectPostgres(dsn)
+	default:
+		return nil, unknownDriver(driver)
+	}
+}
+
+func unknownDriver(driver string) error {
+	return fmt.Errorf("sqlstore: driver desconhecido %q; use sqlite ou postgres", driver)
+}
+
+// start migra o schema e destrava as credenciais. Nenhuma das duas
+// etapas é opcional: um store que abrisse sem chave gravaria a primeira
+// senha em texto puro.
+func (s *Store) start(keys secretbox.Source) error {
+	if err := s.migrate(); err != nil {
+		return err
+	}
+	return s.unlockSecrets(keys)
 }
 
 // migrate aplica todas as migrations pendentes do dialeto.

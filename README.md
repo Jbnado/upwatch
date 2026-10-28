@@ -107,8 +107,16 @@ você quer mais de uma instância:
 
 ```bash
 curl -O https://raw.githubusercontent.com/Jbnado/upwatch/main/compose.postgres.yaml
-POSTGRES_PASSWORD=$(openssl rand -base64 24) docker compose -f compose.postgres.yaml up -d
+mkdir -p secrets
+openssl rand -hex 24 > secrets/postgres_password
+printf 'postgres://upwatch:%s@postgres:5432/upwatch?sslmode=disable\n' \
+  "$(cat secrets/postgres_password)" > secrets/upwatch_db_dsn
+openssl rand -base64 32 > secrets/upwatch_secret_key
+docker compose -f compose.postgres.yaml up -d
 ```
+
+A senha do banco, o DSN e a chave dos segredos vão por arquivo (ver
+[Segredos](#segredos)).
 
 ### Binário
 
@@ -129,7 +137,7 @@ configuração nenhuma e uma instalação séria versiona o YAML.
 |---|---|---|
 | `UPWATCH_LISTEN` | `:8080` | Endereço de escuta |
 | `UPWATCH_DB_DRIVER` | `sqlite` | `sqlite` ou `postgres` |
-| `UPWATCH_DB_DSN` | `/data/upwatch.db` | Caminho do arquivo ou string de conexão |
+| `UPWATCH_DB_DSN` | `/data/upwatch.db` | Caminho do arquivo ou string de conexão; aceita `_FILE` |
 | `UPWATCH_RETENTION_RAW` | `168h` | Quanto tempo as batidas cruas duram |
 | `UPWATCH_RETENTION_HOURLY` | `2160h` | Retenção do agregado horário |
 | `UPWATCH_RETENTION_DAILY` | `17520h` | Retenção do agregado diário |
@@ -138,7 +146,8 @@ configuração nenhuma e uma instalação séria versiona o YAML.
 | `UPWATCH_SESSION_TTL` | `168h` | Validade da sessão da interface |
 | `UPWATCH_SECURE_COOKIES` | `false` | Marca o cookie como Secure; ligue ao servir por HTTPS |
 | `UPWATCH_PUBLIC_URL` | vazio | Endereço externo, para o feed da página pública usar URLs absolutas |
-| `UPWATCH_METRICS_TOKEN` | vazio | Exige `Authorization: Bearer <token>` em `/metrics`; vazio deixa aberto enquanto não houver conta restrita |
+| `UPWATCH_METRICS_TOKEN` | vazio | Exige `Authorization: Bearer <token>` em `/metrics`; vazio deixa aberto enquanto não houver conta restrita; aceita `_FILE` |
+| `UPWATCH_SECRET_KEY` | vazio | Chave (base64 de 32 bytes) que cifra as credenciais no banco; vazia, o SQLite usa a gerada ao lado do banco; aceita `_FILE` (ver [Segredos](#segredos)) |
 | `UPWATCH_RESTRICT_PRIVATE_TARGETS` | `true` | Recusa, para contas com acesso restrito a grupos, monitor cujo alvo resolva para a rede interna do servidor |
 
 Durações aceitam sufixo de dias: `90d` é o mesmo que `2160h`.
@@ -163,6 +172,99 @@ times monitorarem a rede interna. A conferência ainda é só no cadastro:
 o checker não confere na hora de conectar, e um nome que troca de
 endereço depois (DNS rebinding) ou um redirecionamento HTTP para dentro
 passam (issue #59).
+
+## Segredos
+
+O UpWatch guarda credenciais que precisa usar de volta: a senha do
+Redis, do PostgreSQL e do MySQL monitorados, o basic auth e os
+cabeçalhos de credencial do HTTP, o token do push, a senha SMTP, o token
+do ntfy e as URLs de webhook (a do Discord e a do Slack levam o token no
+caminho). Elas não podem virar hash, como as senhas de quem entra na
+interface, então ficam **cifradas no banco** com AES-256-GCM. Um backup,
+uma cópia do volume ou um `pg_dump` não as entrega em texto. Na
+memória e pela API nada muda: quem lê continua sem vê-las, e o
+administrador continua vendo o token do push para copiar o endereço.
+
+A coluna que a busca do `/push` usa guarda só o SHA-256 do token.
+
+### Onde fica a chave
+
+- `UPWATCH_SECRET_KEY` (o valor) ou `UPWATCH_SECRET_KEY_FILE` (o caminho
+  de um arquivo com ele). A chave é base64 de 32 bytes:
+  `openssl rand -base64 32`.
+- **SQLite sem chave configurada:** na primeira subida o UpWatch gera uma
+  em `secret.key`, ao lado do banco (`/data/secret.key` na imagem), com
+  permissão 600, e avisa no log. Assim um `docker run` sem configuração
+  continua subindo. Mas a chave ao lado do banco protege pouco: quem
+  copia o volume leva os dois. Copie-a para fora do volume, aponte
+  `UPWATCH_SECRET_KEY_FILE` para a cópia e apague a gerada.
+- **PostgreSQL:** a chave precisa ser configurada. Ela não é gerada
+  sozinha porque cada instância sortearia a sua, e uma não leria o que
+  a outra gravou. Todas as instâncias usam a mesma.
+
+Na partida, o UpWatch confere a chave contra um registro-sentinela
+cifrado. **Chave errada**, ou **chave ausente num banco que já tem
+credencial cifrada**, recusa a subida com uma mensagem dizendo o que
+configurar, em vez de rodar sem conseguir verificar nada.
+
+Ao atualizar de uma versão anterior, as credenciais em texto puro são
+cifradas na primeira subida com chave, sem perda. Voltar o binário para
+uma versão anterior depois disso não é suportado: ela leria a cifra como
+se fosse a senha.
+
+### Se a chave se perder
+
+As credenciais guardadas se perdem com ela: não há como decifrá-las, e
+nenhuma porta dos fundos existe para isso. O resto do banco continua
+íntegro — monitores, histórico, incidentes, páginas públicas, contas.
+
+Enquanto restar credencial cifrada, o UpWatch recusa subir sem a chave.
+Para voltar, com ele parado, apague as credenciais cifradas e suba com
+uma chave nova:
+
+```bash
+upwatch forget-secrets --yes
+```
+
+O comando troca cada credencial cifrada por vazio e apaga o
+registro-sentinela; nada mais é tocado. Depois de subir, digite de novo
+pela interface as senhas dos monitores, os tokens e as URLs dos canais
+(o monitor push precisa de um token novo). No SQLite sem chave
+configurada, apague também a `secret.key` antiga, para a subida gerar
+outra.
+
+Por isso a chave entra no backup, **guardada em outro lugar** que o
+banco.
+
+### Trocando a chave
+
+Com o UpWatch parado (uma instância no ar continuaria gravando com a
+chave antiga):
+
+```bash
+openssl rand -base64 32 > nova.key
+upwatch rotate-secret-key --old-key-file atual.key --new-key-file nova.key
+```
+
+Sem as opções, a chave atual é a da partida (`UPWATCH_SECRET_KEY`,
+`_FILE` ou a gerada ao lado do banco) e a nova vem de
+`UPWATCH_NEW_SECRET_KEY` ou `UPWATCH_NEW_SECRET_KEY_FILE`. Na imagem:
+`docker compose run --rm upwatch rotate-secret-key ...`. Tudo é recifrado
+numa transação só: ou passa inteiro para a nova, ou nada muda. Depois,
+aponte `UPWATCH_SECRET_KEY_FILE` para a nova antes de subir.
+
+### Opções sensíveis por arquivo (`_FILE`)
+
+`UPWATCH_DB_DSN`, `UPWATCH_METRICS_TOKEN` e `UPWATCH_SECRET_KEY` aceitam
+também `<NOME>_FILE`, com o caminho de um arquivo cujo conteúdo é o
+valor — a convenção das imagens oficiais, e o que o Docker Swarm, o
+Kubernetes e o Compose montam como secret. Variável de ambiente aparece
+em `docker inspect`, em `/proc/<pid>/environ` e em dump de diagnóstico;
+arquivo, não. A quebra de linha final do arquivo é ignorada. Definir a
+variável e a `_FILE` juntas para a partida com erro, assim como uma
+`_FILE` que aponta para arquivo inexistente ou vazio. O
+[`compose.postgres.yaml`](compose.postgres.yaml) mostra o uso com
+`secrets:`.
 
 ## API
 

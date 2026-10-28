@@ -34,6 +34,16 @@ UPWATCH_TEST_REDIS_ADDR=127.0.0.1:16379 UPWATCH_TEST_POSTGRES_DSN='postgres://up
 
 Sem a variável o teste se anuncia como pulado, e não some em silêncio.
 
+### Segredos
+
+A CI varre o histórico do PR com o [gitleaks](https://github.com/gitleaks/gitleaks) e falha se achar algo que pareça credencial, inclusive URL com senha embutida (`postgres://usuario:senha@host`). Para conferir antes do push:
+
+```bash
+gitleaks git . --config .gitleaks.toml
+```
+
+Teste que precisa de um valor com cara de senha usa um valor fictício e o registra no allowlist do `.gitleaks.toml`, com o motivo. A exceção é sempre o valor exato, nunca um caminho inteiro.
+
 ## Como este projeto escreve testes
 
 **Teste antes do código, sem exceção.** A suíte não é rede de segurança

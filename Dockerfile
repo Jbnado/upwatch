@@ -6,7 +6,7 @@
 # sobe e se atualiza como uma unidade só.
 
 # ---------- interface ----------
-FROM node:26-alpine AS web
+FROM node:26-alpine@sha256:40cd011b55415bc894e45b02fdd5a5dfde056921b7d23a64c74f80497af48797 AS web
 
 WORKDIR /app/web
 
@@ -33,7 +33,7 @@ RUN pnpm vite build
 
 
 # ---------- servidor ----------
-FROM golang:1.26-alpine AS build
+FROM golang:1.26.10-alpine@sha256:a2012b4a1d1f9f7e9f44e0d39b805a901e856b1dd80b4e6ee4338db547050308 AS build
 
 WORKDIR /src
 
@@ -60,7 +60,7 @@ RUN CGO_ENABLED=0 go build \
 
 
 # ---------- imagem final ----------
-FROM alpine:3.24
+FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 
 # Certificados raiz: sem eles todo monitor HTTPS falharia na validação do
 # certificado do alvo, e o erro pareceria queda do serviço monitorado.
@@ -87,8 +87,11 @@ USER upwatch:upwatch
 WORKDIR /data
 VOLUME ["/data"]
 
-ENV UPWATCH_DB_DSN=/data/upwatch.db \
-    UPWATCH_LISTEN=0.0.0.0:8080
+# O banco não é fixado aqui: o padrão do próprio UpWatch já é
+# /data/upwatch.db. Uma UPWATCH_DB_DSN herdada da imagem colidiria com a
+# UPWATCH_DB_DSN_FILE de quem passa o DSN do PostgreSQL por secret, e a
+# partida pararia por haver as duas.
+ENV UPWATCH_LISTEN=0.0.0.0:8080
 
 EXPOSE 8080
 

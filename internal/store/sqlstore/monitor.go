@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Jbnado/upwatch/internal/checker"
 	"github.com/Jbnado/upwatch/internal/domain"
 	"github.com/Jbnado/upwatch/internal/store"
 )
@@ -59,15 +60,38 @@ func (r *monitorRepo) Create(ctx context.Context, m *domain.Monitor) error {
 		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 		WHERE ` + groupExists
 
-	id, err := r.db.insertID(ctx, q,
-		m.Name, m.Type.String(), m.Target,
-		m.Interval.Milliseconds(), m.Timeout.Milliseconds(),
-		m.ConfirmationThreshold, m.DegradedLatency.Milliseconds(),
-		encodeConfig(m.Config), m.ParentID,
-		boolToInt(m.Enabled), tags, toMillis(now), toMillis(now), toMillis(now),
-		nullableToken(m.PushToken), m.GroupID,
-		m.GroupID, m.GroupID,
-	)
+	// A cifra leva o id do registro, que só existe depois do INSERT. A
+	// linha nasce sem a configuração e a recebe cifrada na mesma
+	// transação: o texto puro não chega ao banco nem por um instante.
+	fields := checker.SecretFields(m.Type)
+	config := encodeConfig(m.Config)
+	insertConfig := config
+	if !fields.Empty() {
+		insertConfig = emptyConfig
+	}
+
+	var id int64
+	err = r.db.inTx(ctx, func(t *tx) error {
+		var err error
+		id, err = t.insertID(ctx, q,
+			m.Name, m.Type.String(), m.Target,
+			m.Interval.Milliseconds(), m.Timeout.Milliseconds(),
+			m.ConfirmationThreshold, m.DegradedLatency.Milliseconds(),
+			insertConfig, m.ParentID,
+			boolToInt(m.Enabled), tags, toMillis(now), toMillis(now), toMillis(now),
+			nullableToken(hashPushToken(m.PushToken)), m.GroupID,
+			m.GroupID, m.GroupID,
+		)
+		if err != nil || insertConfig == config {
+			return err
+		}
+		sealed, err := r.db.sealForWrite(config, fields, monitorTable, id)
+		if err != nil {
+			return err
+		}
+		_, err = t.ExecContext(ctx, `UPDATE monitor SET config = ? WHERE id = ?`, sealed, id)
+		return err
+	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("grupo %d: %w", *m.GroupID, store.ErrNotFound)
 	}
@@ -82,7 +106,7 @@ func (r *monitorRepo) Create(ctx context.Context, m *domain.Monitor) error {
 func (r *monitorRepo) Get(ctx context.Context, id int64) (domain.Monitor, error) {
 	row := r.db.QueryRowContext(ctx, `SELECT`+monitorColumns+` FROM monitor WHERE id = ?`, id)
 
-	m, err := scanMonitor(row)
+	m, err := r.db.scanMonitor(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.Monitor{}, fmt.Errorf("monitor %d: %w", id, store.ErrNotFound)
 	}
@@ -106,7 +130,10 @@ func (r *monitorRepo) Update(ctx context.Context, m domain.Monitor) error {
 	}
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	config := encodeConfig(m.Config)
+	config, err := r.configForUpdate(ctx, m)
+	if err != nil {
+		return err
+	}
 	intervalMS := m.Interval.Milliseconds()
 	enabled := boolToInt(m.Enabled)
 
@@ -129,7 +156,7 @@ func (r *monitorRepo) Update(ctx context.Context, m domain.Monitor) error {
 		intervalMS, m.Timeout.Milliseconds(),
 		m.ConfirmationThreshold, m.DegradedLatency.Milliseconds(),
 		config, m.ParentID,
-		enabled, tags, toMillis(now), nullableToken(m.PushToken), m.GroupID, m.ID,
+		enabled, tags, toMillis(now), nullableToken(hashPushToken(m.PushToken)), m.GroupID, m.ID,
 		m.GroupID, m.GroupID,
 	)
 	if err != nil {
@@ -138,14 +165,45 @@ func (r *monitorRepo) Update(ctx context.Context, m domain.Monitor) error {
 	return requireAffected(res, fmt.Sprintf("monitor %d ou o grupo dele", m.ID))
 }
 
-// FindByPushToken devolve o monitor dono do token de push.
+// configForUpdate devolve a configuração a gravar numa edição.
+//
+// Cada cifragem sorteia um nonce, então a mesma senha cifrada de novo
+// sai diferente, e o UPDATE, que compara a configuração gravada com a
+// nova para decidir se a espera do push recomeça, veria mudança em toda
+// edição. Quando o conteúdo decifrado não mudou, regrava-se a cifra que
+// já está lá, e a comparação continua sendo feita no próprio UPDATE,
+// contra a linha como estiver.
+func (r *monitorRepo) configForUpdate(ctx context.Context, m domain.Monitor) (string, error) {
+	fields := checker.SecretFields(m.Type)
+	config := encodeConfig(m.Config)
+	sealed, err := r.db.sealForWrite(config, fields, monitorTable, m.ID)
+	if err != nil || sealed == config {
+		return sealed, err
+	}
+
+	var current, typ string
+	err = r.db.QueryRowContext(ctx, `SELECT config, type FROM monitor WHERE id = ?`, m.ID).Scan(&current, &typ)
+	if err != nil || typ != m.Type.String() {
+		// Sem linha, o UPDATE devolve o "não existe"; com outro tipo, a
+		// configuração mudou de qualquer jeito.
+		return sealed, nil
+	}
+	plain, err := r.db.openForRead(current, fields, monitorTable, m.ID)
+	if err == nil && sameJSON(plain, []byte(config)) {
+		return current, nil
+	}
+	return sealed, nil
+}
+
+// FindByPushToken devolve o monitor dono do token de push. A coluna
+// guarda o hash do token, e a busca compara hashes.
 func (r *monitorRepo) FindByPushToken(ctx context.Context, token string) (domain.Monitor, error) {
 	if token == "" {
 		return domain.Monitor{}, fmt.Errorf("token de push vazio: %w", store.ErrNotFound)
 	}
-	row := r.db.QueryRowContext(ctx, `SELECT`+monitorColumns+` FROM monitor WHERE push_token = ?`, token)
+	row := r.db.QueryRowContext(ctx, `SELECT`+monitorColumns+` FROM monitor WHERE push_token = ?`, hashPushToken(token))
 
-	m, err := scanMonitor(row)
+	m, err := r.db.scanMonitor(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.Monitor{}, fmt.Errorf("token de push: %w", store.ErrNotFound)
 	}
@@ -218,7 +276,7 @@ func (r *monitorRepo) List(ctx context.Context, f store.MonitorFilter) (store.Pa
 
 	var items []domain.Monitor
 	for rows.Next() {
-		m, err := scanMonitor(rows)
+		m, err := r.db.scanMonitor(rows)
 		if err != nil {
 			return store.Page[domain.Monitor]{}, err
 		}
@@ -241,7 +299,8 @@ func (r *monitorRepo) List(ctx context.Context, f store.MonitorFilter) (store.Pa
 // scanner cobre *sql.Row e *sql.Rows, que só compartilham Scan.
 type scanner interface{ Scan(dest ...any) error }
 
-func scanMonitor(sc scanner) (domain.Monitor, error) {
+// scanMonitor lê a linha e decifra as credenciais da configuração.
+func (d *db) scanMonitor(sc scanner) (domain.Monitor, error) {
 	var (
 		m          domain.Monitor
 		typeName   string
@@ -267,13 +326,15 @@ func scanMonitor(sc scanner) (domain.Monitor, error) {
 	if err != nil {
 		return domain.Monitor{}, err
 	}
-	m.Config = json.RawMessage(configJSON)
 
 	typ, err := domain.ParseMonitorType(typeName)
 	if err != nil {
 		return domain.Monitor{}, fmt.Errorf("sqlstore: monitor %d: %w", m.ID, err)
 	}
 	m.Type = typ
+	if m.Config, err = d.openForRead(configJSON, checker.SecretFields(typ), monitorTable, m.ID); err != nil {
+		return domain.Monitor{}, err
+	}
 	m.Interval = time.Duration(intervalMS) * time.Millisecond
 	m.Timeout = time.Duration(timeoutMS) * time.Millisecond
 	m.DegradedLatency = time.Duration(degradedMS) * time.Millisecond
@@ -281,7 +342,11 @@ func scanMonitor(sc scanner) (domain.Monitor, error) {
 	m.CreatedAt = fromMillis(createdMS)
 	m.UpdatedAt = fromMillis(updatedMS)
 	m.RearmedAt = fromMillis(rearmedMS)
-	m.PushToken = pushToken.String
+	// A coluna guarda só o hash. O token sai da configuração, e só no
+	// monitor que é dono dele na busca.
+	if pushToken.Valid {
+		m.PushToken = checker.PushTokenOf(m)
+	}
 
 	if parentID.Valid {
 		id := parentID.Int64

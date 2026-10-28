@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Jbnado/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/secretbox"
 )
 
 // sendTimeout limita cada entrega.
@@ -48,29 +49,54 @@ type Notifier interface {
 // canais é o registro de tipos atendidos, na ordem em que a interface os
 // oferece.
 //
-// Build e Types leem daqui: com duas listas, um tipo acabaria oferecido na
-// tela e recusado ao salvar, ou aceito pela API e inalcançável pela tela.
-// Um canal novo é uma linha aqui e um construtor.
+// Build, Types e SecretFields leem daqui: com duas listas, um tipo
+// acabaria oferecido na tela e recusado ao salvar, ou aceito pela API e
+// com a credencial em texto puro no banco. Um canal novo é uma linha aqui
+// e um construtor, e a linha obriga a dizer o que nele é segredo.
 var canais = []struct {
-	tipo string
-	novo func(json.RawMessage) (Notifier, error)
+	tipo     string
+	novo     func(json.RawMessage) (Notifier, error)
+	segredos secretbox.Fields
 }{
-	{"webhook", NewWebhook},
-	{"discord", NewDiscord},
-	{"slack", NewSlack},
-	{"email", NewEmail},
-	{"ntfy", NewNtfy},
+	{"webhook", NewWebhook, webhookSecrets},
+	{"discord", NewDiscord, webhookSecrets},
+	{"slack", NewSlack, webhookSecrets},
+	{"email", NewEmail, secretbox.Fields{Names: []string{"password"}}},
+	{"ntfy", NewNtfy, secretbox.Fields{Names: []string{"token"}}},
 }
+
+// webhookSecrets vale para os três canais de webhook. A URL do Discord e a
+// do Slack levam o token no caminho: quem a tem publica no canal. Os
+// cabeçalhos existem para autenticar contra o destino, então todos são
+// credencial — ao contrário do monitor HTTP, aqui nenhum volta pela API
+// para a interface mostrar.
+var webhookSecrets = secretbox.Fields{Names: []string{"url"}, Map: "headers"}
+
+// normalize é como o tipo gravado vira o tipo do registro.
+func normalize(kind string) string { return strings.ToLower(strings.TrimSpace(kind)) }
 
 // Build monta o notificador do tipo pedido.
 func Build(kind string, config json.RawMessage) (Notifier, error) {
-	tipo := strings.ToLower(strings.TrimSpace(kind))
+	tipo := normalize(kind)
 	for _, c := range canais {
 		if c.tipo == tipo {
 			return c.novo(config)
 		}
 	}
 	return nil, fmt.Errorf("notifier: tipo de canal desconhecido %q", kind)
+}
+
+// SecretFields diz onde a configuração do canal guarda credencial, para
+// a cifragem em repouso. Tipo desconhecido não tem o que cifrar: nem
+// chega a ser montado.
+func SecretFields(kind string) secretbox.Fields {
+	tipo := normalize(kind)
+	for _, c := range canais {
+		if c.tipo == tipo {
+			return c.segredos
+		}
+	}
+	return secretbox.Fields{}
 }
 
 // Types lista os canais atendidos, para a interface montar a escolha.
