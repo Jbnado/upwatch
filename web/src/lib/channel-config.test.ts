@@ -3,6 +3,7 @@ import {
   montarConfig,
   montarConfigEmail,
   montarConfigNtfy,
+  ntfyServidorPublico,
   type EntradaEmail,
   type LinhaCabecalho,
 } from "./channel-config";
@@ -228,6 +229,24 @@ describe("montarConfigNtfy", () => {
     for (const topico of ["", "a/b", "meu topico", "ação"]) {
       const r = montarConfigNtfy({ servidor: "", topico, token: "" });
       expect(r.erro?.campo, `aceitou ${JSON.stringify(topico)}`).toBe("topico");
+    }
+  });
+});
+
+describe("ntfyServidorPublico", () => {
+  // No servidor público o tópico é a única credencial, e quem cadastra
+  // precisa saber disso antes de escolher "alertas" como nome. O aviso
+  // aparece em branco também, porque é o servidor que vale sem nada
+  // preenchido.
+  it("reconhece o servidor público, inclusive em branco", () => {
+    for (const servidor of ["", "  ", "https://ntfy.sh", "https://NTFY.sh/", "http://ntfy.sh"]) {
+      expect(ntfyServidorPublico(servidor), `servidor ${JSON.stringify(servidor)}`).toBe(true);
+    }
+  });
+
+  it("não confunde servidor próprio com o público", () => {
+    for (const servidor of ["https://ntfy.exemplo.com", "https://ntfy.sh.exemplo.com", "http://localhost:2586"]) {
+      expect(ntfyServidorPublico(servidor), `servidor ${JSON.stringify(servidor)}`).toBe(false);
     }
   });
 });

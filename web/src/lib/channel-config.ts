@@ -161,6 +161,20 @@ export type ConfigNtfy = { server?: string; topic: string; token?: string };
 /** O formato de tópico que o ntfy aceita. */
 const TOPICO_NTFY = /^[A-Za-z0-9_-]{1,64}$/;
 
+/**
+ * Diz se o canal vai publicar no ntfy.sh público, onde o tópico é a única
+ * credencial. Em branco conta: é o servidor que vale sem nada preenchido.
+ */
+export function ntfyServidorPublico(servidor: string): boolean {
+  const s = servidor.trim();
+  if (s === "") return true;
+  try {
+    return new URL(s).hostname.toLowerCase() === "ntfy.sh";
+  } catch {
+    return false;
+  }
+}
+
 export function montarConfigNtfy(e: EntradaNtfy): {
   config?: ConfigNtfy;
   erro?: { campo: string; msg: string };

@@ -279,9 +279,16 @@ celular sem conta: o app assina um tópico e recebe a notificação push.
 ```
 
 Sem `server`, vale o público. `token` é opcional, para servidor próprio
-com controle de acesso, e vai como `Authorization: Bearer`. No servidor
-público, quem souber o nome do tópico recebe os avisos — escolha um
-difícil de adivinhar.
+com controle de acesso, e vai como `Authorization: Bearer` — por isso,
+com token, o servidor precisa ser `https://`; só o loopback (`localhost`,
+`127.0.0.1`, `::1`) é aceito por `http://`, porque não sai da máquina. O
+servidor é só o endereço: query, fragmento e usuário e senha na URL são
+recusados no cadastro.
+
+O servidor público é aberto: qualquer um que souber o tópico lê os
+alertas. Ali o tópico é a única credencial, e o cadastro exige ao menos 12
+caracteres — escolha um difícil de adivinhar, ou use servidor próprio com
+token.
 
 A queda chega com prioridade 5, a máxima; a volta e o degradado, com
 prioridade 3. A mesma urgência para tudo ensinaria a ignorar tudo. O título é

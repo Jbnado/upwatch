@@ -206,3 +206,87 @@ func TestNtfyRejectsInvalidConfigUpFront(t *testing.T) {
 		})
 	}
 }
+
+// O token vai como Bearer no cabeçalho. Por http, ele atravessa a rede em
+// claro, e quem estiver no caminho passa a publicar — e, com permissão de
+// leitura, a ler — no tópico. Loopback fica de fora: o ntfy na mesma
+// máquina, atrás de proxy, é o arranjo comum e não sai da máquina.
+func TestNtfyTokenRequiresHTTPSOutsideLoopback(t *testing.T) {
+	recusados := []string{
+		`{"server":"http://ntfy.exemplo.com","topic":"t","token":"tk_x"}`,
+		`{"server":"http://10.0.0.5:8080","topic":"t","token":"tk_x"}`,
+	}
+	for _, cfg := range recusados {
+		if _, err := notifier.NewNtfy(json.RawMessage(cfg)); err == nil {
+			t.Errorf("NewNtfy(%s) accepted a token over plain http", cfg)
+		}
+	}
+
+	aceitos := []string{
+		`{"server":"https://ntfy.exemplo.com","topic":"t","token":"tk_x"}`,
+		`{"server":"http://localhost:2586","topic":"t","token":"tk_x"}`,
+		`{"server":"http://127.0.0.1:2586","topic":"t","token":"tk_x"}`,
+		`{"server":"http://[::1]:2586","topic":"t","token":"tk_x"}`,
+		// Sem token, não há segredo no cabeçalho.
+		`{"server":"http://ntfy.exemplo.com","topic":"t"}`,
+	}
+	for _, cfg := range aceitos {
+		if _, err := notifier.NewNtfy(json.RawMessage(cfg)); err != nil {
+			t.Errorf("NewNtfy(%s) returned %v, want it accepted", cfg, err)
+		}
+	}
+}
+
+// O servidor é concatenado ao tópico para formar a URL. Query ou
+// fragmento engoliriam o tópico — a publicação iria para a raiz do
+// servidor —, e usuário e senha na URL são credencial guardada fora do
+// campo de token, onde a regra do https não alcança.
+func TestNtfyRejectsServerWithQueryFragmentOrUserinfo(t *testing.T) {
+	casos := map[string]string{
+		"query":     `{"server":"https://ntfy.exemplo.com?x=1","topic":"t"}`,
+		"fragmento": `{"server":"https://ntfy.exemplo.com#a","topic":"t"}`,
+		"userinfo":  `{"server":"https://u:p@ntfy.exemplo.com","topic":"t"}`,
+	}
+	for nome, cfg := range casos {
+		t.Run(nome, func(t *testing.T) {
+			if _, err := notifier.NewNtfy(json.RawMessage(cfg)); err == nil {
+				t.Fatalf("NewNtfy(%s) returned nil error, want an error", cfg)
+			}
+		})
+	}
+}
+
+// No ntfy.sh público o tópico é a única credencial: quem souber o nome lê
+// os alertas, que dizem o que caiu e por quê. Um tópico curto como
+// "alertas" é adivinhado por qualquer um que tente.
+func TestNtfyPublicServerRequiresALongTopic(t *testing.T) {
+	recusados := []string{
+		`{"topic":"alertas"}`,
+		`{"server":"https://ntfy.sh","topic":"upwatch"}`,
+		`{"server":"https://NTFY.sh/","topic":"upwatch"}`,
+	}
+	for _, cfg := range recusados {
+		if _, err := notifier.NewNtfy(json.RawMessage(cfg)); err == nil {
+			t.Errorf("NewNtfy(%s) accepted a short topic on the public server", cfg)
+		}
+	}
+	if _, err := notifier.NewNtfy(json.RawMessage(`{"topic":"upwatch-x7k2q9"}`)); err != nil {
+		t.Errorf("NewNtfy with a 14-char topic returned %v, want it accepted", err)
+	}
+	// Servidor próprio decide a própria política de nomes.
+	if _, err := notifier.NewNtfy(json.RawMessage(`{"server":"https://ntfy.exemplo.com","topic":"t"}`)); err != nil {
+		t.Errorf("NewNtfy with a short topic on a private server returned %v, want it accepted", err)
+	}
+}
+
+// Quebra de linha no token vira cabeçalho novo na requisição — ou, no
+// mínimo, uma requisição que o Go recusa montar em todo aviso. Melhor
+// recusar no cadastro.
+func TestNtfyRejectsTokenWithControlCharacters(t *testing.T) {
+	for _, token := range []string{`tk_a\r\nX-Outro: 1`, `tk_a\u0000b`, `tk_a\tb`} {
+		cfg := `{"server":"https://ntfy.exemplo.com","topic":"t","token":"` + token + `"}`
+		if _, err := notifier.NewNtfy(json.RawMessage(cfg)); err == nil {
+			t.Errorf("NewNtfy accepted the token %s", token)
+		}
+	}
+}

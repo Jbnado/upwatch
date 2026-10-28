@@ -1637,16 +1637,24 @@ components:
         server:
           type: string
           default: https://ntfy.sh
-          description: Servidor público ou próprio, http ou https.
+          description: |
+            Servidor público ou próprio, http ou https. Só o endereço -
+            query, fragmento e usuário e senha na URL são recusados.
         topic:
           type: string
           pattern: "^[A-Za-z0-9_-]{1,64}$"
+          description: |
+            No servidor público (ntfy.sh), com ao menos 12 caracteres:
+            lá o tópico é a única credencial, e quem souber o nome lê os
+            alertas.
         token:
           type: string
           writeOnly: true
           description: |
             Token de acesso, para servidor com controle de acesso. Vai
-            como Authorization Bearer. Segredo - nunca volta nas leituras.
+            como Authorization Bearer, por isso exige https - salvo em
+            servidor no loopback (localhost, 127.0.0.1, ::1). Caractere de
+            controle é recusado. Segredo - nunca volta nas leituras.
 
     Incident:
       type: object

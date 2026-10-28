@@ -18,6 +18,7 @@ import {
   montarConfig,
   montarConfigEmail,
   montarConfigNtfy,
+  ntfyServidorPublico,
   type EntradaEmail,
   type EntradaNtfy,
   type LinhaCabecalho,
@@ -456,9 +457,20 @@ function CamposNtfy({
         </Field>
       </div>
 
+      {/* O alerta diz o que caiu e por quê; no servidor público, isso é
+          legível por qualquer um que acerte o nome do tópico. Quem
+          cadastra precisa saber antes de escolher o nome, e não depois. */}
+      {ntfyServidorPublico(valor.servidor) && (
+        <p role="note" className="rounded-sm border-l-2 border-degraded px-3 py-2 text-small text-ink-2">
+          O servidor público é aberto: qualquer um que souber o tópico lê os alertas. Use um
+          tópico com ao menos 12 caracteres, difícil de adivinhar, ou um servidor próprio com
+          token.
+        </p>
+      )}
+
       <Field
         label="token"
-        hint="Só para servidor próprio com controle de acesso. Nunca exibido de novo."
+        hint="Só para servidor próprio com controle de acesso, por https. Nunca exibido de novo."
       >
         <Input
           value={valor.token}
