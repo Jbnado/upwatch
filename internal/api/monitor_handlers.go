@@ -103,15 +103,11 @@ type monitorResponse struct {
 // listagem, a resposta da escrita e o fluxo de eventos, e omitir num lugar
 // só garante que nenhum deles a esqueça.
 //
-// reveal diz se a configuração sai com os segredos que o administrador
-// precisa ler — hoje, o token do push, porque é ele quem cadastra a rotina
-// e copia o endereço; o padrão, e o que vai no fluxo de eventos para todo
-// mundo conectado, é mascarado.
-func toMonitorResponse(m domain.Monitor, reveal bool) monitorResponse {
-	config := checker.RedactConfig(m.Type, m.Config)
-	if !reveal {
-		config = checker.RedactPushToken(m.Type, config)
-	}
+// to diz para quem: o administrador recebe de volta o token do push,
+// porque cadastra a rotina e copia o endereço; quem só lê, e o fluxo de
+// eventos, que vai para todo mundo conectado, não. O que é segredo em
+// cada tipo, e para quem, quem decide é checker.RedactConfig.
+func toMonitorResponse(m domain.Monitor, to checker.Audience) monitorResponse {
 	tags := m.Tags
 	if tags == nil {
 		// Lista vazia em vez de null: o cliente pode iterar sem checar.
@@ -123,7 +119,7 @@ func toMonitorResponse(m domain.Monitor, reveal bool) monitorResponse {
 		TimeoutSeconds:        int(m.Timeout.Seconds()),
 		ConfirmationThreshold: m.ConfirmationThreshold,
 		DegradedLatencyMillis: int(m.DegradedLatency.Milliseconds()),
-		Config:                config,
+		Config:                checker.RedactConfig(m.Type, m.Config, to),
 		ParentID:              m.ParentID,
 		Enabled:               m.Enabled, Tags: tags,
 		CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt,
@@ -132,8 +128,8 @@ func toMonitorResponse(m domain.Monitor, reveal bool) monitorResponse {
 
 // detailResponse é a resposta de um monitor isolado, com o que só faz
 // sentido calcular para um de cada vez.
-func (a *API) detailResponse(m domain.Monitor, reveal bool) monitorResponse {
-	resp := toMonitorResponse(m, reveal)
+func (a *API) detailResponse(m domain.Monitor, to checker.Audience) monitorResponse {
+	resp := toMonitorResponse(m, to)
 	if m.Type != domain.MonitorPush {
 		return resp
 	}
@@ -165,10 +161,10 @@ func (a *API) handleListMonitors(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reveal := canSeeSecrets(r)
+	to := audienceOf(r)
 	items := make([]monitorResponse, 0, len(page.Items))
 	for _, m := range page.Items {
-		items = append(items, toMonitorResponse(m, reveal))
+		items = append(items, toMonitorResponse(m, to))
 	}
 
 	body := map[string]any{"items": items, "has_more": page.HasMore}
@@ -210,8 +206,8 @@ func (a *API) handleCreateMonitor(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.notifyScheduler(m)
-	a.events.publish(event{Type: "monitor.created", Data: toMonitorResponse(m, false)})
-	writeJSON(w, http.StatusCreated, a.detailResponse(m, true))
+	a.events.publish(event{Type: "monitor.created", Data: toMonitorResponse(m, checker.Readers)})
+	writeJSON(w, http.StatusCreated, a.detailResponse(m, checker.Admins))
 }
 
 // handleGetMonitor devolve um monitor.
@@ -226,7 +222,7 @@ func (a *API) handleGetMonitor(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, a.detailResponse(m, canSeeSecrets(r)))
+	writeJSON(w, http.StatusOK, a.detailResponse(m, audienceOf(r)))
 }
 
 // handleUpdateMonitor sobrescreve um monitor.
@@ -270,8 +266,8 @@ func (a *API) handleUpdateMonitor(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.notifyScheduler(m)
-	a.events.publish(event{Type: "monitor.updated", Data: toMonitorResponse(m, false)})
-	writeJSON(w, http.StatusOK, a.detailResponse(m, true))
+	a.events.publish(event{Type: "monitor.updated", Data: toMonitorResponse(m, checker.Readers)})
+	writeJSON(w, http.StatusOK, a.detailResponse(m, checker.Admins))
 }
 
 // handleDeleteMonitor remove um monitor e seu histórico.
@@ -336,12 +332,13 @@ func (a *API) carrySecrets(w http.ResponseWriter, r *http.Request, m *domain.Mon
 	return true
 }
 
-// canSeeSecrets diz se quem pede pode receber os segredos da
-// configuração. Criação e edição nem perguntam: as rotas já são só de
-// administrador.
-func canSeeSecrets(r *http.Request) bool {
-	u, ok := userFrom(r.Context())
-	return ok && u.Role.CanWrite()
+// audienceOf diz para quem a configuração sai nesta requisição. Criação e
+// edição nem perguntam: as rotas já são só de administrador.
+func audienceOf(r *http.Request) checker.Audience {
+	if u, ok := userFrom(r.Context()); ok && u.Role.CanWrite() {
+		return checker.Admins
+	}
+	return checker.Readers
 }
 
 // pushTokenFree recusa o token de push que já pertence a outro monitor.

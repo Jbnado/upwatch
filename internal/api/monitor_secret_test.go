@@ -261,3 +261,60 @@ func TestUpdateHTTPMonitorKeepsTheCredentials(t *testing.T) {
 		t.Errorf("the output-only mask or marker was stored: %s", stored)
 	}
 }
+
+// A configuração sai por um caminho só, com uma regra por público: o
+// administrador lê de volta o token do push, que ele copia para a rotina,
+// e nada mais; o observador não lê segredo nenhum. As senhas dos
+// protocolos e do basic auth e os cabeçalhos de credencial não voltam
+// para ninguém. Dois caminhos de ocultação, um por PR, divergiriam: o
+// primeiro tipo novo com segredo seria lembrado num e esquecido no outro.
+func TestConfigSecretsFollowTheAudience(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+	ids := []int64{
+		s.createMonitor(t, redisMonitorBody("cache:6379", map[string]any{"password": monitorSecret})),
+		s.createMonitor(t, httpMonitorBody("https://api.exemplo.com/saude")),
+		s.createMonitor(t, pushMonitorBody("backup", pushToken)),
+	}
+	pushID := ids[2]
+
+	readAll := func(t *testing.T) map[string]string {
+		t.Helper()
+		bodies := map[string]string{}
+		paths := []string{"/api/v1/monitors"}
+		for _, id := range ids {
+			paths = append(paths, "/api/v1/monitors/"+itoa(id))
+		}
+		for _, path := range paths {
+			r := s.do(t, http.MethodGet, path, nil)
+			assertStatus(t, r, http.StatusOK)
+			body, _ := io.ReadAll(r.Body)
+			bodies[path] = string(body)
+		}
+		return bodies
+	}
+
+	for path, body := range readAll(t) {
+		if strings.Contains(body, monitorSecret) {
+			t.Errorf("admin %s leaks the redis password: %s", path, body)
+		}
+		if leak := leaksHTTPSecret(body); leak != "" {
+			t.Errorf("admin %s leaks %q: %s", path, leak, body)
+		}
+	}
+	// Controle positivo: sem ele, a verificação do observador abaixo
+	// passaria também se o token não voltasse para ninguém.
+	if body := readAll(t)["/api/v1/monitors/"+itoa(pushID)]; !strings.Contains(body, pushToken) {
+		t.Fatalf("the admin does not see the push token: %s", body)
+	}
+
+	s.comoObservador(t)
+	for path, body := range readAll(t) {
+		if strings.Contains(body, monitorSecret) || strings.Contains(body, pushToken) {
+			t.Errorf("viewer %s leaks a secret: %s", path, body)
+		}
+		if leak := leaksHTTPSecret(body); leak != "" {
+			t.Errorf("viewer %s leaks %q: %s", path, leak, body)
+		}
+	}
+}

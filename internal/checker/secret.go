@@ -71,9 +71,41 @@ func decodeAs[T any, P interface {
 	return P(&v), nil
 }
 
-// secretKinds são os tipos cuja configuração carrega credencial. A lista
-// mora aqui, e não em cada handler, para a omissão no GET e a preservação
-// na edição nunca divergirem.
+// Audience é para quem a configuração sai pela API.
+type Audience int
+
+const (
+	// Readers é quem só lê, e também o fluxo de eventos, que vai para todo
+	// mundo conectado. É o valor zero de propósito: quem esquecer de
+	// escolher entrega o mínimo.
+	Readers Audience = iota
+	// Admins cadastram os monitores e leem de volta o que copiam para a
+	// rotina monitorada.
+	Admins
+)
+
+func (a Audience) String() string {
+	if a == Admins {
+		return "administrador"
+	}
+	return "leitor"
+}
+
+// operatorSecrets são os segredos que o administrador lê de volta e quem
+// só lê, não, pelo nome do campo na configuração.
+//
+// O token do push compõe o endereço que o administrador copia para a
+// rotina, então escondê-lo dele como a uma senha obrigaria a gerar outro
+// a cada visita ao formulário. Nas mãos de um observador, é a credencial
+// do /push: mantém o monitor verde com o serviço parado, ou o derruba com
+// um "down" falso.
+var operatorSecrets = map[domain.MonitorType]string{
+	domain.MonitorPush: "token",
+}
+
+// secretKinds são os tipos cuja configuração carrega credencial que não
+// volta para ninguém. A lista mora aqui, e não em cada handler, para a
+// omissão no GET e a preservação na edição nunca divergirem.
 var secretKinds = map[domain.MonitorType]secretKind{
 	domain.MonitorRedis:    {"password", "password_set", decodeAs[RedisConfig]},
 	domain.MonitorPostgres: {"password", "password_set", decodeAs[PostgresConfig]},
@@ -140,18 +172,29 @@ func sensitiveHeader(name string) bool {
 	return false
 }
 
-// RedactConfig devolve a configuração sem a credencial, para sair pela
-// API.
+// RedactConfig devolve a configuração como ela sai pela API para o
+// público dado. É o único lugar que decide o que é segredo em cada tipo.
 //
-// A senha é trocada pelo marcador (password_set, basic_auth_pass_set): a
+// O segredo de operador (operatorSecrets) volta ao administrador e sai
+// mascarado para os demais. A credencial (secretKinds) não volta para
+// ninguém: a senha é trocada pelo marcador (password_set, basic_auth_pass_set): a
 // interface precisa saber que existe uma para dizer "deixe em branco para
 // manter", sem saber qual é. Os cabeçalhos de credencial continuam na
 // lista com o valor mascarado, para a interface mostrar que existem.
 // Uma configuração que não se consegue interpretar sai vazia, nunca crua:
 // na dúvida, não se publica o que pode conter segredo.
-func RedactConfig(t domain.MonitorType, raw json.RawMessage) json.RawMessage {
+func RedactConfig(t domain.MonitorType, raw json.RawMessage, to Audience) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+	if field, ok := operatorSecrets[t]; ok {
+		if to == Admins {
+			return raw
+		}
+		return maskField(raw, field)
+	}
 	kind, ok := secretKinds[t]
-	if !ok || len(raw) == 0 {
+	if !ok {
 		return raw
 	}
 	cfg, err := kind.decode(raw)
@@ -180,6 +223,27 @@ func RedactConfig(t domain.MonitorType, raw json.RawMessage) json.RawMessage {
 	}
 	fields[kind.marker] = json.RawMessage("true")
 	out, err = json.Marshal(fields)
+	if err != nil {
+		return nil
+	}
+	return out
+}
+
+// maskField troca pela máscara o valor do campo em toda grafia que o
+// encoding/json casaria com ele (ver fieldSent), e devolve o resto da
+// configuração como veio. Quem a lê sabe que o segredo existe sem saber
+// qual é.
+func maskField(raw json.RawMessage, field string) json.RawMessage {
+	fields := map[string]json.RawMessage{}
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil
+	}
+	for k := range fields {
+		if strings.EqualFold(k, field) {
+			fields[k] = json.RawMessage(`"` + secretMask + `"`)
+		}
+	}
+	out, err := json.Marshal(fields)
 	if err != nil {
 		return nil
 	}

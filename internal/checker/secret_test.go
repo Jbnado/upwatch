@@ -21,44 +21,92 @@ func configMap(t *testing.T, raw json.RawMessage) map[string]any {
 // A senha do banco ou do Redis monitorado é credencial de produção. Quem
 // tem acesso de leitura ao painel não pode obtê-la pela API, do mesmo jeito
 // que a URL de um canal de aviso não volta.
+//
+// O administrador também não a recebe: ao contrário do token do push, a
+// senha não é algo que ele precise copiar de volta, e quem a cadastrou a
+// tem na origem.
 func TestRedactConfigRemovesThePassword(t *testing.T) {
 	for _, typ := range []domain.MonitorType{domain.MonitorRedis, domain.MonitorPostgres, domain.MonitorMySQL} {
-		raw := json.RawMessage(`{"username":"monitor","password":"segredo-de-producao","db":1}`)
+		for _, to := range audiences {
+			raw := json.RawMessage(`{"username":"monitor","password":"segredo-de-producao","db":1}`)
 
-		got := checker.RedactConfig(typ, raw)
+			got := checker.RedactConfig(typ, raw, to)
 
-		if strings.Contains(string(got), "segredo-de-producao") {
-			t.Errorf("%s: redacted config still carries the password: %s", typ, got)
-		}
-		m := configMap(t, got)
-		// A interface precisa saber que existe senha para dizer "deixe em
-		// branco para manter", sem saber qual é.
-		if m["password_set"] != true {
-			t.Errorf("%s: password_set = %v, want true", typ, m["password_set"])
-		}
-		if m["username"] != "monitor" {
-			t.Errorf("%s: username = %v, want the non-secret fields kept", typ, m["username"])
+			if strings.Contains(string(got), "segredo-de-producao") {
+				t.Errorf("%s para %v: redacted config still carries the password: %s", typ, to, got)
+			}
+			m := configMap(t, got)
+			// A interface precisa saber que existe senha para dizer "deixe em
+			// branco para manter", sem saber qual é.
+			if m["password_set"] != true {
+				t.Errorf("%s para %v: password_set = %v, want true", typ, to, m["password_set"])
+			}
+			if m["username"] != "monitor" {
+				t.Errorf("%s para %v: username = %v, want the non-secret fields kept", typ, to, m["username"])
+			}
 		}
 	}
 }
 
 func TestRedactConfigWithoutPassword(t *testing.T) {
-	got := checker.RedactConfig(domain.MonitorRedis, json.RawMessage(`{"db":1}`))
+	got := checker.RedactConfig(domain.MonitorRedis, json.RawMessage(`{"db":1}`), checker.Readers)
 
 	if m := configMap(t, got); m["password_set"] != nil {
 		t.Errorf("password_set = %v, want absent when there is no password", m["password_set"])
 	}
 }
 
-// Tipos sem credencial passam intactos: o token do push, por exemplo,
-// precisa voltar, porque a interface monta com ele o endereço a chamar.
+// audiences são todos os públicos da API, para os testes de "ninguém
+// recebe" não passarem só porque olharam um deles.
+var audiences = []checker.Audience{checker.Readers, checker.Admins}
+
+// Tipos sem credencial passam intactos, para qualquer público.
 func TestRedactConfigLeavesOtherTypesAlone(t *testing.T) {
+	raw := json.RawMessage(`{"host":"exemplo.com","expect":"1.2.3.4"}`)
+
+	for _, to := range audiences {
+		if got := checker.RedactConfig(domain.MonitorDNS, raw, to); string(got) != string(raw) {
+			t.Errorf("RedactConfig(dns) para %v = %s, want %s unchanged", to, got, raw)
+		}
+	}
+}
+
+// O token do push precisa voltar ao administrador, porque a interface
+// monta com ele o endereço que a rotina chama, e ele o copia para lá.
+func TestRedactConfigRevealsThePushTokenToAdmins(t *testing.T) {
 	raw := json.RawMessage(`{"token":"abcdefghijklmnopqrstuvwx"}`)
 
-	got := checker.RedactConfig(domain.MonitorPush, raw)
+	got := checker.RedactConfig(domain.MonitorPush, raw, checker.Admins)
 
 	if string(got) != string(raw) {
-		t.Errorf("RedactConfig(push) = %s, want %s unchanged", got, raw)
+		t.Errorf("RedactConfig(push) para o administrador = %s, want %s unchanged", got, raw)
+	}
+}
+
+// Para quem só lê, o token é a credencial do /push: com ele se mantém o
+// monitor verde com o serviço parado, ou se derruba o monitor com um
+// "down" falso. A máscara diz que há token sem dizer qual, e o resto da
+// configuração continua legível. O encoding/json casa "Token", "TOKEN" e
+// "toKen" (com o K do kelvin) com o campo token, então toda grafia que o
+// checker lê como token sai mascarada.
+func TestRedactConfigMasksThePushTokenForReaders(t *testing.T) {
+	for _, key := range []string{"token", "Token", "TOKEN", "toKen"} {
+		raw := json.RawMessage(`{"` + key + `":"abcdefghijklmnopqrstuvwx","schedule":"2 9 * * *","timezone":"America/Sao_Paulo"}`)
+
+		got := checker.RedactConfig(domain.MonitorPush, raw, checker.Readers)
+
+		if strings.Contains(string(got), "abcdefghijklmnopqrstuvwx") {
+			t.Errorf("%q: redacted config carries the push token: %s", key, got)
+		}
+		m := configMap(t, got)
+		if m["timezone"] != "America/Sao_Paulo" || m["schedule"] != "2 9 * * *" {
+			t.Errorf("%q: redacted config = %s, want the rest of the config kept", key, got)
+		}
+	}
+
+	got := configMap(t, checker.RedactConfig(domain.MonitorPush, json.RawMessage(`{"token":"abcdefghijklmnopqrstuvwx"}`), checker.Readers))
+	if got["token"] != "***" {
+		t.Errorf("token = %v, want the mask, so the reader knows there is one", got["token"])
 	}
 }
 
@@ -151,13 +199,15 @@ func TestRedactConfigHidesThePasswordInAnySpelling(t *testing.T) {
 		for _, key := range []string{"Password", "PASSWORD", "paſſword"} {
 			raw := json.RawMessage(`{"username":"monitor","` + key + `":"segredo-de-producao"}`)
 
-			got := checker.RedactConfig(typ, raw)
+			for _, to := range audiences {
+				got := checker.RedactConfig(typ, raw, to)
 
-			if strings.Contains(string(got), "segredo-de-producao") {
-				t.Errorf("%s %q: redacted config carries the password: %s", typ, key, got)
-			}
-			if m := configMap(t, got); m["password_set"] != true {
-				t.Errorf("%s %q: password_set = %v, want true", typ, key, m["password_set"])
+				if strings.Contains(string(got), "segredo-de-producao") {
+					t.Errorf("%s %q para %v: redacted config carries the password: %s", typ, key, to, got)
+				}
+				if m := configMap(t, got); m["password_set"] != true {
+					t.Errorf("%s %q para %v: password_set = %v, want true", typ, key, to, m["password_set"])
+				}
 			}
 		}
 	}
@@ -253,13 +303,16 @@ const httpWithSecrets = `{
 // mascarado: a interface precisa mostrar que existem, e o que não tem
 // segredo nenhum (Accept) continua legível.
 func TestRedactConfigHidesHTTPCredentials(t *testing.T) {
-	got := checker.RedactConfig(domain.MonitorHTTP, json.RawMessage(httpWithSecrets))
-
-	for _, secret := range []string{"senha-do-basic", "tok-do-bearer", "chave-da-api", "tok-do-header", "segredo-do-cliente"} {
-		if strings.Contains(string(got), secret) {
-			t.Errorf("redacted config carries %q: %s", secret, got)
+	for _, to := range audiences {
+		got := checker.RedactConfig(domain.MonitorHTTP, json.RawMessage(httpWithSecrets), to)
+		for _, secret := range []string{"senha-do-basic", "tok-do-bearer", "chave-da-api", "tok-do-header", "segredo-do-cliente"} {
+			if strings.Contains(string(got), secret) {
+				t.Errorf("redacted config para %v carries %q: %s", to, secret, got)
+			}
 		}
 	}
+
+	got := checker.RedactConfig(domain.MonitorHTTP, json.RawMessage(httpWithSecrets), checker.Readers)
 	m := configMap(t, got)
 	if m["basic_auth_pass_set"] != true || m["basic_auth_user"] != "monitor" {
 		t.Errorf("redacted config = %s, want basic_auth_pass_set and the user kept", got)
@@ -279,7 +332,7 @@ func TestRedactConfigHidesHTTPCredentials(t *testing.T) {
 // acompanham o monitor para outro endereço.
 func TestCarrySecretsKeepsHTTPCredentials(t *testing.T) {
 	prev := domain.Monitor{Type: domain.MonitorHTTP, Target: "https://api.exemplo.com/saude", Config: json.RawMessage(httpWithSecrets)}
-	redacted := checker.RedactConfig(domain.MonitorHTTP, prev.Config)
+	redacted := checker.RedactConfig(domain.MonitorHTTP, prev.Config, checker.Admins)
 	next := domain.Monitor{Type: domain.MonitorHTTP, Target: prev.Target, Config: redacted}
 
 	got, err := checker.CarrySecrets(next, prev)
