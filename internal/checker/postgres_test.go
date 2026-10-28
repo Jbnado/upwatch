@@ -2,6 +2,7 @@ package checker_test
 
 import (
 	"context"
+	"io"
 	"net"
 	"strings"
 	"testing"
@@ -86,5 +87,93 @@ func TestPostgresIgnoresTheLibpqEnvironmentOfTheHost(t *testing.T) {
 		if v, ok := params[key]; ok {
 			t.Errorf("startup carries %s=%q, inherited from the host environment", key, v)
 		}
+	}
+}
+
+// stuckRollbackServer sobe um PostgreSQL falso que aceita a sessão, a
+// transação e a consulta, e nunca responde ao ROLLBACK.
+func stuckRollbackServer(t *testing.T) string {
+	t.Helper()
+
+	return serveOnce(t, func(conn net.Conn) {
+		be := pgproto3.NewBackend(conn, conn)
+		for {
+			msg, err := be.ReceiveStartupMessage()
+			if err != nil {
+				return
+			}
+			if _, ok := msg.(*pgproto3.StartupMessage); ok {
+				break
+			}
+			if _, ok := msg.(*pgproto3.CancelRequest); ok {
+				return
+			}
+			if _, err := conn.Write([]byte("N")); err != nil {
+				return
+			}
+		}
+		be.Send(&pgproto3.AuthenticationOk{})
+		be.Send(&pgproto3.BackendKeyData{ProcessID: 1, SecretKey: []byte{0, 0, 0, 1}})
+		be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
+		if err := be.Flush(); err != nil {
+			return
+		}
+
+		for {
+			msg, err := be.Receive()
+			if err != nil {
+				return
+			}
+			switch msg := msg.(type) {
+			case *pgproto3.Query:
+				if strings.HasPrefix(strings.ToUpper(msg.String), "ROLLBACK") {
+					// Lê até o cliente desistir, sem responder.
+					_, _ = io.Copy(io.Discard, conn)
+					return
+				}
+				be.Send(&pgproto3.CommandComplete{CommandTag: []byte("BEGIN")})
+				be.Send(&pgproto3.ReadyForQuery{TxStatus: 'T'})
+				_ = be.Flush()
+			case *pgproto3.Parse:
+				be.Send(&pgproto3.ParseComplete{})
+			case *pgproto3.Bind:
+				be.Send(&pgproto3.BindComplete{})
+			case *pgproto3.Describe:
+				be.Send(&pgproto3.NoData{})
+			case *pgproto3.Execute:
+				be.Send(&pgproto3.CommandComplete{CommandTag: []byte("SELECT 0")})
+			case *pgproto3.Sync:
+				be.Send(&pgproto3.ReadyForQuery{TxStatus: 'T'})
+				_ = be.Flush()
+			case *pgproto3.Terminate:
+				return
+			}
+		}
+	})
+}
+
+// O ROLLBACK roda depois da consulta, já fora do prazo dela. Feito sem
+// prazo próprio, um servidor (ou proxy) que nunca o responde prende a
+// verificação para sempre, e com ela a vaga do agendador: o monitor para
+// de ser verificado sem nada dizer.
+func TestPostgresRollbackDoesNotHangTheCheck(t *testing.T) {
+	addr := stuckRollbackServer(t)
+	m := sqlMonitor(domain.MonitorPostgres, addr, `{"username":"u","password":"p","sslmode":"disable"}`)
+	m.Timeout = time.Second
+
+	done := make(chan checker.Result, 1)
+	start := time.Now()
+	go func() { done <- checker.NewPostgres().Check(context.Background(), m) }()
+
+	select {
+	case res := <-done:
+		if res.Status != domain.StatusUp {
+			t.Errorf("Status = %v (%s), want up: the query itself answered", res.Status, res.Message)
+		}
+		if elapsed := time.Since(start); elapsed > 3*time.Second {
+			t.Errorf("Check took %v, want it bounded by a short rollback deadline", elapsed)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("Check is still waiting for the ROLLBACK")
 	}
 }

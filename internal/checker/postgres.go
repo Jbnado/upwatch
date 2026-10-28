@@ -220,22 +220,31 @@ func (c *Postgres) Check(ctx context.Context, m domain.Monitor) Result {
 	if err != nil {
 		return fail("transação", err)
 	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
+	defer func() {
+		// O ROLLBACK roda depois da consulta, já fora do prazo dela; sem
+		// prazo próprio, um servidor ou proxy que nunca o respondesse
+		// prenderia a verificação, e com ela a vaga do agendador.
+		rbCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = tx.Rollback(rbCtx)
+	}()
 
-	rows, err := tx.Query(ctx, cfg.query())
+	queryCtx, stopReading := context.WithCancel(ctx)
+	defer stopReading()
+	rows, err := tx.Query(queryCtx, cfg.query())
 	if err != nil {
 		return fail("consulta", err)
 	}
-	for rows.Next() {
-	}
+	err = readRows(rows.Next, rows.Err, stopReading)
+	latency := time.Since(start).Milliseconds()
 	rows.Close()
-	if err := rows.Err(); err != nil {
+	if err != nil {
 		return fail("consulta", err)
 	}
 
 	return Result{
 		Status:    domain.StatusUp,
-		LatencyMS: time.Since(start).Milliseconds(),
+		LatencyMS: latency,
 		Meta:      meta,
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -56,7 +57,23 @@ func parseMySQLConfig(raw json.RawMessage) (MySQLConfig, error) {
 	if cfg.TLS != "" && !mysqlTLSModes[cfg.TLS] {
 		return cfg, fmt.Errorf("checker: tls %q desconhecido; use false, true, skip-verify ou preferred", cfg.TLS)
 	}
+	if writesFile(cfg.Query) {
+		return cfg, errors.New("checker: a consulta não pode gravar arquivo (INTO OUTFILE ou INTO DUMPFILE)")
+	}
 	return cfg, nil
+}
+
+// writesFile informa se a consulta usa INTO OUTFILE ou INTO DUMPFILE.
+//
+// Os dois gravam um arquivo no servidor e passam pela transação somente
+// leitura: contra o MySQL 8.4, um usuário com o privilégio FILE grava o
+// arquivo mesmo dentro de START TRANSACTION READ ONLY. A palavra é
+// procurada em qualquer posição, inclusive em comentário executável;
+// palavra-chave do MySQL não tem grafia alternativa, e o falso positivo
+// (a palavra dentro de um texto) é um preço pequeno.
+func writesFile(query string) bool {
+	q := strings.ToUpper(query)
+	return strings.Contains(q, "OUTFILE") || strings.Contains(q, "DUMPFILE")
 }
 
 // mysqlUnknownVariable é o erro de variável de sistema desconhecida.
@@ -183,27 +200,28 @@ func (c *MySQL) Check(ctx context.Context, m domain.Monitor) Result {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	rows, err := tx.QueryContext(ctx, cfg.query())
+	queryCtx, stopReading := context.WithCancel(ctx)
+	defer stopReading()
+	rows, err := tx.QueryContext(queryCtx, cfg.query())
 	if err != nil {
 		return fail("consulta", err)
 	}
-	for rows.Next() {
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
+	err = readRows(rows.Next, rows.Err, stopReading)
+	elapsed := time.Since(start)
+	rows.Close()
+	if err != nil {
 		return fail("consulta", err)
 	}
-	rows.Close()
 
 	// SLEEP interrompido pelo limite devolve 1 em vez de erro; sem esta
 	// conferência, uma consulta que estourou o tempo passaria por verde.
-	if elapsed := time.Since(start); limit > 0 && elapsed >= limit {
+	if limit > 0 && elapsed >= limit {
 		return fail("consulta", context.DeadlineExceeded)
 	}
 
 	return Result{
 		Status:    domain.StatusUp,
-		LatencyMS: time.Since(start).Milliseconds(),
+		LatencyMS: elapsed.Milliseconds(),
 		Meta:      meta,
 	}
 }

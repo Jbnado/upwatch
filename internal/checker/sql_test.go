@@ -150,6 +150,82 @@ func TestSQLValidateConfig(t *testing.T) {
 	}
 }
 
+func sqlQueryConfig(t *testing.T, query string) json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(map[string]string{"username": "u", "query": query})
+	if err != nil {
+		t.Fatalf("Marshal returned unexpected error: %v", err)
+	}
+	return raw
+}
+
+// A transação somente leitura é a proteção de fato, mas não a única: um
+// comando que não começa por leitura não tem motivo para estar num
+// monitor, e recusá-lo no cadastro tira do caminho tudo o que a
+// transação não segura — COPY para arquivo, DO com código procedural,
+// SET que mexe na própria transação. Comentário e espaço na frente não
+// escondem o comando; o comentário executável do MySQL (/*! */) não conta
+// como comentário, porque o servidor executa o que está dentro.
+func TestSQLValidateConfigOnlyAcceptsReadingQueries(t *testing.T) {
+	for _, tc := range sqlCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, ok := range []string{
+				"SELECT 1",
+				"  select count(*) FROM pg_stat_activity",
+				"-- quantos workers\nSELECT 1",
+				"/* comentário */ WITH x AS (SELECT 1) SELECT * FROM x",
+				"# comentário do MySQL\nSELECT 1",
+				"SHOW server_version",
+				"VALUES (1)",
+				"EXPLAIN SELECT 1",
+				"(SELECT 1)",
+			} {
+				if err := tc.checker.ValidateConfig(sqlQueryConfig(t, ok)); err != nil {
+					t.Errorf("ValidateConfig(%q) returned unexpected error: %v", ok, err)
+				}
+			}
+
+			for _, bad := range []string{
+				"DELETE FROM contas",
+				"  insert into contas values (1)",
+				"-- só um comentário\nUPDATE contas SET saldo = 0",
+				"/* SELECT */ DROP TABLE contas",
+				"/*! DELETE FROM contas */ SELECT 1",
+				"/*M! DELETE FROM contas */ SELECT 1",
+				"DO $$ BEGIN DELETE FROM contas; END $$",
+				"COPY (SELECT 1) TO '/tmp/x'",
+				"SET TRANSACTION READ WRITE",
+				"CALL limpar()",
+				"-- sem fim",
+				"/* sem fim",
+			} {
+				if err := tc.checker.ValidateConfig(sqlQueryConfig(t, bad)); err == nil {
+					t.Errorf("ValidateConfig(%q) accepted", bad)
+				}
+			}
+		})
+	}
+}
+
+// INTO OUTFILE e INTO DUMPFILE escrevem um arquivo no servidor e passam
+// pela transação somente leitura do MySQL: conferido contra o 8.4, um
+// usuário com o privilégio FILE grava o arquivo mesmo dentro de START
+// TRANSACTION READ ONLY. As palavras são recusadas em qualquer posição,
+// inclusive dentro de comentário executável; palavra-chave do MySQL não
+// tem grafia alternativa.
+func TestMySQLValidateConfigRejectsWritingFiles(t *testing.T) {
+	for _, bad := range []string{
+		"SELECT 1 INTO OUTFILE '/var/lib/mysql-files/x'",
+		"SELECT token FROM api_keys INTO dumpfile '/tmp/x'",
+		"SELECT 1 /*!INTO OUTFILE '/tmp/x'*/",
+		"SELECT 1 INTO\n\tOutFile '/tmp/x'",
+	} {
+		if err := checker.NewMySQL().ValidateConfig(sqlQueryConfig(t, bad)); err == nil {
+			t.Errorf("ValidateConfig(%q) accepted", bad)
+		}
+	}
+}
+
 func TestSQLCheckDownWhenPortIsClosed(t *testing.T) {
 	for _, tc := range sqlCases() {
 		res := tc.checker.Check(context.Background(),

@@ -226,6 +226,15 @@ func TestSQLLiveFailingQueryIsDown(t *testing.T) {
 // que o usuário possa escrever — contra a recomendação —, a verificação
 // não altera dado: nem por um comando de escrita direto, nem por um
 // segundo comando emendado depois de um SELECT inocente.
+//
+// Os três últimos se escondem atrás de algo que não é escrita: WITH e
+// EXPLAIN ANALYZE passam pela regra de começar com leitura e só a
+// transação os segura; o DO com SET TRANSACTION READ WRITE tenta reabrir a
+// escrita por dentro. Rodaram contra os servidores antes de a regra
+// existir, e a transação segurou todos: no PostgreSQL, SQLSTATE 25006 e,
+// no DO, 25001 ("transaction read-write mode must be set before any
+// query"); no MySQL, 1792 no EXPLAIN ANALYZE e erro de sintaxe nos
+// outros dois. Ficam aqui para a transação continuar provada sozinha.
 func TestSQLLiveQueryCannotWrite(t *testing.T) {
 	eachLiveSQL(t, func(t *testing.T, l liveSQL) {
 		l.exec(t, "DROP TABLE IF EXISTS upwatch_probe")
@@ -237,6 +246,9 @@ func TestSQLLiveQueryCannotWrite(t *testing.T) {
 			"INSERT INTO upwatch_probe (id) VALUES (2)",
 			"DELETE FROM upwatch_probe",
 			"SELECT 1; DELETE FROM upwatch_probe",
+			"WITH d AS (DELETE FROM upwatch_probe RETURNING id) SELECT id FROM d",
+			"EXPLAIN ANALYZE DELETE FROM upwatch_probe",
+			"DO $$ BEGIN SET TRANSACTION READ WRITE; INSERT INTO upwatch_probe (id) VALUES (3); END $$",
 		} {
 			res := l.checker.Check(context.Background(), l.monitor(map[string]any{"query": q}))
 			if res.Status != domain.StatusDown {
@@ -366,5 +378,57 @@ func TestSQLLiveQueryErrorDoesNotLeakRowData(t *testing.T) {
 		if !strings.HasPrefix(res.Message, "consulta: ") || !strings.Contains(res.Message, "SQLSTATE") {
 			t.Errorf("Message = %q, want the stage and the SQLSTATE", res.Message)
 		}
+	})
+}
+
+// INTO OUTFILE grava um arquivo no servidor e passa pela transação somente
+// leitura: contra o MySQL 8.4, um usuário com o privilégio FILE grava o
+// arquivo mesmo dentro de START TRANSACTION READ ONLY. O usuário
+// recomendado, sem FILE, já falha por privilégio; o teste só mostra a
+// regra do checker quando a DSN usa um usuário com FILE, como o root da CI.
+func TestMySQLLiveSelectIntoOutfileDoesNotWrite(t *testing.T) {
+	l := liveMySQL(t)
+
+	var dir sql.NullString
+	if err := l.admin.QueryRow("SELECT @@secure_file_priv").Scan(&dir); err != nil {
+		t.Fatalf("reading secure_file_priv: %v", err)
+	}
+	path := dir.String + fmt.Sprintf("upwatch-outfile-%d", time.Now().UnixNano())
+
+	res := l.checker.Check(context.Background(),
+		l.monitor(map[string]any{"query": "SELECT 1 INTO OUTFILE '" + path + "'"}))
+
+	if res.Status != domain.StatusDown {
+		t.Errorf("Status = %v, want down", res.Status)
+	}
+	var written sql.NullString
+	if err := l.admin.QueryRow("SELECT LOAD_FILE(?)", path).Scan(&written); err != nil {
+		t.Fatalf("reading the file back: %v", err)
+	}
+	if written.Valid {
+		t.Errorf("the check wrote %s on the server", path)
+	}
+}
+
+// Uma consulta que devolve muitas linhas não é lida inteira: cada
+// verificação traria o resultado todo para o UpWatch e seguraria o banco
+// até o timeout, acusando queda num banco que respondeu. Saber que a
+// consulta roda e devolve linhas basta, e as primeiras dizem isso. Nada
+// pode ficar rodando no servidor depois.
+func TestSQLLiveReadsOnlyTheFirstRows(t *testing.T) {
+	eachLiveSQL(t, func(t *testing.T, l liveSQL) {
+		const marker = "upwatch-rows-probe"
+		query := "SELECT generate_series(1, 1000000000), '" + marker + "'"
+		if l.typ == domain.MonitorMySQL {
+			query = "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1000) " +
+				"SELECT 1, '" + marker + "' FROM n a, n b, n c"
+		}
+
+		res := l.checker.Check(context.Background(), l.monitor(map[string]any{"query": query}))
+
+		if res.Status != domain.StatusUp {
+			t.Fatalf("Status = %v (%s), want up after reading the first rows", res.Status, res.Message)
+		}
+		l.waitNoneRunning(t, marker, 3*time.Second)
 	})
 }

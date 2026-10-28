@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Jbnado/upwatch/internal/domain"
 )
@@ -48,6 +49,9 @@ func (c sqlConfig) validate(kind string) error {
 	if len(c.Query) > MaxSQLQueryLength {
 		return fmt.Errorf("checker: a consulta passa de %d caracteres", MaxSQLQueryLength)
 	}
+	if c.Query != "" && !readingKeywords[leadingKeyword(c.Query)] {
+		return errors.New("checker: a consulta precisa começar com SELECT, WITH, SHOW, VALUES ou EXPLAIN")
+	}
 	return nil
 }
 
@@ -56,6 +60,77 @@ func (c sqlConfig) query() string {
 		return defaultSQLQuery
 	}
 	return c.Query
+}
+
+// readingKeywords são as palavras com que a consulta de verificação pode
+// começar.
+//
+// A transação somente leitura é a proteção de fato; esta é a de fora. Um
+// comando que não começa por leitura não tem motivo para estar num
+// monitor, e recusá-lo no cadastro tira do caminho o que a transação não
+// segura: COPY para arquivo, DO com código procedural, SET que mexe na
+// própria transação, CALL de procedimento.
+var readingKeywords = map[string]bool{
+	"SELECT": true, "WITH": true, "SHOW": true, "VALUES": true, "EXPLAIN": true,
+}
+
+// leadingKeyword devolve, em maiúsculas, a primeira palavra da consulta,
+// pulando espaço, parêntese de abertura e comentários. Comentário sem fim
+// devolve vazio.
+//
+// O comentário executável do MySQL e do MariaDB (/*! */ e /*M! */) não é
+// pulado: o servidor executa o que está dentro, e "/*! DELETE ... */
+// SELECT 1" é um DELETE. Pular o que o servidor não considera comentário
+// só pode revelar uma palavra que ele também recusaria, então a regra
+// erra para o lado seguro.
+func leadingKeyword(q string) string {
+	for {
+		q = strings.TrimLeftFunc(q, func(r rune) bool { return unicode.IsSpace(r) || r == '(' })
+		switch {
+		case strings.HasPrefix(q, "--"), strings.HasPrefix(q, "#"):
+			end := strings.IndexByte(q, '\n')
+			if end < 0 {
+				return ""
+			}
+			q = q[end+1:]
+		case strings.HasPrefix(q, "/*!"), strings.HasPrefix(strings.ToUpper(q), "/*M!"):
+			return ""
+		case strings.HasPrefix(q, "/*"):
+			end := strings.Index(q[2:], "*/")
+			if end < 0 {
+				return ""
+			}
+			q = q[2+end+2:]
+		default:
+			end := strings.IndexFunc(q, func(r rune) bool { return !unicode.IsLetter(r) })
+			if end < 0 {
+				end = len(q)
+			}
+			return strings.ToUpper(q[:end])
+		}
+	}
+}
+
+// maxSQLRows é quantas linhas da consulta são lidas. Saber que ela roda e
+// devolve linhas basta, e as primeiras dizem isso; ler o resultado todo
+// traria uma tabela inteira para o UpWatch a cada verificação e seguraria
+// o banco até o timeout, acusando queda num banco que respondeu.
+const maxSQLRows = 100
+
+// readRows lê até maxSQLRows linhas e devolve o erro da leitura.
+//
+// Passado o limite, cancel desiste do resto pelo contexto da consulta: os
+// dois drivers, se deixados, esvaziariam o resultado inteiro ao fechar.
+// O servidor para de produzir linhas ao perder a conexão ou, no máximo,
+// no limite combinado em serverLimit.
+func readRows(next func() bool, rowsErr func() error, cancel context.CancelFunc) error {
+	for n := 0; next(); n++ {
+		if n+1 >= maxSQLRows {
+			cancel()
+			return nil
+		}
+	}
+	return rowsErr()
 }
 
 // serverLimit é quanto a consulta pode durar no servidor: um décimo abaixo
