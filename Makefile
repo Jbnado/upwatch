@@ -1,4 +1,4 @@
-.PHONY: test test-fast test-web cover lint fmt web build dev clean
+.PHONY: test test-fast test-web cover lint fmt web build probe dev clean
 
 # ---------- testes ----------
 
@@ -43,6 +43,11 @@ web:
 build: web
 	CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o upwatch ./cmd/upwatch
 
+# A sonda não embarca a interface do servidor, então compila sem o build
+# do front. Também estática: roda sobre a distroless, que não tem libc.
+probe:
+	CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o upwatch-probe ./cmd/upwatch-probe
+
 # Desenvolvimento: o servidor Go serve a API e o Vite serve a interface
 # com recarga instantânea, encaminhando /api para o Go. Assim mexer no
 # desenho não custa uma recompilação do binário.
@@ -54,5 +59,5 @@ dev:
 # dist/.gitkeep é o que faz o pacote compilar, e apagá-la deixaria o
 # próximo "go test" falhar sem relação aparente com o clean.
 clean:
-	rm -f upwatch upwatch.exe coverage.out
+	rm -f upwatch upwatch.exe upwatch-probe upwatch-probe.exe coverage.out
 	rm -rf internal/web/dist/app

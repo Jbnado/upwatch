@@ -71,6 +71,10 @@ jobs:
       # Um binário por plataforma, todos estáticos. CGO desligado porque
       # o driver SQLite é pure Go — é o que permite copiar o arquivo para
       # qualquer máquina e simplesmente rodar.
+      #
+      # A sonda sai junto e com a mesma versão: ela reporta ao central
+      # pelo push, e publicá-las em momentos diferentes deixaria alguém
+      # com uma combinação que nunca foi testada.
       - name: Compilar
         env:
           CGO_ENABLED: '0'
@@ -80,8 +84,15 @@ jobs:
           for alvo in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
             os=${alvo%/*}
             arch=${alvo#*/}
-            saida=dist/upwatch_${os}_${arch}
-            if [ "$os" = "windows" ]; then saida="${saida}.exe"; fi
+            ext=""
+            if [ "$os" = "windows" ]; then ext=".exe"; fi
+
+            GOOS=$os GOARCH=$arch go build \
+              -trimpath \
+              -ldflags="-s -w -X main.version=${VERSION}" \
+              -o "dist/upwatch-probe_${os}_${arch}${ext}" ./cmd/upwatch-probe
+
+            saida=dist/upwatch_${os}_${arch}${ext}
 
             GOOS=$os GOARCH=$arch go build \
               -trimpath \
@@ -146,3 +157,70 @@ jobs:
             VERSION=${{ github.ref_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  probe-image:
+    name: Imagem da sonda
+    runs-on: ubuntu-latest
+    # id-token só aqui: é o que permite assinar sem chave guardada
+    # (cosign keyless), e nenhum outro job precisa dele.
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.4
+
+      - uses: docker/login-action@371161bbe7024a29a25c5e19bfcbc0804fe9ad2c # v4.5.2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          # ghcr.io/jbnado/upwatch-probe: a action põe em minúsculas.
+          images: ghcr.io/${{ github.repository }}-probe
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-') }}
+
+      # A sonda roda dentro de rede alheia, e quem a instala precisa poder
+      # conferir o que roda: SBOM e proveniência vão junto da imagem, e a
+      # assinatura abaixo prende o digest a este workflow.
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          file: Dockerfile.probe
+          # O mesmo par de arquiteturas do servidor: há sonda em VM x86 de
+          # empresa e em placa ARM dentro de casa.
+          platforms: linux/amd64,linux/arm64
+          push: true
+          sbom: true
+          provenance: mode=max
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+          cache-from: type=gha,scope=probe
+          cache-to: type=gha,mode=max,scope=probe
+
+      # Assina o digest, não a tag: a tag se move, o digest não. O README
+      # da sonda mostra o cosign verify correspondente.
+      - name: Assinar
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          imagem=$(echo "$TAGS" | head -n 1 | cut -d: -f1)
+          cosign sign --yes "${imagem}@${DIGEST}"

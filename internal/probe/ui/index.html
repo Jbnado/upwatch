@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>upwatch-probe</title>
+<style>
+  :root { color-scheme: light dark; --borda: #8884; --up: #1a7f37; --down: #cf222e; --degraded: #9a6700; }
+  body { font: 15px/1.5 system-ui, sans-serif; margin: 0 auto; max-width: 980px; padding: 16px; }
+  h1 { font-size: 1.3rem; margin: 0 0 4px; }
+  h2 { font-size: 1.05rem; margin: 24px 0 8px; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { border-bottom: 1px solid var(--borda); padding: 6px 8px; text-align: left; vertical-align: top; }
+  td small { opacity: .75; display: block; word-break: break-word; }
+  .up { color: var(--up); font-weight: 600; }
+  .down { color: var(--down); font-weight: 600; }
+  .degraded { color: var(--degraded); font-weight: 600; }
+  form { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+  label { display: grid; gap: 2px; font-size: .9rem; }
+  input, select, textarea, button { font: inherit; padding: 6px; }
+  textarea { min-height: 3.5em; }
+  .wide { grid-column: 1 / -1; }
+  #erro { color: var(--down); min-height: 1.5em; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<h1>upwatch-probe <span id="sonda"></span></h1>
+<p id="erro" role="alert"></p>
+
+<section id="entrar">
+  <form id="form-token">
+    <label class="wide">Token de acesso (gerado no setup; <code>upwatch-probe ui-token</code> mostra)
+      <input id="token" type="password" autocomplete="off" required>
+    </label>
+    <button>Entrar</button>
+  </form>
+</section>
+
+<section id="painel" hidden>
+  <h2>Verificações</h2>
+  <table>
+    <thead><tr><th>Nome</th><th>Alvo</th><th>Estado</th><th>Último envio</th><th></th></tr></thead>
+    <tbody id="lista"></tbody>
+  </table>
+
+  <h2>Adicionar</h2>
+  <form id="form-add">
+    <label>Nome <input name="name" required pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,63}"></label>
+    <label>Tipo
+      <select name="type">
+        <option>http</option><option>tcp</option><option>redis</option><option>postgres</option>
+        <option>mysql</option><option>dns</option><option>tls</option><option>icmp</option>
+      </select>
+    </label>
+    <label>Alvo <input name="target" required placeholder="http://bff-api:3000/health ou redis:6379"></label>
+    <label>Intervalo <input name="interval" value="60s"></label>
+    <label class="wide">Endereço de push <input name="push_url" required placeholder="https://upwatch.exemplo.com/api/v1/push/TOKEN"></label>
+    <label class="wide">Asserções de Redis, uma por linha
+      <textarea name="assert" placeholder="SCARD rq:workers:default >= 1"></textarea>
+    </label>
+    <label>Status HTTP esperados <input name="expect_status" placeholder="200"></label>
+    <button class="wide">Adicionar</button>
+  </form>
+</section>
+<script src="app.js"></script>
+</body>
+</html>

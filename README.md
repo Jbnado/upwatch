@@ -694,6 +694,24 @@ espera: a janela conta do último sinal ou da mudança, o que vier depois.
 Sem isso, trocar a agenda de semanal para diária derrubaria o monitor na
 hora, cobrando execuções que ninguém estava vigiando.
 
+## Sonda para redes privadas
+
+O que está atrás de VPN ou firewall o UpWatch não alcança de fora. A
+`upwatch-probe` roda dentro dessa rede, executa as verificações com os
+mesmos checkers do servidor e manda cada resultado para um monitor push,
+com estado, causa e latência. Ela só abre conexão de saída, nunca recebe
+comando nem configuração do central, e manda um sinal de vida próprio:
+quando ela some, o aviso diz que a sonda sumiu.
+
+```bash
+docker run -d --name upwatch-probe --restart unless-stopped --read-only --cap-drop ALL --security-opt no-new-privileges --memory 64m --cpus 0.2 -v upwatch-probe-config:/config ghcr.io/jbnado/upwatch-probe:main
+docker exec upwatch-probe upwatch-probe add --name rq-workers --type redis --target redis:6379 --assert "SCARD rq:workers:default >= 1" --push-url https://upwatch.exemplo.com/api/v1/push/TOKEN
+```
+
+A configuração cabe em comandos de uma linha, pensados para o terminal
+web de um jump server. Instalação completa, segurança e referência em
+[cmd/upwatch-probe/README.md](cmd/upwatch-probe/README.md).
+
 ## Desenvolvimento
 
 ```bash

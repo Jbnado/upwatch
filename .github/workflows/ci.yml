@@ -289,3 +289,43 @@ jobs:
           # mais comum de qualquer varredura de contêiner.
           test "$(docker exec upwatch-ci id -u)" = "10001"
           docker rm -f upwatch-ci
+
+  probe:
+    name: Sonda
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Testes da sonda
+        run: go test ./internal/probe/... ./cmd/upwatch-probe/... -race -count=1
+
+      # Estático de verdade: a sonda roda sobre a distroless, que não tem
+      # libc. Um import que puxe CGO sem ninguém notar quebraria isso só
+      # na máquina de quem instalou.
+      - name: Binário estático
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          go build -trimpath -ldflags='-s -w' -o upwatch-probe ./cmd/upwatch-probe
+          file upwatch-probe
+          file upwatch-probe | grep -q 'statically linked'
+
+      # Constrói a imagem do Dockerfile.probe, sobe Redis, central e a
+      # sonda trancada, e confere o sinal no central. É onde a imagem da
+      # sonda é exercitada antes do release.
+      - name: Ponta a ponta no Docker
+        env:
+          UPWATCH_TEST_PROBE_E2E: '1'
+        run: go test ./cmd/upwatch-probe/ -run E2E -count=1 -v -timeout 15m
+
+      # Rodar como root numa imagem que não precisa disso é o achado mais
+      # comum de qualquer varredura de contêiner.
+      - name: Usuário sem privilégio
+        run: |
+          docker build -q -f Dockerfile.probe -t upwatch-probe:ci .
+          test "$(docker image inspect upwatch-probe:ci --format '{{.Config.User}}')" = "65532:65532"
