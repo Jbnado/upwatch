@@ -8,6 +8,7 @@ import {
   lerAssercoes,
   linhaVazia,
   montarAssercoes,
+  semValor,
   type LinhaAssercao,
   type Operador,
 } from "../lib/json-assertions";
@@ -402,7 +403,7 @@ function AssercoesJSON({
                     ))}
                   </Select>
                 </div>
-                {linha.operador !== "exists" && (
+                {!semValor(linha.operador) && (
                   <Input
                     value={linha.valor}
                     onChange={(e) => alterar(i, "valor", e.target.value)}
