@@ -96,6 +96,10 @@ paths:
         local, mas numa instalação exposta na internet publica o nome de
         todos os monitores, e com eles a topologia interna.
 
+        Sem token e com alguma conta de acesso restrito a grupos, responde
+        403 com a orientação de definir o token&#58; a exposição aberta seria
+        o atalho dessa conta para ver os nomes que o escopo esconde.
+
         Monitor dentro de um grupo leva também o rótulo `group` com o
         caminho ("RPA / prod")&#58; o nome só é único dentro do grupo, e sem
         o rótulo o "bff" de produção e o de homologação seriam a mesma
@@ -127,6 +131,11 @@ paths:
               schema: { type: string }
         "401":
           description: Token de métricas ausente ou errado (só quando configurado)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Sem token configurado, e há conta com acesso restrito a grupos
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -496,6 +505,15 @@ paths:
     post:
       tags: [monitors]
       summary: Cadastra um monitor
+      description: |
+        Para conta com acesso restrito a grupos, com
+        `UPWATCH_RESTRICT_PRIVATE_TARGETS` ligado (o padrão), o destino que
+        resolver para loopback, rede privada, enlace local (metadado da
+        nuvem) ou espaço compartilhado de provedor é recusado com 400, e o
+        nome que não resolve também. Na edição, o destino que não mudou não
+        é conferido de novo.
+
+        `parent_id` de fora do escopo responde 404, como o inexistente.
       requestBody:
         required: true
         content:
@@ -508,6 +526,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Monitor" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
         "409":
           description: Já existe monitor com esse nome no mesmo grupo
           content:
@@ -529,6 +548,7 @@ paths:
     put:
       tags: [monitors]
       summary: Sobrescreve um monitor
+      description: As mesmas regras de alvo interno e de `parent_id` do cadastro.
       parameters: [{ $ref: "#/components/parameters/PathID" }]
       requestBody:
         required: true
@@ -576,6 +596,10 @@ paths:
 
         Uma requisicao cobre todos os monitores: uma por monitor degradava
         justamente na instalacao grande, onde a lista importa mais.
+
+        `status` e o estado confirmado do monitor, o mesmo do cartao de
+        grupo e de "Problemas agora" - nao o da janela nem o da ultima
+        batida. A ultima batida vem em `last_check_status`.
       parameters:
         - $ref: "#/components/parameters/From"
         - $ref: "#/components/parameters/To"
@@ -738,6 +762,10 @@ paths:
       description: |
         A configuração nunca é devolvida: ela contém a URL do webhook, que
         é a credencial de quem pode publicar no canal.
+
+        Para conta com acesso restrito a grupos, só os canais vinculados a
+        monitores ou grupos do escopo dela&#58; o nome e o destino de um
+        canal que só avisa sobre os outros já dizem quem existe fora.
       responses:
         "200":
           description: Canais cadastrados
@@ -756,6 +784,9 @@ paths:
         A configuração é validada montando o notificador de verdade.
         Descobrir que a URL está errada só durante um incidente seria
         descobrir tarde demais.
+
+        Canal é recurso de todos os grupos&#58; criar, alterar, apagar,
+        testar e vincular exigem escopo total (403 para os demais).
       requestBody:
         required: true
         content:
@@ -778,6 +809,7 @@ paths:
     get:
       tags: [alerts]
       summary: Devolve um canal
+      description: Canal que não avisa sobre nada do escopo da conta responde 404.
       parameters: [{ $ref: "#/components/parameters/PathID" }]
       responses:
         "200":
@@ -861,22 +893,38 @@ paths:
     put:
       tags: [alerts]
       summary: Vincula um canal ao monitor
-      description: Idempotente — vincular duas vezes não é erro.
+      description: |
+        Idempotente — vincular duas vezes não é erro. Exige escopo total&#58;
+        o canal é de todos os grupos, e pendurá-lo no próprio monitor é
+        mexer no aviso dos outros. Canal inexistente é 404.
       parameters:
         - $ref: "#/components/parameters/PathID"
         - $ref: "#/components/parameters/PathChannelID"
       responses:
         "204": { description: Vínculo criado }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "403":
+          description: A conta não alcança todos os grupos
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/NotFound" }
     delete:
       tags: [alerts]
       summary: Desvincula um canal do monitor
+      description: Exige escopo total, como vincular. Canal inexistente é 404.
       parameters:
         - $ref: "#/components/parameters/PathID"
         - $ref: "#/components/parameters/PathChannelID"
       responses:
         "204": { description: Vínculo removido }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "403":
+          description: A conta não alcança todos os grupos
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /api/v1/monitors/{id}/events:
     get:
@@ -886,18 +934,26 @@ paths:
         Mudanças confirmadas de estado (`state`) e batidas com falha
         (`failure`), cada uma com a causa, da mais recente para trás.
 
-        Paginação para trás&#58; passe o `next_before` da página anterior em
-        `before`. Eventos do mesmo instante nunca são separados entre
-        páginas, então uma página pode passar um pouco do `limit`.
+        Paginação para trás&#58; passe o `next_cursor` da página anterior em
+        `cursor`. O cursor é composto (instante, tipo, chave), então
+        eventos do mesmo instante continuam na página seguinte em vez de se
+        perderem, e a página nunca passa do `limit`. `has_more` só é
+        verdadeiro quando há de fato mais eventos.
 
         As falhas vêm das batidas cruas e somem com a poda (7 dias por
         padrão); as mudanças de estado ficam.
       parameters:
         - $ref: "#/components/parameters/PathID"
+        - name: cursor
+          in: query
+          schema: { type: string }
+          description: O `next_cursor` da página anterior. Opaco.
         - name: before
           in: query
           schema: { type: string, format: date-time }
-          description: Só eventos anteriores a este instante (exclusivo)
+          description: |
+            Começa dos eventos anteriores a este instante (exclusivo).
+            Ignorado quando há `cursor`.
         - name: limit
           in: query
           schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
@@ -916,7 +972,9 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/MonitorEvent" }
                   has_more: { type: boolean }
-                  next_before: { type: string, format: date-time }
+                  next_cursor:
+                    type: string
+                    description: Só quando `has_more`; passe em `cursor`.
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
 
@@ -972,7 +1030,7 @@ paths:
         Para a tela inicial. O sistema soma os ambientes dele. "Sem grupo"
         (`group_id` nulo) aparece só para quem alcança tudo e só quando
         tem monitor. Monitor pausado conta em `paused` e fica fora do pior
-        estado.
+        estado. Grupo sem monitor nenhum sai com `status` "empty".
       responses:
         "200":
           description: Cartões
@@ -1000,6 +1058,12 @@ paths:
     put:
       tags: [groups]
       summary: Renomeia ou move um grupo
+      description: |
+        Renomear (nome ou slug) exige enxergar todos os irmãos do grupo&#58;
+        para um sistema, escopo total. A recusa é 403 seja o nome livre ou
+        ocupado, para o conflito com um sistema fora do escopo não revelar
+        que ele existe. Dentro de um sistema concedido, renomear um
+        ambiente é livre.
       parameters: [{ $ref: "#/components/parameters/PathID" }]
       requestBody:
         required: true
@@ -1062,21 +1126,34 @@ paths:
     put:
       tags: [alerts]
       summary: Vincula um canal ao grupo
-      description: Idempotente. Convive com o vínculo por monitor; cada canal avisa uma vez só.
+      description: |
+        Idempotente. Convive com o vínculo por monitor; cada canal avisa uma
+        vez só. Exige escopo total, como vincular a monitor.
       parameters:
         - $ref: "#/components/parameters/PathID"
         - $ref: "#/components/parameters/PathChannelID"
       responses:
         "204": { description: Vínculo criado }
+        "403":
+          description: A conta não alcança todos os grupos
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "404": { $ref: "#/components/responses/NotFound" }
     delete:
       tags: [alerts]
       summary: Desvincula um canal do grupo
+      description: Exige escopo total. Canal inexistente é 404.
       parameters:
         - $ref: "#/components/parameters/PathID"
         - $ref: "#/components/parameters/PathChannelID"
       responses:
         "204": { description: Vínculo removido }
+        "403":
+          description: A conta não alcança todos os grupos
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /api/v1/problems:
@@ -1594,9 +1671,15 @@ paths:
         Tipos emitidos: `monitor.created`, `monitor.updated`,
         `monitor.deleted`.
 
-        Só chegam eventos de monitores do escopo, relido a cada evento.
-        Monitor que sai do escopo (movido para grupo de fora) chega como
-        `monitor.deleted`, sem revelar para onde foi.
+        Só chegam eventos de monitores do escopo. O escopo resolvido serve
+        aos eventos seguintes por até 5 s, então uma concessão retirada
+        vale no fluxo aberto em segundos. Monitor que sai do escopo (movido
+        para grupo de fora) chega como `monitor.deleted`, sem revelar para
+        onde foi.
+
+        A credencial é reconferida a cada 60 s&#58; sessão encerrada, token
+        revogado ou conta apagada encerram o fluxo, e a reconexão do
+        navegador recebe 401.
       responses:
         "200":
           description: Fluxo aberto
@@ -1840,8 +1923,12 @@ components:
         path: { type: string }
         status:
           type: string
-          enum: [up, degraded, down, unknown]
-          description: Pior estado entre os ativos, na ordem down, degraded, unknown, up.
+          enum: [up, degraded, down, unknown, empty]
+          description: |
+            Pior estado entre os ativos, na ordem down, degraded, unknown,
+            up. "empty" é o grupo sem monitor nenhum&#58; não há o que medir,
+            o que é diferente de "unknown" (monitor que deveria responder e
+            não está sendo medido).
         total: { type: integer }
         up: { type: integer }
         degraded: { type: integer }
@@ -1979,7 +2066,19 @@ components:
         nulo significa que nao houve medicao, e zero e uma afirmacao.
       properties:
         monitor_id: { type: integer, format: int64 }
-        status: { type: string, enum: [up, down, degraded, unknown] }
+        status:
+          type: string
+          enum: [up, down, degraded, unknown]
+          description: |
+            Estado confirmado do monitor, o mesmo do cartao de grupo e de
+            "Problemas agora".
+        last_check_status:
+          type: string
+          enum: [up, down, degraded, unknown]
+          nullable: true
+          description: |
+            Resultado da ultima batida, sem confirmacao. Nulo quando nunca
+            houve batida.
         source:
           type: string
           enum: [raw, hourly, daily]

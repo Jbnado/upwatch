@@ -69,8 +69,11 @@ qualquer escrita, e um monitor fora do escopo responde 404 em toda rota
 — lista, detalhe, batidas, agregados, incidentes, eventos ao vivo,
 exportação e resumos —, igual a um que não existe. Administrador com
 escopo só cria e altera dentro dos próprios grupos, não concede escopo
-maior que o dele e não mexe em canal, página pública ou relato, que
-afetam todos os grupos.
+maior que o dele e não mexe em canal (nem no vínculo de canal com
+monitor ou grupo), página pública ou relato, que afetam todos os
+grupos. Ele também só enxerga os canais ligados ao que é dele, e não
+aponta monitor para a rede interna do servidor (ver
+`UPWATCH_RESTRICT_PRIVATE_TARGETS`).
 
 **Publica uma página de estado** no formato que Anthropic, Cloudflare e
 Google consolidaram: veredito no topo, componentes agrupados, noventa
@@ -126,13 +129,30 @@ configuração nenhuma e uma instalação séria versiona o YAML.
 | `UPWATCH_SESSION_TTL` | `168h` | Validade da sessão da interface |
 | `UPWATCH_SECURE_COOKIES` | `false` | Marca o cookie como Secure; ligue ao servir por HTTPS |
 | `UPWATCH_PUBLIC_URL` | vazio | Endereço externo, para o feed da página pública usar URLs absolutas |
-| `UPWATCH_METRICS_TOKEN` | vazio | Exige `Authorization: Bearer <token>` em `/metrics`; vazio deixa aberto |
+| `UPWATCH_METRICS_TOKEN` | vazio | Exige `Authorization: Bearer <token>` em `/metrics`; vazio deixa aberto enquanto não houver conta restrita |
+| `UPWATCH_RESTRICT_PRIVATE_TARGETS` | `true` | Recusa, para contas com acesso restrito a grupos, monitor cujo alvo resolva para a rede interna do servidor |
 
 Durações aceitam sufixo de dias: `90d` é o mesmo que `2160h`.
 
 `UPWATCH_SECURE_COOKIES` fica desligado por padrão de propósito. Muita
 instalação caseira serve em HTTP na rede local, e um cookie Secure ali
 simplesmente não é enviado — o login pareceria quebrado sem explicação.
+
+`UPWATCH_RESTRICT_PRIVATE_TARGETS` fica ligado por padrão. O checker
+conecta a partir do servidor, e uma conta restrita a um grupo que
+cadastra monitor para `127.0.0.1`, `10.0.0.0/8` ou `169.254.169.254`
+usaria o servidor como sonda na rede de dentro dele — varrendo portas
+pela causa de cada falha e, no metadado da nuvem, saindo com
+credencial. Com a regra ligada, criar ou editar monitor com conta
+restrita recusa destino que resolva para loopback, rede privada (RFC
+1918 e ULA), enlace local ou espaço compartilhado de provedor, e também
+nome que não resolve. Contas que alcançam todos os grupos não são
+afetadas, e editar sem mudar o destino escolhido por outra pessoa
+continua permitido. Desligue se a instalação existe justamente para os
+times monitorarem a rede interna. A conferência ainda é só no cadastro:
+o checker não confere na hora de conectar, e um nome que troca de
+endereço depois (DNS rebinding) ou um redirecionamento HTTP para dentro
+passam (issue #59).
 
 ## API
 
@@ -263,6 +283,12 @@ grupos, e isso descreve a topologia interna. O padrão continua aberto
 porque o caso comum é o Prometheus raspando na rede local, sem nada a
 configurar. O token é uma credencial à parte: vai para a configuração do
 Prometheus sem dar acesso à API.
+
+**Com contas de acesso restrito, o token é obrigatório.** A partir da
+primeira conta restrita a grupos, `/metrics` sem token responde 403 —
+aberto, seria o atalho dessa conta para ver os nomes que o escopo
+esconde —, e o servidor avisa no início. Sem contas restritas, nada
+muda.
 
 Monitor dentro de um grupo leva também o rótulo `group`, com o caminho
 (`group="RPA / prod"`). O nome só é único dentro do grupo, e sem o rótulo
