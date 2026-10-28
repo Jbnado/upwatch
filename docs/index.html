@@ -536,9 +536,17 @@ docker compose up -d</code></pre>
         que se quer quando a disponibilidade do próprio monitorador
         importa.
       </p>
+      <p>
+        A senha do banco, o DSN e a chave que cifra as credenciais vão por
+        arquivo, como secrets do Compose:
+      </p>
 <pre><code>curl -O https://raw.githubusercontent.com/Jbnado/upwatch/main/compose.postgres.yaml
-POSTGRES_PASSWORD=$(openssl rand -base64 24) \
-  docker compose -f compose.postgres.yaml up -d</code></pre>
+mkdir -p secrets
+openssl rand -hex 24 &gt; secrets/postgres_password
+printf 'postgres://upwatch:%s@postgres:5432/upwatch?sslmode=disable\n' \
+  "$(cat secrets/postgres_password)" &gt; secrets/upwatch_db_dsn
+openssl rand -base64 32 &gt; secrets/upwatch_secret_key
+docker compose -f compose.postgres.yaml up -d</code></pre>
 
       <h3>Binário</h3>
       <p>
@@ -566,7 +574,8 @@ POSTGRES_PASSWORD=$(openssl rand -base64 24) \
         <tbody>
           <tr><td>UPWATCH_LISTEN</td><td>:8080</td><td>Endereço de escuta</td></tr>
           <tr><td>UPWATCH_DB_DRIVER</td><td>sqlite</td><td><code>sqlite</code> ou <code>postgres</code></td></tr>
-          <tr><td>UPWATCH_DB_DSN</td><td>/data/upwatch.db</td><td>Caminho do arquivo ou string de conexão</td></tr>
+          <tr><td>UPWATCH_DB_DSN</td><td>/data/upwatch.db</td><td>Caminho do arquivo ou string de conexão; aceita <code>_FILE</code></td></tr>
+          <tr><td>UPWATCH_SECRET_KEY</td><td>vazio</td><td>Chave (base64 de 32 bytes) que cifra as credenciais no banco; vazia, o SQLite gera uma ao lado do banco; aceita <code>_FILE</code></td></tr>
           <tr><td>UPWATCH_RETENTION_RAW</td><td>168h</td><td>Quanto tempo as batidas cruas duram</td></tr>
           <tr><td>UPWATCH_RETENTION_HOURLY</td><td>2160h</td><td>Retenção do agregado horário</td></tr>
           <tr><td>UPWATCH_RETENTION_DAILY</td><td>17520h</td><td>Retenção do agregado diário</td></tr>
