@@ -534,3 +534,29 @@ func TestEventStreamDoesNotCarryPushToken(t *testing.T) {
 	}
 	t.Fatal("the stream never delivered the monitor.created event")
 }
+
+// O sinal cabe em poucas centenas de bytes: status, uma causa de até 200
+// caracteres e um número. O teto geral da API, de 1 MiB, deixaria
+// qualquer um sem login fazer o servidor ler e decodificar um megabyte
+// por requisição. 16 KiB sobra para o sinal e para campos extras que um
+// agente mande junto.
+func TestPushRejectsOversizedBody(t *testing.T) {
+	s, _ := newPushServer(t)
+	body := `{"status":"down","msg":"` + strings.Repeat("a", 17<<10) + `"}`
+
+	resp := s.rawPush(t, http.MethodPost, "", "application/json", body)
+
+	assertStatus(t, resp, http.StatusRequestEntityTooLarge)
+}
+
+func TestPushAcceptsBodyUpToTheLimit(t *testing.T) {
+	s, id := newPushServer(t)
+	body := `{"status":"down","msg":"fila sem worker","agente":"` + strings.Repeat("v", 15<<10) + `"}`
+
+	resp := s.rawPush(t, http.MethodPost, "", "application/json", body)
+
+	assertStatus(t, resp, http.StatusOK)
+	if got := s.lastSignal(t, id); got.Message != "fila sem worker" {
+		t.Errorf("signal = %+v, want the cause recorded", got)
+	}
+}

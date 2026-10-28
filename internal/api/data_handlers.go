@@ -278,7 +278,13 @@ func (a *API) handlePush(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sig, err := readPushSignal(w, r)
-	if err != nil {
+	var tooLarge *http.MaxBytesError
+	switch {
+	case errors.As(err, &tooLarge):
+		writeError(w, http.StatusRequestEntityTooLarge, codeInvalidRequest,
+			"corpo acima de %d bytes; o sinal cabe em poucas centenas", maxPushBodyBytes)
+		return
+	case err != nil:
 		writeStoreError(w, err)
 		return
 	}
@@ -290,6 +296,14 @@ func (a *API) handlePush(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
+
+// maxPushBodyBytes é o teto do corpo do sinal.
+//
+// O sinal cabe em poucas centenas de bytes. O teto geral da API, de 1 MiB,
+// deixaria qualquer um sem login fazer o servidor ler e decodificar um
+// megabyte por requisição; 16 KiB sobra para o sinal e para os campos
+// extras que um agente mande junto.
+const maxPushBodyBytes = 16 << 10
 
 // pushParams são os campos opcionais do sinal, como chegam no corpo.
 type pushParams struct {
@@ -308,10 +322,15 @@ type pushParams struct {
 func readPushSignal(w http.ResponseWriter, r *http.Request) (domain.PushSignal, error) {
 	var params pushParams
 	if isJSON(r.Header.Get("Content-Type")) {
-		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
+		r.Body = http.MaxBytesReader(w, r.Body, maxPushBodyBytes)
 		dec := json.NewDecoder(r.Body)
 		dec.UseNumber()
-		if err := dec.Decode(&params); err != nil && !errors.Is(err, io.EOF) {
+		err := dec.Decode(&params)
+		var tooLarge *http.MaxBytesError
+		switch {
+		case errors.As(err, &tooLarge):
+			return domain.PushSignal{}, err
+		case err != nil && !errors.Is(err, io.EOF):
 			return domain.PushSignal{}, &domain.ValidationError{Field: "body", Msg: "corpo JSON inválido"}
 		}
 	}

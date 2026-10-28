@@ -661,3 +661,155 @@ func TestPushNeverSignalledCountsFromTheLastRearm(t *testing.T) {
 		t.Errorf("Status = %v (%s), want waiting right after reactivation", got.Status, got.Message)
 	}
 }
+
+// ---------- folga mínima com agenda ----------
+
+// Sem folga explícita, a folga era o intervalo de verificação — um minuto,
+// no caso comum. Uma rotina agendada que leva dois minutos para terminar e
+// só então reporta viraria alarme toda execução. Com agenda, a folga
+// implícita é de pelo menos cinco minutos.
+func TestPushScheduleWithoutGraceToleratesFiveMinutes(t *testing.T) {
+	sp := mustLocation(t, "America/Sao_Paulo")
+	m := pushMonitor(t, time.Minute, map[string]any{
+		"token": "segredo-de-16-chars", "schedule": "0 9 * * *", "timezone": "America/Sao_Paulo",
+	})
+	log := &pushLog{at: time.Date(2026, 7, 27, 9, 1, 0, 0, sp), has: true}
+
+	within := checkAt(t, time.Date(2026, 7, 28, 9, 4, 0, 0, sp), log, m)
+	if within.Status != domain.StatusUp {
+		t.Errorf("4 minutes after the run: Status = %v (%s), want %v", within.Status, within.Message, domain.StatusUp)
+	}
+
+	beyond := checkAt(t, time.Date(2026, 7, 28, 9, 6, 0, 0, sp), log, m)
+	if beyond.Status != domain.StatusDown {
+		t.Errorf("6 minutes after the run: Status = %v (%s), want %v", beyond.Status, beyond.Message, domain.StatusDown)
+	}
+}
+
+// A folga explícita continua valendo, mesmo abaixo de cinco minutos: quem
+// a escreveu sabe quanto a rotina leva.
+func TestPushScheduleHonoursExplicitShortGrace(t *testing.T) {
+	sp := mustLocation(t, "America/Sao_Paulo")
+	m := pushMonitor(t, time.Minute, map[string]any{
+		"token": "segredo-de-16-chars", "schedule": "0 9 * * *", "timezone": "America/Sao_Paulo",
+		"grace_period_seconds": 60,
+	})
+	log := &pushLog{at: time.Date(2026, 7, 27, 9, 1, 0, 0, sp), has: true}
+
+	got := checkAt(t, time.Date(2026, 7, 28, 9, 2, 0, 0, sp), log, m)
+
+	if got.Status != domain.StatusDown {
+		t.Errorf("Status = %v (%s), want %v with an explicit one-minute grace", got.Status, got.Message, domain.StatusDown)
+	}
+}
+
+// ---------- horário de verão: a hora que some e a que se repete ----------
+
+// dstMonitor é um push diário com folga de 10 minutos no fuso dado.
+func dstMonitor(t *testing.T, schedule, tz string) domain.Monitor {
+	t.Helper()
+	return pushMonitor(t, time.Minute, map[string]any{
+		"token": "segredo-de-16-chars", "schedule": schedule,
+		"timezone": tz, "grace_period_seconds": 600,
+	})
+}
+
+// Na madrugada em que o relógio pula das 02:00 para as 03:00, uma rotina
+// das 02:00 não tem horário naquele dia. O cron clássico a roda às 03:00;
+// o CronJob do Kubernetes, que usa a mesma biblioteca de agenda daqui, a
+// pula. Cobrar a execução daria alarme falso para quem pula, então aquele
+// dia não é cobrado — mas o seguinte é, para a hora que some não virar
+// cegueira.
+func TestPushScheduleSkipsTheMissingHourInNewYork(t *testing.T) {
+	ny := mustLocation(t, "America/New_York")
+	m := dstMonitor(t, "0 2 * * *", "America/New_York")
+	// Sábado 07/03/2026, 02:01 EST. Domingo, 08/03, as 02:00 não existem.
+	log := &pushLog{at: time.Date(2026, 3, 7, 2, 1, 0, 0, ny), has: true}
+
+	sameDay := checkAt(t, time.Date(2026, 3, 8, 3, 30, 0, 0, ny), log, m)
+	if sameDay.Status == domain.StatusDown {
+		t.Errorf("on the day the hour vanished: Status = %v (%s), want no fault", sameDay.Status, sameDay.Message)
+	}
+
+	nextDay := checkAt(t, time.Date(2026, 3, 9, 2, 11, 0, 0, ny), log, m)
+	if nextDay.Status != domain.StatusDown {
+		t.Errorf("the next day: Status = %v (%s), want the 02:00 run enforced again", nextDay.Status, nextDay.Message)
+	}
+}
+
+// Na madrugada em que o relógio volta das 02:00 para a 01:00, as 01:30
+// acontecem duas vezes. O cron clássico roda a rotina uma vez só, na
+// primeira. Se o monitor esperasse também a segunda, toda rotina das
+// 01:30 viraria alarme falso uma vez por ano, às 01:40 do horário padrão.
+func TestPushScheduleExpectsTheRepeatedHourOnceInNewYork(t *testing.T) {
+	ny := mustLocation(t, "America/New_York")
+	m := dstMonitor(t, "30 1 * * *", "America/New_York")
+	// Domingo 01/11/2026, 01:31 EDT: o sinal da primeira 01:30.
+	firstPass := time.Date(2026, 11, 1, 5, 31, 0, 0, time.UTC)
+	log := &pushLog{at: firstPass, has: true}
+
+	// 01:45 EST, uma hora depois: a segunda 01:30 já passou com a folga.
+	secondPass := time.Date(2026, 11, 1, 6, 45, 0, 0, time.UTC)
+	if got := checkAt(t, secondPass, log, m); got.Status == domain.StatusDown {
+		t.Errorf("after the repeated 01:30: Status = %v (%s), want no fault", got.Status, got.Message)
+	}
+
+	nextDay := checkAt(t, time.Date(2026, 11, 2, 1, 41, 0, 0, ny), log, m)
+	if nextDay.Status != domain.StatusDown {
+		t.Errorf("the next day: Status = %v (%s), want the 01:30 run enforced", nextDay.Status, nextDay.Message)
+	}
+}
+
+// A primeira das duas 01:30 continua cobrada: pular a hora repetida não
+// pode virar pular a execução daquele dia.
+func TestPushScheduleStillExpectsTheFirstOfTheRepeatedHour(t *testing.T) {
+	ny := mustLocation(t, "America/New_York")
+	m := dstMonitor(t, "30 1 * * *", "America/New_York")
+	log := &pushLog{at: time.Date(2026, 10, 31, 1, 31, 0, 0, ny), has: true}
+
+	// 01:41 EDT, a primeira passagem, sem sinal.
+	got := checkAt(t, time.Date(2026, 11, 1, 5, 41, 0, 0, time.UTC), log, m)
+
+	if got.Status != domain.StatusDown {
+		t.Errorf("Status = %v (%s), want the first 01:30 enforced", got.Status, got.Message)
+	}
+}
+
+// São Paulo não tem horário de verão desde 2019, mas o fuso guarda o
+// histórico, e um monitor que reprocessa a agenda daquela época — ou um
+// país que volte a adotar a mudança — precisa do mesmo comportamento. Lá
+// a mudança era à meia-noite: em 04/11/2018 o relógio pulou das 00:00
+// para a 01:00, e em 17/02/2019 voltou da meia-noite para as 23:00 do dia
+// 16. As horas afetadas são outras, então as expressões também.
+func TestPushScheduleSkipsTheMissingMidnightInSaoPaulo(t *testing.T) {
+	sp := mustLocation(t, "America/Sao_Paulo")
+	m := dstMonitor(t, "0 0 * * *", "America/Sao_Paulo")
+	log := &pushLog{at: time.Date(2018, 11, 3, 0, 1, 0, 0, sp), has: true}
+
+	sameDay := checkAt(t, time.Date(2018, 11, 4, 1, 30, 0, 0, sp), log, m)
+	if sameDay.Status == domain.StatusDown {
+		t.Errorf("on the day midnight vanished: Status = %v (%s), want no fault", sameDay.Status, sameDay.Message)
+	}
+
+	nextDay := checkAt(t, time.Date(2018, 11, 5, 0, 11, 0, 0, sp), log, m)
+	if nextDay.Status != domain.StatusDown {
+		t.Errorf("the next day: Status = %v (%s), want midnight enforced again", nextDay.Status, nextDay.Message)
+	}
+}
+
+func TestPushScheduleExpectsTheRepeatedHourOnceInSaoPaulo(t *testing.T) {
+	sp := mustLocation(t, "America/Sao_Paulo")
+	m := dstMonitor(t, "30 23 * * *", "America/Sao_Paulo")
+	// 16/02/2019, 23:31 no horário de verão (-02): a primeira 23:30.
+	log := &pushLog{at: time.Date(2019, 2, 17, 1, 31, 0, 0, time.UTC), has: true}
+
+	// 23:45 do horário padrão (-03): a segunda 23:30 passou com a folga.
+	if got := checkAt(t, time.Date(2019, 2, 17, 2, 45, 0, 0, time.UTC), log, m); got.Status == domain.StatusDown {
+		t.Errorf("after the repeated 23:30: Status = %v (%s), want no fault", got.Status, got.Message)
+	}
+
+	nextDay := checkAt(t, time.Date(2019, 2, 17, 23, 41, 0, 0, sp), log, m)
+	if nextDay.Status != domain.StatusDown {
+		t.Errorf("the next day: Status = %v (%s), want the 23:30 run enforced", nextDay.Status, nextDay.Message)
+	}
+}

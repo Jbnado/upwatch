@@ -12,7 +12,7 @@ export type AgendaPush = {
   schedule: string;
   /** Fuso IANA em que a agenda é lida. */
   timezone: string;
-  /** Folga em segundos; zero usa o próprio intervalo. */
+  /** Folga em segundos; zero usa o próprio intervalo (com agenda, no mínimo 5 min). */
   folga: number;
 };
 

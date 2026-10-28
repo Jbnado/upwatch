@@ -49,7 +49,8 @@ type PushConfig struct {
 	// GracePeriodSeconds é a folga antes de declarar silêncio: além do
 	// intervalo, ou além da execução prevista quando há agenda. Zero usa
 	// uma folga igual ao intervalo do monitor, de modo que um atraso
-	// pontual não vire alerta.
+	// pontual não vire alerta — e, com agenda, de pelo menos
+	// minScheduleGrace.
 	GracePeriodSeconds int `json:"grace_period_seconds,omitempty"`
 
 	// Schedule é uma expressão cron de 5 campos com os horários em que o
@@ -67,10 +68,23 @@ type PushConfig struct {
 	Timezone string `json:"timezone,omitempty"`
 }
 
+// minScheduleGrace é a folga implícita mínima de um push com agenda.
+//
+// Sem agenda, o sinal chega a cada intervalo e a folga do tamanho do
+// intervalo acompanha o ritmo da rotina. Com agenda, o intervalo é só o
+// ritmo da verificação — um minuto, no caso comum —, e nada diz quanto a
+// rotina leva: a que termina em dois minutos e só então reporta viraria
+// alarme toda execução. A folga explícita vale como escrita, mesmo
+// menor: quem a escreveu sabe quanto a rotina leva.
+const minScheduleGrace = 5 * time.Minute
+
 // grace é a folga efetiva.
 func (c PushConfig) grace(interval time.Duration) time.Duration {
 	if c.GracePeriodSeconds > 0 {
 		return time.Duration(c.GracePeriodSeconds) * time.Second
+	}
+	if strings.TrimSpace(c.Schedule) != "" {
+		return max(interval, minScheduleGrace)
 	}
 	return interval
 }
@@ -120,8 +134,42 @@ func (pl pushPlan) scheduled() bool { return pl.schedule != nil }
 
 // nextRun é a primeira execução prevista depois de t, no fuso da agenda.
 // Zero quando a expressão nunca dispara.
+//
+// O horário de verão tem dois casos. A hora que some (o relógio pula das
+// 02:00 para as 03:00) não tem execução naquele dia: o cron clássico a
+// roda às 03:00 e o CronJob do Kubernetes a pula, e cobrá-la daria alarme
+// falso para um dos dois. A hora que se repete (o relógio volta das 02:00
+// para a 01:00) tem a execução uma vez só, na primeira passagem, como no
+// cron clássico; a biblioteca de agenda devolveria também a segunda, e o
+// monitor cobraria um sinal que nenhuma rotina manda.
 func (pl pushPlan) nextRun(t time.Time) time.Time {
-	return pl.schedule.Next(t.In(pl.loc))
+	run := pl.schedule.Next(t.In(pl.loc))
+	// Limite de voltas só por garantia: cada uma avança pelo menos um
+	// minuto dentro de uma hora repetida, que tem no máximo algumas dezenas
+	// de minutos agendáveis.
+	for range 24 * 60 {
+		if run.IsZero() || !repeatedWallClock(run) {
+			return run
+		}
+		run = pl.schedule.Next(run)
+	}
+	return run
+}
+
+// repeatedWallClock informa se o horário de parede de t já aconteceu
+// antes, na hora que se repete quando o relógio volta.
+//
+// Logo depois da volta, por tanto tempo quanto o relógio recuou, cada
+// horário local repete um que já passou com o deslocamento anterior.
+func repeatedWallClock(t time.Time) bool {
+	start, _ := t.ZoneBounds()
+	if start.IsZero() {
+		return false
+	}
+	_, now := t.Zone()
+	_, before := start.Add(-time.Nanosecond).Zone()
+	back := time.Duration(before-now) * time.Second
+	return back > 0 && t.Sub(start) < back
 }
 
 // deadline é o instante até o qual o sinal seguinte a after pode chegar.

@@ -253,7 +253,7 @@ export function MonitorForm({ id }: { id?: number }) {
 
               <Field
                 label="folga"
-                hint="segundos de atraso tolerados; zero usa o próprio intervalo"
+                hint="segundos de atraso tolerados; zero usa o intervalo, e com agenda no mínimo 5 minutos"
               >
                 <NumberInput
                   min={0}

@@ -271,8 +271,9 @@ hora: cada sinal conta uma vez na confirmação de N falhas. As verificações
 seguintes, até o próximo sinal, repetem o estado informado sem contar de
 novo — com N=2 são precisos dois `down`, e um `down` seguido de silêncio
 cai pela regra do silêncio. A latência também entra uma vez por sinal.
-`msg` é cortada em 200 caracteres, vai para o incidente e para o aviso, e
-nunca aparece na página pública.
+`msg` é cortada em 200 caracteres, perde caracteres de controle e de
+formatação invisível, vai para o incidente e para o aviso, e nunca aparece
+na página pública. `latency_ms` vai até um dia, e o corpo JSON até 16 KiB.
 
 Por padrão o sinal é esperado a cada intervalo, mais a folga. Para rotinas
 de horário fixo, informe uma agenda cron de 5 campos e o fuso:
@@ -284,7 +285,11 @@ de horário fixo, informe uma agenda cron de 5 campos e o fuso:
 Com agenda, o monitor só cai quando falta o sinal de uma execução prevista
 até o fim da folga — o intervalo de 15h entre 18:02 e 09:02 não vira
 alarme. O fuso é obrigatório porque rotinas são agendadas no horário local
-e o horário de verão desloca a execução. O detalhe do monitor mostra a
+e o horário de verão desloca a execução. Sem `grace_period_seconds`, a
+folga com agenda é de pelo menos 5 minutos. No horário de verão, a
+execução que cai na hora que some não é cobrada naquele dia, e a que cai
+na hora que se repete é esperada uma vez só, na primeira passagem — como
+no cron clássico. O detalhe do monitor mostra a
 próxima execução esperada.
 
 Um monitor que nunca recebeu sinal fica "aguardando" só durante a primeira

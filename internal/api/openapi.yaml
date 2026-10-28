@@ -704,6 +704,7 @@ paths:
           application/json:
             schema:
               type: object
+              description: Até 16 KiB; acima disso, 413.
               properties:
                 status: { type: string, enum: [up, down, degraded], default: up }
                 msg:
@@ -712,7 +713,8 @@ paths:
                 latency_ms:
                   type: integer
                   minimum: 0
-                  description: Duração medida pelo próprio serviço
+                  maximum: 86400000
+                  description: Duração medida pelo próprio serviço, até um dia
       responses:
         "200": { $ref: "#/components/responses/PushAccepted" }
         "400": { $ref: "#/components/responses/BadRequest" }
@@ -1416,8 +1418,8 @@ components:
     PushLatency:
       name: latency_ms
       in: query
-      description: Duração medida pelo próprio serviço, em milissegundos inteiros.
-      schema: { type: integer, minimum: 0 }
+      description: Duração medida pelo próprio serviço, em milissegundos inteiros, até um dia.
+      schema: { type: integer, minimum: 0, maximum: 86400000 }
     PathID:
       name: id
       in: path
@@ -1624,7 +1626,11 @@ components:
         grace_period_seconds:
           type: integer
           minimum: 0
-          description: Folga além do intervalo ou da execução prevista. Zero usa o próprio intervalo.
+          description: |
+            Folga além do intervalo ou da execução prevista. Zero usa o
+            próprio intervalo; com `schedule`, no mínimo 5 minutos, porque o
+            intervalo ali é só o ritmo da verificação e nada diz quanto a
+            rotina leva.
         schedule:
           type: string
           example: "2 9,18 * * *"
