@@ -31,6 +31,7 @@ const (
 	opGte      = "gte"
 	opContains = "contains"
 	opExists   = "exists"
+	opAbsent   = "absent"
 )
 
 // opSymbols é também a lista de operadores válidos; o símbolo é o que a
@@ -38,7 +39,7 @@ const (
 // lt 100".
 var opSymbols = map[string]string{
 	opEq: "=", opNe: "≠", opLt: "<", opLte: "≤", opGt: ">", opGte: "≥",
-	opContains: "contém", opExists: "existe",
+	opContains: "contém", opExists: "existe", opAbsent: "ausente",
 }
 
 // maxShownValue é quanto de um valor entra na causa. A causa vai para
@@ -63,15 +64,16 @@ func compileAssertion(a JSONAssertion) (compiledAssertion, error) {
 	}
 	if _, ok := opSymbols[a.Op]; !ok {
 		return compiledAssertion{}, fmt.Errorf(
-			"operador %q desconhecido; use eq, ne, lt, lte, gt, gte, contains ou exists", a.Op)
+			"operador %q desconhecido; use eq, ne, lt, lte, gt, gte, contains, exists ou absent", a.Op)
 	}
 
 	c := compiledAssertion{JSONAssertion: a, segs: segs}
 	hasValue := len(a.Value) > 0
 
-	if a.Op == opExists {
+	if a.Op == opExists || a.Op == opAbsent {
 		if hasValue {
-			return c, errors.New(`"exists" não leva valor; para exigir ausência ou nulo use "ne" ou "eq" com null`)
+			return c, fmt.Errorf(`%q não leva valor; para exigir que o caminho não exista use "absent", `+
+				`e para exigir o valor null use "eq" com null`, a.Op)
 		}
 		return c, nil
 	}
@@ -124,10 +126,17 @@ func evaluateJSONAssertions(as []compiledAssertion, body []byte, truncated bool)
 }
 
 // evaluate devolve a causa da falha, ou string vazia se a asserção vale.
+//
+// Caminho ausente é diferente de qualquer valor, null incluído: por isso
+// "ne" passa e "eq null" reprova quando o caminho não existe. Só absent
+// exige a ausência.
 func (a compiledAssertion) evaluate(doc any) string {
 	found, ok := lookupJSONPath(doc, a.segs)
 	if !ok {
-		if a.Op == opExists {
+		switch a.Op {
+		case opAbsent, opNe:
+			return ""
+		case opExists:
 			return fmt.Sprintf("%s não existe", a.Path)
 		}
 		return fmt.Sprintf("%s não existe, %s", a.Path, a.expectation())
@@ -136,6 +145,8 @@ func (a compiledAssertion) evaluate(doc any) string {
 	switch a.Op {
 	case opExists:
 		return ""
+	case opAbsent:
+		return fmt.Sprintf("%s existe, esperado ausente", a.Path)
 	case opEq:
 		if typeName(found) != typeName(a.expected) {
 			return fmt.Sprintf("%s = %s (%s), %s (%s): tipos diferentes",

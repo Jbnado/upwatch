@@ -82,6 +82,19 @@ func TestHTTPJSONAssertionOperators(t *testing.T) {
 		// são perguntas diferentes, e a segunda é eq/ne null.
 		{"exists com null", assertion("$.version", "exists"), domain.StatusUp},
 		{"exists ausente", assertion("$.cache", "exists"), domain.StatusDown},
+		// Ausente é diferente de qualquer valor: "db ne down" precisa
+		// passar quando o campo some, senão a única forma de dizer "não
+		// pode estar down" exigiria também que o campo exista.
+		{"ne ausente", assertion("$.cache", "ne", "down"), domain.StatusUp},
+		// "eq null" pergunta pelo valor: o campo precisa estar lá. Quem
+		// quer exigir que ele não exista usa absent.
+		{"eq null ausente", assertion("$.cache", "eq", nil), domain.StatusDown},
+		{"absent ausente", assertion("$.cache", "absent"), domain.StatusUp},
+		{"absent presente", assertion("$.db", "absent"), domain.StatusDown},
+		// null é valor presente, então absent reprova — é o espelho de
+		// "exists com null".
+		{"absent com null", assertion("$.version", "absent"), domain.StatusDown},
+		{"absent em índice fora da lista", assertion("$.workers[5]", "absent"), domain.StatusUp},
 		{"índice e campo", assertion("$.workers[0].alive", "gte", 1), domain.StatusUp},
 		{"índice fora da lista", assertion("$.workers[5].alive", "exists"), domain.StatusDown},
 		{"chave entre aspas", assertion(`$["chave com espaço"]`, "eq", "sim"), domain.StatusUp},
@@ -126,6 +139,7 @@ func TestHTTPJSONAssertionFailureNamesAssertionAndFoundValue(t *testing.T) {
 		{"igualdade", assertion("$.db", "eq", "down"), `$.db = "up", esperado = "down"`},
 		{"ausente", assertion("$.cache", "exists"), "$.cache não existe"},
 		{"ausente com operador", assertion("$.cache", "eq", "up"), `$.cache não existe, esperado = "up"`},
+		{"presente com absent", assertion("$.queue_lag", "absent"), "$.queue_lag existe, esperado ausente"},
 	}
 
 	for _, tt := range tests {
@@ -301,6 +315,8 @@ func TestHTTPValidateConfigRejectsInvalidJSONAssertion(t *testing.T) {
 		// exists com valor sugere que a pessoa esperava "exists false";
 		// aceitar e ignorar faria a asserção dizer o contrário do escrito.
 		{"exists com valor", assertion("$.db", "exists", false)},
+		// Mesma razão: "absent true" ou "absent false" seria ambíguo.
+		{"absent com valor", assertion("$.db", "absent", true)},
 	}
 
 	for _, tt := range tests {
@@ -341,9 +357,28 @@ func TestHTTPValidateConfigAcceptsValidJSONAssertions(t *testing.T) {
 		assertion(`$["chave com espaço"]`, "contains", "s"),
 		assertion("$.regions", "contains", map[string]any{"id": 1}),
 		assertion("$", "exists"),
+		assertion("$.debug", "absent"),
 	}})
 
 	if err := checker.NewHTTP().ValidateConfig(cfg); err != nil {
 		t.Errorf("ValidateConfig returned unexpected error: %v", err)
+	}
+}
+
+// Quem escreve "exists" com valor quase sempre queria "não existe". A
+// recusa precisa apontar o operador que faz isso — e não sugerir ne ou
+// "eq null", que reprovam justamente quando o campo não está lá.
+func TestHTTPValidateConfigExistsWithValuePointsToAbsent(t *testing.T) {
+	cfg, _ := json.Marshal(map[string]any{"json_assertions": []map[string]any{
+		assertion("$.debug", "exists", false),
+	}})
+
+	err := checker.NewHTTP().ValidateConfig(cfg)
+
+	if err == nil {
+		t.Fatal("ValidateConfig returned nil error, want an error")
+	}
+	if !strings.Contains(err.Error(), `"absent"`) {
+		t.Errorf("error = %q, want it to suggest \"absent\"", err)
 	}
 }

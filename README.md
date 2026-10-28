@@ -160,6 +160,12 @@ ser despejado no canal.
 | `lt`, `lte`, `gt`, `gte` | a comparação vale; só entre números |
 | `contains` | o texto contém o trecho, ou a lista contém o elemento |
 | `exists` | o caminho existe, mesmo com valor `null`; não leva `value` |
+| `absent` | o caminho não existe; não leva `value` |
+
+Caminho ausente é diferente de qualquer valor, `null` incluído: `ne` passa
+quando o campo não está lá, e `eq` com `null` reprova. Para exigir que um
+campo não exista, use `absent`; para exigir que exista com valor `null`,
+`eq` com `null`.
 
 Números comparam pelo valor e sem passar por ponto flutuante: `340` é igual
 a `340.0`, e um id acima de 2^53 não se confunde com o vizinho.

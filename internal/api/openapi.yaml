@@ -1547,17 +1547,20 @@ components:
           example: $.queue_lag
         op:
           type: string
-          enum: [eq, ne, lt, lte, gt, gte, contains, exists]
+          enum: [eq, ne, lt, lte, gt, gte, contains, exists, absent]
           description: |
             `eq` e `ne` comparam valor e tipo (`"100"` não é igual a `100`;
             números comparam pelo valor, `340` é igual a `340.0`).
             `lt`, `lte`, `gt` e `gte` só entre números. `contains` procura
             um trecho num texto ou um elemento numa lista. `exists` passa
-            se o caminho existir, mesmo com valor null.
+            se o caminho existir, mesmo com valor null; `absent` passa se
+            ele não existir. Caminho ausente é diferente de qualquer valor:
+            `ne` passa e `eq` com null reprova.
         value:
           description: |
             Qualquer valor JSON. Obrigatório para todos os operadores menos
-            `exists`, que o recusa; número para `lt`, `lte`, `gt` e `gte`.
+            `exists` e `absent`, que o recusam; número para `lt`, `lte`,
+            `gt` e `gte`.
       example:
         path: $.queue_lag
         op: lt
