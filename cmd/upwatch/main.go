@@ -191,6 +191,7 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 		Version:       version,
 		Counters:      counters,
 		SessionTTL:    cfg.SessionTTL,
+		MetricsToken:  cfg.MetricsToken,
 	})
 
 	return &application{

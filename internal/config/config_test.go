@@ -228,3 +228,24 @@ func TestBooleanFromEnvironment(t *testing.T) {
 		t.Error("SecureCookies = false, want the environment value to be applied")
 	}
 }
+
+// O token de métricas vem do ambiente, que é onde segredo de container
+// costuma morar. Sem ele, /metrics continua aberto como sempre foi.
+func TestMetricsTokenComesFromEnvironment(t *testing.T) {
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MetricsToken != "" {
+		t.Errorf("MetricsToken = %q sem configuração, want vazio", cfg.MetricsToken)
+	}
+
+	t.Setenv("UPWATCH_METRICS_TOKEN", "segredo-do-prometheus")
+	cfg, err = config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MetricsToken != "segredo-do-prometheus" {
+		t.Errorf("MetricsToken = %q", cfg.MetricsToken)
+	}
+}

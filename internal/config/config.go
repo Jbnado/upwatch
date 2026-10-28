@@ -65,6 +65,11 @@ type Config struct {
 
 	// SessionTTL é a validade de um login na interface.
 	SessionTTL time.Duration `yaml:"session_ttl"`
+
+	// MetricsToken, quando definido, passa a ser exigido em /metrics.
+	// Vazio mantém a exposição aberta, que serve à rede local; numa
+	// instalação exposta, ela publica o nome de todos os monitores.
+	MetricsToken string `yaml:"metrics_token"`
 }
 
 // Database identifica o armazenamento.
@@ -147,6 +152,7 @@ func applyEnv(cfg *Config) error {
 	str(&cfg.PublicURL, "PUBLIC_URL")
 	str(&cfg.Database.Driver, "DB_DRIVER")
 	str(&cfg.Database.DSN, "DB_DSN")
+	str(&cfg.MetricsToken, "METRICS_TOKEN")
 
 	if err := dur(&cfg.Retention.Raw, "RETENTION_RAW"); err != nil {
 		return err

@@ -32,11 +32,21 @@ const metricsMaxMonitors = 2000
 
 // handleMetrics publica o estado atual em texto.
 //
-// Sem credencial: o Prometheus raspa sem sessão, e exigir uma obrigaria
-// cada instalação a inventar um token só para isso. O que sai aqui são
-// contagens e nomes de monitor — nunca endereço de alvo, que descreveria
-// a topologia interna e ainda traria cardinalidade alta.
+// Fora da sessão: o Prometheus raspa sem ela. O token é opcional — sem
+// ele, a exposição fica aberta, como sempre foi, para quem raspa na rede
+// local não precisar configurar nada; com ele, a instalação exposta deixa
+// de publicar o nome de todos os monitores para qualquer um. O que sai
+// aqui são contagens, nomes de monitor e de grupo — nunca endereço de
+// alvo, que descreveria a topologia e ainda traria cardinalidade alta.
 func (a *API) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	if a.metricsToken != "" {
+		segredo, ok := bearerToken(r)
+		if !ok || !subtleEqual(segredo, a.metricsToken) {
+			writeError(w, http.StatusUnauthorized, codeUnauthorized, "token de métricas inválido")
+			return
+		}
+	}
+
 	ctx := r.Context()
 	var b strings.Builder
 
@@ -62,6 +72,23 @@ func (a *API) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	grupos, err := a.store.Groups().List(ctx)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	arvore := domain.NewGroupTree(grupos)
+	// rotulo identifica a série. O nome só é único dentro do grupo, então o
+	// grupo entra no rótulo; sem ele o "bff" de produção e o de homologação
+	// viravam a mesma série, e o Prometheus recusaria a coleta inteira. Sem
+	// grupo, o rótulo fica como era, para não quebrar consulta de ninguém.
+	rotulo := func(m domain.Monitor) string {
+		if m.GroupID == nil {
+			return "monitor=" + quote(m.Name)
+		}
+		return "monitor=" + quote(m.Name) + ",group=" + quote(arvore.Path(*m.GroupID))
+	}
+
 	itens := monitores.Items
 	truncados := 0
 	if len(itens) > metricsMaxMonitors {
@@ -71,26 +98,26 @@ func (a *API) handleMetrics(w http.ResponseWriter, r *http.Request) {
 
 	// Ordem estável: a exposição é lida por humano tanto quanto por
 	// coletor, e ordem variável entre raspagens atrapalha comparar.
-	sort.Slice(itens, func(i, j int) bool { return itens[i].Name < itens[j].Name })
+	sort.Slice(itens, func(i, j int) bool { return rotulo(itens[i]) < rotulo(itens[j]) })
 
 	family(&b, "upwatch_monitor_status", "gauge",
 		"Estado confirmado: 1 no ar, 0 fora do ar, 2 degradado, -1 sem medição.")
 	for _, m := range itens {
-		fmt.Fprintf(&b, "upwatch_monitor_status{monitor=%s,type=%s} %d\n",
-			quote(m.Name), quote(m.Type.String()), statusValue(estados[m.ID].Status))
+		fmt.Fprintf(&b, "upwatch_monitor_status{%s,type=%s} %d\n",
+			rotulo(m), quote(m.Type.String()), statusValue(estados[m.ID].Status))
 	}
 
 	family(&b, "upwatch_monitor_enabled", "gauge",
 		"1 quando o monitor está ativo, 0 quando pausado.")
 	for _, m := range itens {
-		fmt.Fprintf(&b, "upwatch_monitor_enabled{monitor=%s} %d\n", quote(m.Name), boolValue(m.Enabled))
+		fmt.Fprintf(&b, "upwatch_monitor_enabled{%s} %d\n", rotulo(m), boolValue(m.Enabled))
 	}
 
 	family(&b, "upwatch_monitor_interval_seconds", "gauge",
 		"Intervalo configurado entre verificações.")
 	for _, m := range itens {
-		fmt.Fprintf(&b, "upwatch_monitor_interval_seconds{monitor=%s} %g\n",
-			quote(m.Name), m.Interval.Seconds())
+		fmt.Fprintf(&b, "upwatch_monitor_interval_seconds{%s} %g\n",
+			rotulo(m), m.Interval.Seconds())
 	}
 
 	// Uma consulta só para todos os monitores. Uma por alvo faria a
@@ -120,8 +147,8 @@ func (a *API) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			// resposta instantânea.
 			continue
 		}
-		fmt.Fprintf(&b, "upwatch_monitor_latency_seconds{monitor=%s} %g\n",
-			quote(m.Name), float64(ultima.LatencyMS)/1000)
+		fmt.Fprintf(&b, "upwatch_monitor_latency_seconds{%s} %g\n",
+			rotulo(m), float64(ultima.LatencyMS)/1000)
 	}
 
 	family(&b, "upwatch_monitor_last_check_timestamp_seconds", "gauge",
@@ -131,8 +158,8 @@ func (a *API) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			continue
 		}
-		fmt.Fprintf(&b, "upwatch_monitor_last_check_timestamp_seconds{monitor=%s} %d\n",
-			quote(m.Name), ultima.Timestamp.Unix())
+		fmt.Fprintf(&b, "upwatch_monitor_last_check_timestamp_seconds{%s} %d\n",
+			rotulo(m), ultima.Timestamp.Unix())
 	}
 
 	abertos, err := a.store.Incidents().List(ctx, store.IncidentFilter{
