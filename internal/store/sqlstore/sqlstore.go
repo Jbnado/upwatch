@@ -168,6 +168,14 @@ func (s *Store) RollbackAll() error {
 	return s.down(func() error { return goose.DownTo(s.db.sql, ".", 0) })
 }
 
+// RollbackTo desce o schema até a versão indicada.
+//
+// Existe para o teste de migração montar um banco na forma antiga e
+// conferir que a subida preserva o que havia nele.
+func (s *Store) RollbackTo(version int64) error {
+	return s.down(func() error { return goose.DownTo(s.db.sql, ".", version) })
+}
+
 func (s *Store) down(run func() error) error {
 	fsys, err := migrations.FS(s.dialect)
 	if err != nil {
@@ -226,6 +234,12 @@ func (s *Store) Announcements() store.AnnouncementRepo { return &announcementRep
 
 // Close encerra a conexão.
 func (s *Store) Close() error { return s.db.sql.Close() }
+
+// Groups devolve o repositório de grupos de monitores.
+func (s *Store) Groups() store.GroupRepo { return &groupRepo{db: s.db} }
+
+// Transitions devolve o histórico de mudanças de estado.
+func (s *Store) Transitions() store.TransitionRepo { return &transitionRepo{db: s.db} }
 
 // ---------- conversões compartilhadas ----------
 

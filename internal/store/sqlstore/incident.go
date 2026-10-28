@@ -161,6 +161,10 @@ func (r *incidentRepo) List(ctx context.Context, f store.IncidentFilter) (store.
 	if f.OnlyOpen {
 		conds = append(conds, "resolved_at IS NULL")
 	}
+	if cond, condArgs := groupCondition("group_id", f.Groups); cond != "" {
+		conds = append(conds, "monitor_id IN (SELECT id FROM monitor WHERE "+cond+")")
+		args = append(args, condArgs...)
+	}
 	args = append(args, f.Page.Limit+1)
 
 	q := `SELECT ` + incidentColumns + ` FROM incident WHERE ` +

@@ -67,6 +67,9 @@ func (s *Store) QueryHeartbeats(ctx context.Context, q store.HeartbeatQuery) ([]
 		sqlText += ` AND probe_id = ?`
 		args = append(args, q.ProbeID)
 	}
+	if q.OnlyFailures {
+		sqlText += ` AND status IN ('down', 'degraded')`
+	}
 	// DESC porque o limite precisa cortar o começo da janela, e não o fim.
 	//
 	// Com ASC, quem pergunta "como está agora" recebia o passado: intervalo

@@ -46,6 +46,7 @@ func RunConformance(t *testing.T, newStore Factory) {
 		{"UserCountByRoleSeparates", testUserCountByRoleSeparates},
 	}...)
 	cases = append(cases, statusPageCases()...)
+	cases = append(cases, groupCases()...)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) { tc.run(t, newStore) })
 	}

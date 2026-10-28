@@ -81,12 +81,27 @@ func (r TimeRange) Contains(ts time.Time) bool {
 	return !ts.Before(r.From) && ts.Before(r.To)
 }
 
+// GroupSelection restringe uma listagem aos monitores de certos grupos.
+//
+// Ponteiro nos filtros: nulo não restringe, e uma seleção vazia não traz
+// nada. Confundir os dois faria uma conta com escopo esvaziado enxergar a
+// instalação inteira.
+type GroupSelection struct {
+	// IDs são os grupos aceitos. O store não expande sistema em
+	// ambientes: quem monta a seleção já entrega a lista resolvida.
+	IDs []int64
+	// Ungrouped inclui os monitores sem grupo.
+	Ungrouped bool
+}
+
 // MonitorFilter seleciona monitores numa listagem.
 type MonitorFilter struct {
 	Page PageFilter
 	// Enabled nulo traz habilitados e pausados.
 	Enabled *bool
 	Tag     string
+	// Groups nulo traz de todos os grupos.
+	Groups *GroupSelection
 }
 
 // HeartbeatQuery seleciona batidas cruas.
@@ -96,6 +111,10 @@ type HeartbeatQuery struct {
 	ProbeID string
 	Range   TimeRange
 	Limit   int
+	// OnlyFailures restringe às batidas fora do ar e degradadas. O filtro
+	// acontece antes do limite, senão uma janela de batidas boas
+	// esconderia a falha que veio antes delas.
+	OnlyFailures bool
 }
 
 // Normalize aplica limites e normaliza a janela.
@@ -200,6 +219,8 @@ type IncidentFilter struct {
 	MonitorID int64
 	// OnlyOpen restringe aos que ainda não terminaram.
 	OnlyOpen bool
+	// Groups nulo traz de todos os grupos.
+	Groups *GroupSelection
 }
 
 // IncidentRepo guarda as janelas de indisponibilidade.
@@ -230,6 +251,58 @@ type ChannelRepo interface {
 	// desligado não deve receber nada, e filtrar aqui evita que cada
 	// chamador precise lembrar disso.
 	ForMonitor(ctx context.Context, monitorID int64) ([]domain.Channel, error)
+
+	// LinkGroup e UnlinkGroup definem quais canais avisam sobre todos os
+	// monitores de um grupo, inclusive os criados depois.
+	LinkGroup(ctx context.Context, groupID, channelID int64) error
+	UnlinkGroup(ctx context.Context, groupID, channelID int64) error
+	// ForGroup devolve os canais habilitados vinculados direto ao grupo.
+	ForGroup(ctx context.Context, groupID int64) ([]domain.Channel, error)
+
+	// Destinations é para onde vai o aviso de um monitor: os canais
+	// habilitados vinculados a ele, ao grupo dele e ao sistema do grupo,
+	// cada um uma vez só.
+	//
+	// Uma consulta, e não três somadas por quem chama: a regra de quem é
+	// avisado precisa morar num lugar só, senão o motor e a tela de canais
+	// passam a discordar sobre quem recebe.
+	Destinations(ctx context.Context, monitorID int64) ([]domain.Channel, error)
+}
+
+// GroupRepo guarda os grupos de monitores.
+//
+// A forma da árvore — dois níveis, só folha recebe monitor — é conferida
+// no domínio (domain.GroupTree). Aqui ficam as garantias que só o banco
+// dá sem corrida: unicidade entre irmãos e a recusa de apagar o que está
+// em uso.
+type GroupRepo interface {
+	// Create devolve ErrConflict se já houver irmão com o mesmo nome ou
+	// slug.
+	Create(ctx context.Context, g *domain.Group) error
+	Get(ctx context.Context, id int64) (domain.Group, error)
+	Update(ctx context.Context, g domain.Group) error
+	// Delete devolve ErrConflict enquanto o grupo tiver monitores ou
+	// ambientes: apagar perderia o vínculo deles em silêncio. Vínculos de
+	// canal e concessões de escopo saem junto.
+	Delete(ctx context.Context, id int64) error
+	List(ctx context.Context) ([]domain.Group, error)
+}
+
+// TransitionFilter seleciona mudanças de estado de um monitor.
+type TransitionFilter struct {
+	MonitorID int64
+	// Before corta a página: só mudanças anteriores a este instante. Zero
+	// começa do agora.
+	Before time.Time
+	Limit  int
+}
+
+// TransitionRepo guarda o histórico de mudanças confirmadas de estado.
+type TransitionRepo interface {
+	Record(ctx context.Context, t *domain.Transition) error
+	// List devolve da mais recente para a mais antiga, que é como uma
+	// linha do tempo de falhas se lê.
+	List(ctx context.Context, f TransitionFilter) ([]domain.Transition, error)
 }
 
 // StatusPageRepo guarda as páginas públicas, seus grupos e componentes.
@@ -312,6 +385,8 @@ type MetadataStore interface {
 	Channels() ChannelRepo
 	StatusPages() StatusPageRepo
 	Announcements() AnnouncementRepo
+	Groups() GroupRepo
+	Transitions() TransitionRepo
 	Close() error
 }
 
