@@ -220,7 +220,7 @@ func TestE2EProbeReportsThroughTheCentral(t *testing.T) {
 	// A sonda trancada como o README manda.
 	e.docker("run", "-d", "--name", e.name("probe"), "--network", e.network,
 		"--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-		"--memory", "64m", "--cpus", "0.2",
+		"--memory", "64m", "--cpus", "0.2", "--pids-limit", "64",
 		"-v", e.name("config")+":/config", image)
 
 	probe := func(args ...string) string {
@@ -269,6 +269,11 @@ func TestE2EProbeReportsThroughTheCentral(t *testing.T) {
 		b, ok := e.lastBeat(checkID)
 		return ok && b.Status == "up"
 	})
+
+	// O log do daemon nunca mostra o token de push.
+	if logs := e.docker("logs", e.name("probe")); strings.Contains(logs, checkToken) || strings.Contains(logs, hbToken) {
+		t.Errorf("probe log shows a push token:\n%s", logs)
+	}
 
 	// Parar a sonda silencia o sinal de vida, e o central o derruba.
 	e.docker("stop", e.name("probe"))
