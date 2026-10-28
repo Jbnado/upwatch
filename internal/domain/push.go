@@ -29,6 +29,13 @@ const MaxPushLatencyMS = int64(24 * 60 * 60 * 1000)
 // muitas vezes sabe exatamente o que deu errado, e reduzir o sinal a "estou
 // vivo" o obrigaria a escolher entre mentir e calar.
 type PushSignal struct {
+	// ID identifica o sinal entre os do mesmo monitor. É o que permite
+	// contá-lo uma vez só: dois sinais no mesmo milissegundo são dois.
+	ID int64
+
+	// Evaluated diz se alguma verificação já contou este sinal.
+	Evaluated bool
+
 	At        time.Time
 	Status    Status
 	Message   string

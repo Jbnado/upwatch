@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -35,6 +36,9 @@ const MinPushTokenLength = 16
 // quando o serviço monitorado reportou pela última vez, e o que disse.
 type PushLog interface {
 	LastPush(ctx context.Context, monitorID int64) (domain.PushSignal, bool, error)
+
+	// MarkPushEvaluated registra que o sinal já virou observação.
+	MarkPushEvaluated(ctx context.Context, monitorID, signalID int64) error
 }
 
 // PushConfig é a configuração de um monitor push.
@@ -244,7 +248,34 @@ func (p *Push) Check(ctx context.Context, m domain.Monitor) Result {
 		return res
 	}
 
-	return reported(res, last)
+	return p.observe(ctx, m.ID, reported(res, last), last)
+}
+
+// observe decide se o resultado do sinal é observação nova ou repetição.
+//
+// O sinal fica guardado até chegar o seguinte, e o motor confirma uma
+// mudança depois de N observações seguidas. Se cada verificação contasse
+// o mesmo sinal de novo, um único "down" abriria incidente sozinho assim
+// que N verificações passassem. Então o sinal conta uma vez, na primeira
+// verificação depois de chegar; as seguintes repetem o que ele disse —
+// o painel continua mostrando o estado informado — sem mover a contagem.
+//
+// O silêncio não passa por aqui: cada verificação mede de novo a falta de
+// sinal, e cada uma conta.
+//
+// Se a marca não puder ser gravada, o resultado conta mesmo assim: o
+// pior caso é o sinal ser contado duas vezes, e não o de nunca contar uma
+// queda informada.
+func (p *Push) observe(ctx context.Context, monitorID int64, res Result, sig domain.PushSignal) Result {
+	if sig.Evaluated {
+		res.Repeated = true
+		return res
+	}
+	if err := p.log.MarkPushEvaluated(ctx, monitorID, sig.ID); err != nil {
+		slog.Warn("push: não foi possível marcar o sinal como contado",
+			"monitor", monitorID, "erro", err)
+	}
+	return res
 }
 
 // silenceMessage descreve o silêncio. Com agenda, nomeia a execução

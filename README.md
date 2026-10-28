@@ -264,7 +264,10 @@ curl -fsS -H "Content-Type: application/json"   -d '{"status":"degraded","msg":"
 ```
 
 `status` aceita `up`, `down` e `degraded`. Um `down` não abre incidente na
-hora: passa pela confirmação de N falhas como qualquer outra verificação.
+hora: cada sinal conta uma vez na confirmação de N falhas. As verificações
+seguintes, até o próximo sinal, repetem o estado informado sem contar de
+novo — com N=2 são precisos dois `down`, e um `down` seguido de silêncio
+cai pela regra do silêncio. A latência também entra uma vez por sinal.
 `msg` é cortada em 200 caracteres, vai para o incidente e para o aviso, e
 nunca aparece na página pública.
 

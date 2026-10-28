@@ -19,13 +19,19 @@ var pushNow = time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
 //
 // Sem status explícito o sinal é "up", como o de um cron que só diz
 // "estou vivo".
+//
+// O sinal começa inédito, como o que acabou de chegar; MarkPushEvaluated
+// o marca como já contado, que é o que o banco faz.
 type pushLog struct {
-	at      time.Time
-	has     bool
-	err     error
-	status  domain.Status
-	message string
-	latency int64
+	at        time.Time
+	has       bool
+	err       error
+	status    domain.Status
+	message   string
+	latency   int64
+	id        int64
+	evaluated bool
+	marked    []int64
 }
 
 func (p *pushLog) LastPush(context.Context, int64) (domain.PushSignal, bool, error) {
@@ -34,8 +40,17 @@ func (p *pushLog) LastPush(context.Context, int64) (domain.PushSignal, bool, err
 		status = domain.StatusUp
 	}
 	return domain.PushSignal{
-		At: p.at, Status: status, Message: p.message, LatencyMS: p.latency,
+		ID: p.id, At: p.at, Status: status, Message: p.message, LatencyMS: p.latency,
+		Evaluated: p.evaluated,
 	}, p.has, p.err
+}
+
+func (p *pushLog) MarkPushEvaluated(_ context.Context, _ int64, signalID int64) error {
+	p.marked = append(p.marked, signalID)
+	if signalID == p.id {
+		p.evaluated = true
+	}
+	return nil
 }
 
 func pushMonitor(t *testing.T, interval time.Duration, cfg map[string]any) domain.Monitor {
@@ -519,5 +534,65 @@ func TestPushValidateConfigRejectsBadSchedules(t *testing.T) {
 				t.Errorf("ValidateConfig(%s) returned nil error, want an error", raw)
 			}
 		})
+	}
+}
+
+// ---------- um sinal, uma observação ----------
+
+// O motor confirma uma queda depois de N observações seguidas. Se cada
+// verificação relesse o mesmo "down" como falha nova, um único sinal
+// abriria incidente sozinho assim que N verificações passassem — o
+// contrário do que o limiar promete. O sinal conta uma vez; as
+// verificações seguintes, até chegar outro, só repetem o que ele disse.
+func TestPushCountsEachSignalOnce(t *testing.T) {
+	log := &pushLog{
+		at: pushNow.Add(-10 * time.Second), has: true, id: 7,
+		status: domain.StatusDown, message: "fila sem worker", latency: 842,
+	}
+	push, m := newPush(log), pushMonitor(t, time.Minute, nil)
+
+	first := push.Check(context.Background(), m)
+	second := push.Check(context.Background(), m)
+
+	if first.Repeated || first.Status != domain.StatusDown {
+		t.Errorf("first check = %+v, want the signal counted as a new failure", first)
+	}
+	if !second.Repeated {
+		t.Errorf("second check = %+v, want it marked as a repeat of the same signal", second)
+	}
+	// A releitura continua mostrando o que o serviço disse: o painel não
+	// pode piscar verde entre dois sinais de queda.
+	if second.Status != domain.StatusDown || second.Message != "fila sem worker" {
+		t.Errorf("second check = %+v, want the reported status and cause kept", second)
+	}
+	if len(log.marked) != 1 || log.marked[0] != 7 {
+		t.Errorf("marked = %v, want the signal 7 marked once", log.marked)
+	}
+}
+
+// Um sinal novo volta a contar, mesmo que diga a mesma coisa: dois "down"
+// seguidos são duas observações, e é assim que o limiar se cumpre.
+func TestPushNewSignalCountsAgain(t *testing.T) {
+	log := &pushLog{at: pushNow.Add(-10 * time.Second), has: true, id: 7, status: domain.StatusDown}
+	push, m := newPush(log), pushMonitor(t, time.Minute, nil)
+	push.Check(context.Background(), m)
+
+	log.id, log.evaluated = 8, false
+	got := push.Check(context.Background(), m)
+
+	if got.Repeated {
+		t.Errorf("check after a new signal = %+v, want it counted", got)
+	}
+}
+
+// O silêncio é medido de novo a cada verificação — cada uma confere o
+// relógio —, então nunca é repetição, mesmo com o último sinal já contado.
+func TestPushSilenceIsAlwaysANewObservation(t *testing.T) {
+	log := &pushLog{at: pushNow.Add(-5 * time.Minute), has: true, id: 7, evaluated: true}
+
+	got := newPush(log).Check(context.Background(), pushMonitor(t, time.Minute, nil))
+
+	if got.Status != domain.StatusDown || got.Repeated {
+		t.Errorf("silence check = %+v, want a new failure", got)
 	}
 }

@@ -103,6 +103,7 @@ func monitoringCases() []conformanceCase {
 		{"PushStateStartsEmpty", testPushStateStartsEmpty},
 		{"PushStateRoundTrips", testPushStateRoundTrips},
 		{"PushStateKeepsStatusMessageAndLatency", testPushStateKeepsStatusMessageAndLatency},
+		{"PushSignalIsEvaluatedOnce", testPushSignalIsEvaluatedOnce},
 		{"PushStateIsPerMonitor", testPushStateIsPerMonitor},
 		{"PushStateCascadesOnMonitorDelete", testPushStateCascadesOnMonitorDelete},
 		{"LatestHeartbeatsOnEmptyStore", testLatestHeartbeatsOnEmptyStore},
@@ -1316,6 +1317,55 @@ func testPushStateKeepsStatusMessageAndLatency(t *testing.T, newStore Factory) {
 	}
 	if got.Status != domain.StatusUp || got.Message != "" || got.LatencyMS != 0 {
 		t.Errorf("LastPush after a healthy signal = %+v, want the old cause gone", got)
+	}
+}
+
+// Cada sinal vira uma observação só. O checker marca o sinal como
+// contado; se o banco não distinguisse o sinal já contado do recém-chegado,
+// o mesmo "down" relido a cada verificação seria contado de novo, e um
+// único sinal abriria incidente sozinho.
+func testPushSignalIsEvaluatedOnce(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	id := mustCreateMonitor(t, s, "fila de pedidos")
+
+	if err := s.RecordPush(ctx, id, upSignal(epoch)); err != nil {
+		t.Fatalf("RecordPush returned unexpected error: %v", err)
+	}
+	first, _, err := s.LastPush(ctx, id)
+	if err != nil {
+		t.Fatalf("LastPush returned unexpected error: %v", err)
+	}
+	if first.Evaluated {
+		t.Fatalf("LastPush = %+v, want a fresh signal not yet evaluated", first)
+	}
+
+	if err := s.MarkPushEvaluated(ctx, id, first.ID); err != nil {
+		t.Fatalf("MarkPushEvaluated returned unexpected error: %v", err)
+	}
+	got, _, err := s.LastPush(ctx, id)
+	if err != nil {
+		t.Fatalf("LastPush returned unexpected error: %v", err)
+	}
+	if !got.Evaluated {
+		t.Errorf("LastPush = %+v, want the signal marked as evaluated", got)
+	}
+
+	// O sinal seguinte é inédito, mesmo chegando no mesmo milissegundo: a
+	// identidade é do sinal, não do instante.
+	if err := s.RecordPush(ctx, id, upSignal(epoch)); err != nil {
+		t.Fatalf("second RecordPush returned unexpected error: %v", err)
+	}
+	// Uma marca atrasada, do sinal anterior, não pode engolir o novo.
+	if err := s.MarkPushEvaluated(ctx, id, first.ID); err != nil {
+		t.Fatalf("late MarkPushEvaluated returned unexpected error: %v", err)
+	}
+	second, _, err := s.LastPush(ctx, id)
+	if err != nil {
+		t.Fatalf("LastPush returned unexpected error: %v", err)
+	}
+	if second.Evaluated || second.ID == first.ID {
+		t.Errorf("LastPush after a new signal = %+v, want a fresh signal with its own id", second)
 	}
 }
 

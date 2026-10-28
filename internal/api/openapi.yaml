@@ -681,10 +681,12 @@ paths:
         dois, vale a query string. Campos desconhecidos no corpo são
         tolerados.
 
-        Um `down` explícito não abre incidente na hora: vira uma
-        verificação com falha e passa pela confirmação de N falhas como
-        qualquer outra. A causa vai para o incidente e para o aviso, e
-        nunca para a página pública.
+        Um `down` explícito não abre incidente na hora: cada sinal conta
+        como uma observação na confirmação de N falhas, e as verificações
+        seguintes, até chegar outro sinal, só repetem o que ele disse sem
+        contar de novo. Com N=2 são precisos dois sinais de queda; um
+        `down` seguido de silêncio cai pela regra do silêncio. A causa vai
+        para o incidente e para o aviso, e nunca para a página pública.
       security: []
       parameters:
         - name: token

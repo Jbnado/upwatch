@@ -315,14 +315,17 @@ func (s *Store) PruneRollups(ctx context.Context, res domain.Resolution, before 
 // milhares de linhas por dia sem que nenhuma delas fosse útil depois da
 // seguinte.
 func (s *Store) RecordPush(ctx context.Context, monitorID int64, sig domain.PushSignal) error {
+	// signal_id avança a cada sinal; é o que distingue o recém-chegado do
+	// que alguma verificação já contou. evaluated_id fica como está.
 	const q = `
-		INSERT INTO push_state (monitor_id, last_push, status, message, latency_ms)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT INTO push_state (monitor_id, last_push, status, message, latency_ms, signal_id)
+		VALUES (?, ?, ?, ?, ?, 1)
 		ON CONFLICT (monitor_id) DO UPDATE SET
 			last_push = excluded.last_push,
 			status = excluded.status,
 			message = excluded.message,
-			latency_ms = excluded.latency_ms`
+			latency_ms = excluded.latency_ms,
+			signal_id = push_state.signal_id + 1`
 
 	_, err := s.db.ExecContext(ctx, q, monitorID, toMillis(sig.At),
 		sig.Status.String(), sig.Message, sig.LatencyMS)
@@ -335,13 +338,15 @@ func (s *Store) RecordPush(ctx context.Context, monitorID int64, sig domain.Push
 // LastPush devolve o último sinal recebido.
 func (s *Store) LastPush(ctx context.Context, monitorID int64) (domain.PushSignal, bool, error) {
 	var (
-		ms     int64
-		status string
-		sig    domain.PushSignal
+		ms          int64
+		status      string
+		evaluatedID int64
+		sig         domain.PushSignal
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT last_push, status, message, latency_ms FROM push_state WHERE monitor_id = ?`,
-		monitorID).Scan(&ms, &status, &sig.Message, &sig.LatencyMS)
+		`SELECT last_push, status, message, latency_ms, signal_id, evaluated_id
+		 FROM push_state WHERE monitor_id = ?`,
+		monitorID).Scan(&ms, &status, &sig.Message, &sig.LatencyMS, &sig.ID, &evaluatedID)
 
 	switch {
 	case err == sql.ErrNoRows:
@@ -351,10 +356,25 @@ func (s *Store) LastPush(ctx context.Context, monitorID int64) (domain.PushSigna
 	}
 
 	sig.At = fromMillis(ms)
+	sig.Evaluated = evaluatedID >= sig.ID
 	if sig.Status, err = domain.ParseStatus(status); err != nil {
 		return domain.PushSignal{}, false, fmt.Errorf("sqlstore: push do monitor %d: %w", monitorID, err)
 	}
 	return sig, true, nil
+}
+
+// MarkPushEvaluated registra que o sinal já foi contado.
+//
+// A marca só avança: a de um sinal antigo, gravada depois de chegar um
+// novo, não alcança o novo, porque o id dele é maior.
+func (s *Store) MarkPushEvaluated(ctx context.Context, monitorID, signalID int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE push_state SET evaluated_id = ? WHERE monitor_id = ? AND evaluated_id < ?`,
+		signalID, monitorID, signalID)
+	if err != nil {
+		return fmt.Errorf("sqlstore: marcando push do monitor %d: %w", monitorID, err)
+	}
+	return nil
 }
 
 // LatestHeartbeats devolve a batida mais recente de cada monitor.

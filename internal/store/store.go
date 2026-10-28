@@ -361,6 +361,16 @@ type TimeseriesStore interface {
 	// LastPush devolve o último sinal, e se houve algum.
 	LastPush(ctx context.Context, monitorID int64) (domain.PushSignal, bool, error)
 
+	// MarkPushEvaluated registra que o sinal signalID já foi contado por
+	// uma verificação.
+	//
+	// O sinal fica guardado até chegar o seguinte, e cada verificação o
+	// relê. Sem a marca, o mesmo "down" contaria como falha nova a cada
+	// releitura, e um sinal só abriria incidente sozinho. Marcar um sinal
+	// que já foi substituído não tem efeito: a marca é do sinal, e o novo
+	// continua inédito.
+	MarkPushEvaluated(ctx context.Context, monitorID, signalID int64) error
+
 	// LatestHeartbeats devolve a batida mais recente de cada monitor.
 	//
 	// Numa consulta só, e não uma por monitor: é o que a exposição de
