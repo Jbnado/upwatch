@@ -180,36 +180,10 @@ func (a Access) GroupIDs() []int64 {
 	return out
 }
 
-// ProblemRank ordena os estados pela urgência para quem opera.
-//
-// Fora do ar, degradado, sem medição e por fim no ar. Diferente da página
-// pública (OverallStatus), "sem medição" pesa mais que "no ar": para quem
-// opera, um alvo que parou de ser medido é um problema a olhar; para quem
-// lê a página pública, não pode fazer o topo inteiro dizer que não sabe.
-func ProblemRank(s Status) int {
-	switch s {
-	case StatusDown:
-		return 3
-	case StatusDegraded:
-		return 2
-	case StatusUnknown:
-		return 1
-	default:
-		return 0
-	}
-}
+// ProblemRank ordena os estados pela urgência para quem opera: a ordem de
+// Severity com "sem medição" como problema (ver UnknownIsProblem).
+func ProblemRank(s Status) int { return Severity(s, UnknownIsProblem) }
 
-// WorstStatus devolve o estado mais urgente pela ordem de ProblemRank. Sem
-// estado nenhum, não há medição.
-func WorstStatus(statuses []Status) Status {
-	if len(statuses) == 0 {
-		return StatusUnknown
-	}
-	pior := statuses[0]
-	for _, s := range statuses[1:] {
-		if ProblemRank(s) > ProblemRank(pior) {
-			pior = s
-		}
-	}
-	return pior
-}
+// WorstStatus devolve o estado mais urgente para quem opera. Sem estado
+// nenhum, não há medição.
+func WorstStatus(statuses []Status) Status { return Worst(statuses, UnknownIsProblem) }

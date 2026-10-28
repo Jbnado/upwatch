@@ -163,25 +163,12 @@ func seriesFromRollups(rng store.TimeRange, buckets int, rs []domain.Rollup) []s
 		hb := domain.Heartbeat{
 			MonitorID: r.MonitorID,
 			Timestamp: r.BucketStart,
-			Status:    rollupStatus(r),
+			Status:    summary.BucketStatus(r),
 			LatencyMS: int64(r.LatencyP50MS),
 		}
 		sinteticas = append(sinteticas, hb)
 	}
 	return summary.Series(rng.From, rng.To, buckets, sinteticas)
-}
-
-func rollupStatus(r domain.Rollup) domain.Status {
-	switch {
-	case r.Down > 0:
-		return domain.StatusDown
-	case r.Degraded > 0:
-		return domain.StatusDegraded
-	case r.Up > 0:
-		return domain.StatusUp
-	default:
-		return domain.StatusUnknown
-	}
 }
 
 func toSummaryResponse(s summary.Summary, serie []summary.Point) summaryResponse {

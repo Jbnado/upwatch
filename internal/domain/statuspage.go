@@ -266,24 +266,14 @@ type PublicView struct {
 
 // OverallStatus resume a página numa palavra.
 //
-// Ordena por gravidade e toma a pior: queda domina, lentidão vem em
-// seguida, e "sem medição" fica abaixo de "no ar" de propósito — um
-// monitor push recém-criado não pode fazer a página inteira dizer que
-// não sabe nada enquanto o resto responde. Ele aparece como sem medição
-// na própria linha, e o topo continua contando a verdade.
+// A ordem é a de Severity, a mesma do painel. A página pública difere da
+// lista de problemas num ponto, e de propósito: "sem medição" fica abaixo
+// de "no ar" (UnknownIsAbsence). Um monitor push recém-criado não pode
+// fazer a página inteira dizer que não sabe nada enquanto o resto
+// responde; ele aparece como sem medição na própria linha, e o topo
+// continua contando a verdade. Quem opera quer o contrário — ver o alvo
+// que parou de ser medido —, e por isso o cartão de grupo usa
+// UnknownIsProblem.
 func OverallStatus(statuses []Status) Status {
-	gravidade := map[Status]int{
-		StatusUnknown:  0,
-		StatusUp:       1,
-		StatusDegraded: 2,
-		StatusDown:     3,
-	}
-
-	pior := StatusUnknown
-	for _, s := range statuses {
-		if gravidade[s] > gravidade[pior] {
-			pior = s
-		}
-	}
-	return pior
+	return Worst(statuses, UnknownIsAbsence)
 }
