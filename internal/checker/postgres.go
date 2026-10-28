@@ -3,12 +3,15 @@ package checker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/Jbnado/upwatch/internal/domain"
 )
@@ -114,6 +117,40 @@ func beginQuery(limit time.Duration) string {
 		"SET LOCAL idle_in_transaction_session_timeout = %d", ms, ms, ms)
 }
 
+// postgresClass traduz o erro do servidor pelo SQLSTATE, sem o texto (ver
+// sqlFailure). As classes nomeadas são as que pedem uma ação diferente
+// de quem lê o aviso; o resto fica com o código, que se procura na
+// documentação.
+func postgresClass(err error) (string, bool) {
+	if pgconn.Timeout(err) {
+		return "tempo esgotado", true
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return "", false
+	}
+	var class string
+	switch {
+	case strings.HasPrefix(pgErr.Code, "28"):
+		class = "autenticação recusada"
+	case pgErr.Code == "53300":
+		class = "conexões esgotadas no servidor"
+	case pgErr.Code == "57P03":
+		class = "o servidor não está aceitando conexões"
+	case pgErr.Code == "3D000":
+		class = "o banco não existe"
+	case pgErr.Code == "57014":
+		class = "tempo esgotado no servidor"
+	case pgErr.Code == "25006":
+		class = "a consulta tentou escrever"
+	case strings.HasPrefix(pgErr.Code, "42"):
+		class = "a consulta foi recusada pelo servidor"
+	default:
+		class = "erro do servidor"
+	}
+	return fmt.Sprintf("%s (SQLSTATE %s)", class, pgErr.Code), true
+}
+
 // Check abre a sessão, executa a consulta numa transação somente leitura
 // e fecha tudo.
 func (c *Postgres) Check(ctx context.Context, m domain.Monitor) Result {
@@ -127,11 +164,7 @@ func (c *Postgres) Check(ctx context.Context, m domain.Monitor) Result {
 	}
 	meta := map[string]string{"host": host, "port": port}
 	fail := func(stage string, err error) Result {
-		return Result{
-			Status:  domain.StatusDown,
-			Message: scrubSecret(stage+": "+err.Error(), cfg.Password),
-			Meta:    meta,
-		}
+		return sqlFailure(m, meta, cfg.Password, stage, err, postgresClass)
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, m.Timeout)

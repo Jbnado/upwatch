@@ -173,14 +173,17 @@ func TestSQLCheckRejectsMalformedTarget(t *testing.T) {
 }
 
 // A causa vai para o painel, para o aviso no canal e para o histórico
-// exportado. Um servidor (ou proxy na frente dele) que repete a senha no
-// erro não pode fazê-la chegar a esses lugares. A senha tem caractere que
-// muda quando codificado em URL, para pegar também a forma escapada.
-func TestSQLCheckNeverLeaksThePasswordInTheCause(t *testing.T) {
+// exportado, lidos por quem não tem acesso ao banco. O texto de erro do
+// servidor não entra nela: ele repete o que recebeu (a senha, ecoada por
+// um proxy) e o que leu (o valor de uma linha, num erro de conversão), e
+// assim a causa viraria um canal de leitura do banco. Fica a etapa, a
+// classe da falha e o código, que bastam para agir; o texto inteiro vai
+// só para o log do servidor.
+func TestSQLCheckCauseDoesNotCarryTheServerText(t *testing.T) {
 	const secret = "s3nha/do@banco"
 	for _, tc := range sqlCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			addr := serveOnce(t, tc.fakeError("senha recusada: "+secret+" (s3nha%2Fdo%40banco)"))
+			addr := serveOnce(t, tc.fakeError("senha recusada: "+secret+" (s3nha%2Fdo%40banco), linha: tok-secreto-da-linha"))
 
 			res := tc.checker.Check(context.Background(),
 				sqlMonitor(tc.typ, addr, `{"username":"u","password":"`+secret+`"}`))
@@ -188,11 +191,13 @@ func TestSQLCheckNeverLeaksThePasswordInTheCause(t *testing.T) {
 			if res.Status != domain.StatusDown {
 				t.Fatalf("Status = %v, want down", res.Status)
 			}
-			if strings.Contains(res.Message, secret) || strings.Contains(res.Message, "s3nha%2Fdo%40banco") {
-				t.Errorf("Message leaks the password: %q", res.Message)
+			for _, leak := range []string{secret, "s3nha%2Fdo%40banco", "tok-secreto", "senha recusada"} {
+				if strings.Contains(res.Message, leak) {
+					t.Errorf("Message carries the server text %q: %q", leak, res.Message)
+				}
 			}
-			if !strings.Contains(res.Message, "senha recusada") {
-				t.Errorf("Message = %q, want the rest of the server error preserved", res.Message)
+			if !strings.Contains(res.Message, "autenticação") {
+				t.Errorf("Message = %q, want the failure class (authentication)", res.Message)
 			}
 		})
 	}

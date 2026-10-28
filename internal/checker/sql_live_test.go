@@ -337,3 +337,34 @@ func TestSQLLiveTimeoutLeavesNothingRunning(t *testing.T) {
 		l.waitNoneRunning(t, marker, 2*time.Second)
 	})
 }
+
+// Um erro de conversão repete o valor que não converteu. Sem a causa
+// genérica, "SELECT CAST(token AS int) FROM api_keys" num monitor punha o
+// token no painel e no aviso do canal para quem só cadastra monitores. No
+// MySQL o CAST não falha; o EXTRACTVALUE faz o mesmo papel, e é a forma
+// clássica de extrair dado por mensagem de erro.
+func TestSQLLiveQueryErrorDoesNotLeakRowData(t *testing.T) {
+	eachLiveSQL(t, func(t *testing.T, l liveSQL) {
+		const token = "tok-secreto-da-linha"
+		l.exec(t, "DROP TABLE IF EXISTS upwatch_secret")
+		l.exec(t, "CREATE TABLE upwatch_secret (token VARCHAR(64))")
+		l.exec(t, "INSERT INTO upwatch_secret (token) VALUES ('"+token+"')")
+		t.Cleanup(func() { l.exec(t, "DROP TABLE IF EXISTS upwatch_secret") })
+
+		query := "SELECT CAST(token AS int) FROM upwatch_secret"
+		if l.typ == domain.MonitorMySQL {
+			query = "SELECT EXTRACTVALUE(1, CONCAT(0x7e, (SELECT token FROM upwatch_secret LIMIT 1)))"
+		}
+		res := l.checker.Check(context.Background(), l.monitor(map[string]any{"query": query}))
+
+		if res.Status != domain.StatusDown {
+			t.Fatalf("Status = %v (%s), want down", res.Status, res.Message)
+		}
+		if strings.Contains(res.Message, "secreto") {
+			t.Errorf("Message leaks the row value: %q", res.Message)
+		}
+		if !strings.HasPrefix(res.Message, "consulta: ") || !strings.Contains(res.Message, "SQLSTATE") {
+			t.Errorf("Message = %q, want the stage and the SQLSTATE", res.Message)
+		}
+	})
+}

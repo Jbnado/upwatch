@@ -87,6 +87,37 @@ func isMySQLError(err error, number uint16) bool {
 	return errors.As(err, &me) && me.Number == number
 }
 
+// mysqlClass traduz o erro do servidor pelo número e pelo SQLSTATE, sem o
+// texto (ver sqlFailure).
+func mysqlClass(err error) (string, bool) {
+	var me *mysql.MySQLError
+	if !errors.As(err, &me) {
+		return "", false
+	}
+	var class string
+	switch me.Number {
+	case 1044, 1045, 1698:
+		class = "autenticação recusada"
+	case 1040, 1203:
+		class = "conexões esgotadas no servidor"
+	case 1049:
+		class = "o banco não existe"
+	case 3024:
+		class = "tempo esgotado no servidor"
+	case 1792:
+		class = "a consulta tentou escrever"
+	case 1064, 1142, 1146, 1054:
+		class = "a consulta foi recusada pelo servidor"
+	default:
+		class = "erro do servidor"
+	}
+	// O erro do handshake não traz SQLSTATE; o número basta.
+	if me.SQLState == [5]byte{} {
+		return fmt.Sprintf("%s (erro %d)", class, me.Number), true
+	}
+	return fmt.Sprintf("%s (SQLSTATE %s, erro %d)", class, me.SQLState[:], me.Number), true
+}
+
 // Check abre a sessão, executa a consulta numa transação somente leitura
 // e fecha tudo.
 func (c *MySQL) Check(ctx context.Context, m domain.Monitor) Result {
@@ -100,11 +131,7 @@ func (c *MySQL) Check(ctx context.Context, m domain.Monitor) Result {
 	}
 	meta := map[string]string{"host": host, "port": port}
 	fail := func(stage string, err error) Result {
-		return Result{
-			Status:  domain.StatusDown,
-			Message: scrubSecret(stage+": "+err.Error(), cfg.Password),
-			Meta:    meta,
-		}
+		return sqlFailure(m, meta, cfg.Password, stage, err, mysqlClass)
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, m.Timeout)

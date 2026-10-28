@@ -2,11 +2,16 @@ package checker
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"strings"
 	"time"
+
+	"github.com/Jbnado/upwatch/internal/domain"
 )
 
 // MaxSQLQueryLength limita o tamanho da consulta de verificação. Consulta
@@ -67,6 +72,64 @@ func serverLimit(ctx context.Context) time.Duration {
 	}
 	remaining := time.Until(deadline)
 	return max(remaining-remaining/10, time.Millisecond)
+}
+
+// sqlFailure monta o resultado de uma falha de banco.
+//
+// A causa vai para o painel, para o aviso no canal e para o histórico
+// exportado, lidos por quem não tem acesso ao banco. Por isso ela diz a
+// etapa, a classe da falha e o código, nunca o texto do driver ou do
+// servidor: esse texto repete o que recebeu (a senha, ecoada por um proxy)
+// e o que leu (o valor de uma linha num erro de conversão), e "SELECT
+// CAST(token AS int) FROM api_keys" leria o token pela causa. O texto
+// inteiro vai para o log do servidor, que só o operador lê.
+//
+// classify traduz os erros próprios de cada banco; o que é comum aos dois
+// (tempo, rede, TLS) se resolve aqui.
+func sqlFailure(m domain.Monitor, meta map[string]string, password, stage string, err error, classify func(error) (string, bool)) Result {
+	class, known := classify(err)
+	if !known {
+		class, known = commonSQLClass(err)
+	}
+	if !known {
+		class = "falhou (detalhe no log do servidor)"
+	}
+
+	// Classe conhecida e fora da consulta (recusa, timeout, senha) se
+	// repete a cada intervalo enquanto o banco estiver fora e a causa já
+	// diz o bastante; no nível de aviso fica o que só o texto explica.
+	level := slog.LevelDebug
+	if !known || stage == "consulta" {
+		level = slog.LevelWarn
+	}
+	slog.Log(context.Background(), level, "checker: falha na verificação de banco",
+		"monitor", m.Name, "id", m.ID, "tipo", m.Type.String(), "etapa", stage,
+		"erro", scrubSecret(err.Error(), password))
+
+	return Result{Status: domain.StatusDown, Message: stage + ": " + class, Meta: meta}
+}
+
+// commonSQLClass classifica as falhas que não vêm do servidor de banco.
+// O texto do sistema operacional é local e pode aparecer; o do servidor,
+// não.
+func commonSQLClass(err error) (string, bool) {
+	var dnsErr *net.DNSError
+	var opErr *net.OpError
+	var netErr net.Error
+	var certErr *tls.CertificateVerificationError
+	var hostErr x509.HostnameError
+	var authErr x509.UnknownAuthorityError
+	switch {
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &netErr) && netErr.Timeout():
+		return "tempo esgotado", true
+	case errors.As(err, &dnsErr):
+		return "o nome do servidor não resolve", true
+	case errors.As(err, &certErr), errors.As(err, &hostErr), errors.As(err, &authErr):
+		return "o certificado TLS do servidor não foi aceito", true
+	case errors.As(err, &opErr) && opErr.Op == "dial":
+		return "não foi possível conectar (" + opErr.Err.Error() + ")", true
+	}
+	return "", false
 }
 
 // splitTarget confere o formato host:porta do alvo.
