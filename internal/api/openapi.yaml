@@ -1489,13 +1489,79 @@ components:
           type: object
           description: |
             Configuração específica do tipo, validada no cadastro pelo
-            checker correspondente.
+            checker correspondente. Para `http`, ver `HTTPConfig`.
           additionalProperties: true
         parent_id: { type: integer, format: int64 }
         enabled: { type: boolean, default: true }
         tags:
           type: array
           items: { type: string }
+
+    HTTPConfig:
+      type: object
+      description: Campo `config` de um monitor do tipo `http`.
+      properties:
+        method:
+          type: string
+          enum: [GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS]
+          default: GET
+        headers:
+          type: object
+          additionalProperties: { type: string }
+        body: { type: string }
+        expect_status:
+          type: array
+          items: { type: integer, minimum: 100, maximum: 599 }
+          description: Códigos aceitos. Vazio aceita qualquer 2xx.
+        body_contains: { type: string }
+        body_not_contains: { type: string }
+        body_regex:
+          type: string
+          description: Expressão regular (sintaxe RE2), validada no cadastro
+        json_assertions:
+          type: array
+          items: { $ref: "#/components/schemas/JSONAssertion" }
+          description: |
+            Condições sobre o corpo interpretado como JSON. Todas precisam
+            valer. Corpo que não é JSON, ou maior que o limite de leitura de
+            1 MiB, derruba o monitor com a causa explicada.
+        follow_redirects: { type: boolean, default: true }
+        skip_tls_verify: { type: boolean, default: false }
+        basic_auth_user: { type: string }
+        basic_auth_pass: { type: string }
+
+    JSONAssertion:
+      type: object
+      required: [path, op]
+      description: |
+        Uma condição sobre um valor do corpo JSON. Asserção inválida é
+        recusada no cadastro com 400.
+      properties:
+        path:
+          type: string
+          maxLength: 512
+          description: |
+            Subconjunto de JSONPath: `$`, `$.chave`, `$.lista[0].chave` e
+            `$["chave com espaço"]`. Sem filtros, wildcards nem fatias —
+            cada caminho aponta para no máximo um valor.
+          example: $.queue_lag
+        op:
+          type: string
+          enum: [eq, ne, lt, lte, gt, gte, contains, exists]
+          description: |
+            `eq` e `ne` comparam valor e tipo (`"100"` não é igual a `100`;
+            números comparam pelo valor, `340` é igual a `340.0`).
+            `lt`, `lte`, `gt` e `gte` só entre números. `contains` procura
+            um trecho num texto ou um elemento numa lista. `exists` passa
+            se o caminho existir, mesmo com valor null.
+        value:
+          description: |
+            Qualquer valor JSON. Obrigatório para todos os operadores menos
+            `exists`, que o recusa; número para `lt`, `lte`, `gt` e `gte`.
+      example:
+        path: $.queue_lag
+        op: lt
+        value: 100
 
     Monitor:
       allOf:
