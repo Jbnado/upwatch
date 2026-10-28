@@ -382,3 +382,95 @@ func TestHTTPValidateConfigExistsWithValuePointsToAbsent(t *testing.T) {
 		t.Errorf("error = %q, want it to suggest \"absent\"", err)
 	}
 }
+
+// ---------- números fora da faixa ----------
+
+// big.Float satura acima de ~2^(2^31): 1e999999999 e 1e999999998 viram o
+// mesmo infinito e comparam iguais; com expoente além de int64 o parse
+// falha e a comparação caía em ordem de texto, onde "1e99…" < "2". Um
+// valor esperado assim nunca seria comparado direito, então nem entra.
+func TestHTTPValidateConfigRejectsNumbersOutOfComparableRange(t *testing.T) {
+	tests := []struct {
+		name string
+		a    map[string]any
+	}{
+		{"expoente gigante", assertion("$.n", "eq", json.Number("1e999999998"))},
+		{"expoente além de int64", assertion("$.n", "lt", json.Number("1e99999999999999999999"))},
+		{"expoente acima de 10000", assertion("$.n", "gt", json.Number("1e10001"))},
+		{"expoente abaixo de -10000", assertion("$.n", "gt", json.Number("1e-10001"))},
+		{"mais de 100 caracteres", assertion("$.n", "eq", json.Number("1"+strings.Repeat("0", 100)))},
+		{"dentro de uma lista", assertion("$.l", "eq", []any{json.Number("1e999999998")})},
+		{"dentro de um objeto", assertion("$.l", "contains", map[string]any{"x": json.Number("1e999999998")})},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, _ := json.Marshal(map[string]any{"json_assertions": []map[string]any{tt.a}})
+
+			err := checker.NewHTTP().ValidateConfig(cfg)
+
+			if err == nil {
+				t.Fatalf("ValidateConfig(%s) returned nil error, want an error", cfg)
+			}
+			if !strings.Contains(err.Error(), "fora da faixa") {
+				t.Errorf("error = %q, want it to say the number is out of range", err)
+			}
+		})
+	}
+}
+
+// O corpo vem de fora e não passa por cadastro. Um número que não dá para
+// comparar direito precisa virar causa legível; comparar mesmo assim
+// deixava "1e99999999999999999999 < 2" passar por ordem de texto.
+func TestHTTPJSONAssertionOnBodyNumberOutOfRangeIsDown(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		a    map[string]any
+	}{
+		{"expoente além de int64", `{"n":1e99999999999999999999}`, assertion("$.n", "lt", 2)},
+		{"expoente acima de 10000", `{"n":1e10001}`, assertion("$.n", "gt", 0)},
+		{"mais de 100 caracteres", `{"n":1` + strings.Repeat("0", 100) + `}`, assertion("$.n", "gt", 0)},
+		{"ne também", `{"n":1e99999999999999999999}`, assertion("$.n", "ne", 2)},
+		{"dentro de lista", `{"l":[1e99999999999999999999]}`, assertion("$.l", "contains", 2)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := checkAssertions(t, serveJSON(t, tt.body), tt.a)
+
+			if got.Status != domain.StatusDown {
+				t.Fatalf("Status = %v (%s), want %v", got.Status, got.Message, domain.StatusDown)
+			}
+			if !strings.Contains(got.Message, "número fora da faixa comparável") {
+				t.Errorf("Message = %q, want it to say the number is out of the comparable range", got.Message)
+			}
+		})
+	}
+}
+
+// Só os números que a asserção compara precisam caber na faixa: um campo
+// vizinho com um valor exótico não pode derrubar um monitor que nem olha
+// para ele.
+func TestHTTPJSONAssertionIgnoresOutOfRangeNumbersItDoesNotCompare(t *testing.T) {
+	url := serveJSON(t, `{"db":"up","n":1e99999999999999999999}`)
+
+	got := checkAssertions(t, url, assertion("$.db", "eq", "up"), assertion("$.n", "exists"))
+
+	if got.Status != domain.StatusUp {
+		t.Errorf("Status = %v (%s), want %v", got.Status, got.Message, domain.StatusUp)
+	}
+}
+
+// Dentro da faixa a comparação precisa ser exata. Com 256 bits de
+// mantissa (uns 77 dígitos), 10^99+1 e 10^99 viravam o mesmo número, e um
+// eq aprovava um valor que mudou no último dígito.
+func TestHTTPJSONAssertionComparesAllDigitsInRange(t *testing.T) {
+	url := serveJSON(t, `{"n":1`+strings.Repeat("0", 98)+`1}`)
+
+	got := checkAssertions(t, url, assertion("$.n", "eq", json.Number("1e99")))
+
+	if got.Status != domain.StatusDown {
+		t.Errorf("Status = %v (%s), want %v: 10^99+1 must not equal 10^99", got.Status, got.Message, domain.StatusDown)
+	}
+}

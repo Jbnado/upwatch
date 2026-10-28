@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -83,6 +84,10 @@ func compileAssertion(a JSONAssertion) (compiledAssertion, error) {
 	if c.expected, err = decodeJSON(a.Value); err != nil {
 		return c, fmt.Errorf("valor inválido: %v", err)
 	}
+	if n, ok := firstUncomparable(c.expected); ok {
+		return c, fmt.Errorf("número %s fora da faixa comparável: até %d caracteres e expoente entre -%d e %d",
+			show(n), maxNumberLen, maxNumberExp, maxNumberExp)
+	}
 	if isOrdering(a.Op) {
 		if _, ok := c.expected.(json.Number); !ok {
 			return c, fmt.Errorf("%q compara só números, e o valor é %s", a.Op, typeName(c.expected))
@@ -140,6 +145,13 @@ func (a compiledAssertion) evaluate(doc any) string {
 			return fmt.Sprintf("%s não existe", a.Path)
 		}
 		return fmt.Sprintf("%s não existe, %s", a.Path, a.expectation())
+	}
+
+	if a.Op != opExists && a.Op != opAbsent {
+		if _, ok := firstUncomparable(found); ok {
+			return fmt.Sprintf("%s: número fora da faixa comparável (mais de %d caracteres ou expoente além de ±%d)",
+				a.Path, maxNumberLen, maxNumberExp)
+		}
 	}
 
 	switch a.Op {
@@ -277,19 +289,67 @@ func jsonEqual(a, b any) bool {
 	}
 }
 
-// numberPrecision é a mantissa usada na comparação. 256 bits representam
-// exatamente qualquer inteiro que caiba em 64 bits e qualquer decimal de
-// health real; float64, com 53, já erra ids acima de 2^53.
-const numberPrecision = 256
+// numberPrecision é a mantissa usada na comparação. Dois decimais
+// distintos de até maxNumberLen dígitos diferem, em termos relativos, em
+// pelo menos 10^-100 (uns 2^-333); 512 bits ficam bem abaixo disso, então
+// o arredondamento nunca junta dois valores diferentes. float64, com 53,
+// já erra ids acima de 2^53.
+const numberPrecision = 512
+
+// Faixa dos números que entram numa comparação. big.Float satura perto
+// de 10^646456992 — 1e999999999 e 1e999999998 viram o mesmo infinito — e
+// recusa expoente além de int64; e converter custa tempo quadrático no
+// número de dígitos, um segundo para um milhão deles. Nenhum health real
+// chega perto destes tetos, e dentro deles a comparação é exata e barata.
+const (
+	maxNumberLen = 100
+	maxNumberExp = 10000
+)
+
+// inComparableRange diz se n está dentro da faixa. Confere o texto antes de
+// qualquer conversão, para o custo ficar proporcional ao tamanho do corpo.
+func inComparableRange(n json.Number) bool {
+	s := n.String()
+	if len(s) > maxNumberLen {
+		return false
+	}
+	i := strings.IndexAny(s, "eE")
+	if i < 0 {
+		return true
+	}
+	exp, err := strconv.Atoi(s[i+1:])
+	return err == nil && exp >= -maxNumberExp && exp <= maxNumberExp
+}
+
+// firstUncomparable procura, em v e no que ele contém, um número fora da
+// faixa comparável.
+func firstUncomparable(v any) (json.Number, bool) {
+	switch x := v.(type) {
+	case json.Number:
+		return x, !inComparableRange(x)
+	case []any:
+		for _, item := range x {
+			if n, ok := firstUncomparable(item); ok {
+				return n, true
+			}
+		}
+	case map[string]any:
+		for _, item := range x {
+			if n, ok := firstUncomparable(item); ok {
+				return n, true
+			}
+		}
+	}
+	return "", false
+}
 
 // compareNumbers devolve -1, 0 ou 1. Os dois chegam validados pelo
-// decodificador de JSON, então o parse não falha.
+// decodificador de JSON e conferidos por inComparableRange — do cadastro, o
+// esperado; de evaluate, o encontrado —, então o parse não falha nem
+// satura.
 func compareNumbers(a, b json.Number) int {
 	x, _, _ := big.ParseFloat(a.String(), 10, numberPrecision, big.ToNearestEven)
 	y, _, _ := big.ParseFloat(b.String(), 10, numberPrecision, big.ToNearestEven)
-	if x == nil || y == nil {
-		return strings.Compare(a.String(), b.String())
-	}
 	return x.Cmp(y)
 }
 
