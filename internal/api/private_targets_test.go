@@ -79,6 +79,26 @@ func TestScopedAdminCannotTargetTheInternalNetwork(t *testing.T) {
 		assertStatus(t, adm.do(t, http.MethodPost, "/api/v1/monitors", corpo), http.StatusBadRequest)
 	})
 
+	// O monitor de banco entra com usuário e senha: apontado para o banco
+	// do próprio servidor, a conta restrita testaria credenciais contra
+	// ele e leria a causa de cada recusa. A configuração vai válida, e o
+	// mesmo corpo com alvo de fora passa, para a recusa ser pelo alvo.
+	for _, caso := range []struct{ nome, tipo, alvo string }{
+		{"redis local", "redis", "127.0.0.1:6379"},
+		{"postgres na rede privada", "postgres", "10.0.0.7:5432"},
+		{"mysql por nome interno", "mysql", "interno.exemplo:3306"},
+	} {
+		t.Run(caso.nome, func(t *testing.T) {
+			corpo := monitorPara("banco "+caso.nome, caso.tipo, caso.alvo, c.retProd)
+			corpo["config"] = map[string]any{"username": "monitor", "password": "senha-do-banco"}
+			assertStatus(t, adm.do(t, http.MethodPost, "/api/v1/monitors", corpo), http.StatusBadRequest)
+
+			corpo["name"] = "banco de fora " + caso.nome
+			corpo["target"] = "banco.publico.exemplo:5432"
+			assertStatus(t, adm.do(t, http.MethodPost, "/api/v1/monitors", corpo), http.StatusCreated)
+		})
+	}
+
 	t.Run("editar para alvo interno", func(t *testing.T) {
 		resp := adm.do(t, http.MethodPut, "/api/v1/monitors/"+itoa(c.dentro),
 			monitorPara("bff", "http", "http://127.0.0.1/", c.retProd))

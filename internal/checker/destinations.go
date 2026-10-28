@@ -11,8 +11,9 @@ import (
 )
 
 // Destinations devolve os hosts aos quais o checker do monitor abre
-// conexão: o host do endereço HTTP, o do host:porta de TCP e TLS, o do
-// ping e o resolvedor configurado num monitor DNS.
+// conexão: o host do endereço HTTP, o do host:porta de TCP, TLS, Redis,
+// PostgreSQL e MySQL, o do ping e o resolvedor configurado num monitor
+// DNS.
 //
 // O nome consultado por um monitor DNS não entra: o servidor pergunta por
 // ele ao resolvedor, mas não se conecta a ele. DNS sem resolvedor usa o do
@@ -21,6 +22,10 @@ import (
 //
 // Mora aqui, e não em quem valida, porque é o checker que sabe ler o alvo
 // de cada tipo; uma segunda leitura do formato divergiria da primeira.
+//
+// Tipo desconhecido é erro, e não "sem destino": quem confere a rede
+// interna trataria o silêncio como permissão, e o tipo novo esquecido
+// aqui abriria a rede do servidor sem ninguém ver.
 func Destinations(m domain.Monitor) ([]string, error) {
 	switch m.Type {
 	case domain.MonitorHTTP:
@@ -29,7 +34,8 @@ func Destinations(m domain.Monitor) ([]string, error) {
 			return nil, fmt.Errorf("checker: endereço %q sem host", m.Target)
 		}
 		return []string{u.Hostname()}, nil
-	case domain.MonitorTCP, domain.MonitorTLS:
+	case domain.MonitorTCP, domain.MonitorTLS,
+		domain.MonitorRedis, domain.MonitorPostgres, domain.MonitorMySQL:
 		host, _, err := net.SplitHostPort(strings.TrimSpace(m.Target))
 		if err != nil {
 			return nil, fmt.Errorf("checker: alvo %q fora do formato host:porta", m.Target)
@@ -47,8 +53,10 @@ func Destinations(m domain.Monitor) ([]string, error) {
 			host = h
 		}
 		return []string{strings.Trim(host, "[]")}, nil
-	default:
+	case domain.MonitorPush:
 		return nil, nil
+	default:
+		return nil, fmt.Errorf("checker: tipo de monitor %q sem destino declarado", m.Type)
 	}
 }
 

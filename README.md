@@ -155,7 +155,8 @@ pela causa de cada falha e, no metadado da nuvem, saindo com
 credencial. Com a regra ligada, criar ou editar monitor com conta
 restrita recusa destino que resolva para loopback, rede privada (RFC
 1918 e ULA), enlace local ou espaço compartilhado de provedor, e também
-nome que não resolve. Contas que alcançam todos os grupos não são
+nome que não resolve — em todo tipo que conecta, inclusive Redis,
+PostgreSQL e MySQL. Contas que alcançam todos os grupos não são
 afetadas, e editar sem mudar o destino escolhido por outra pessoa
 continua permitido. Desligue se a instalação existe justamente para os
 times monitorarem a rede interna. A conferência ainda é só no cadastro:

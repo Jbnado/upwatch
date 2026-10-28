@@ -33,6 +33,9 @@ func TestDestinations(t *testing.T) {
 		{"dns com resolvedor e porta", domain.Monitor{Type: domain.MonitorDNS, Target: "exemplo.com",
 			Config: json.RawMessage(`{"resolver":"[fd00::53]:5353"}`)}, []string{"fd00::53"}},
 		{"push", domain.Monitor{Type: domain.MonitorPush}, nil},
+		{"redis", domain.Monitor{Type: domain.MonitorRedis, Target: "cache.interno:6379"}, []string{"cache.interno"}},
+		{"postgres", domain.Monitor{Type: domain.MonitorPostgres, Target: "10.0.0.7:5432"}, []string{"10.0.0.7"}},
+		{"mysql ipv6", domain.Monitor{Type: domain.MonitorMySQL, Target: "[fd00::7]:3306"}, []string{"fd00::7"}},
 	}
 	for _, c := range casos {
 		t.Run(c.nome, func(t *testing.T) {
@@ -44,6 +47,43 @@ func TestDestinations(t *testing.T) {
 				t.Errorf("Destinations = %v, want %v", got, c.quer)
 			}
 		})
+	}
+}
+
+// Todo tipo de monitor precisa ter destino declarado. Um tipo novo que
+// caísse num "não se conecta a nada" por omissão passaria pela política
+// de alvos internos sem conferência: foi o que aconteceu com Redis,
+// PostgreSQL e MySQL, que entraram depois dela e abriam a rede interna
+// do servidor — com usuário e senha — a quem só tem um grupo.
+func TestDestinationsKnowsEveryMonitorType(t *testing.T) {
+	semConexao := map[domain.MonitorType]bool{domain.MonitorPush: true}
+	for i := 1; i < 256; i++ {
+		typ := domain.MonitorType(i)
+		if !typ.Valid() {
+			continue
+		}
+		m := domain.Monitor{Type: typ, Target: "alvo.exemplo:1234"}
+		if typ == domain.MonitorHTTP {
+			m.Target = "https://alvo.exemplo:1234/"
+		}
+		if typ == domain.MonitorICMP {
+			m.Target = "alvo.exemplo"
+		}
+		if typ == domain.MonitorDNS {
+			m.Config = json.RawMessage(`{"resolver":"alvo.exemplo"}`)
+		}
+		got, err := checker.Destinations(m)
+		if err != nil {
+			t.Errorf("%s: Destinations returned unexpected error: %v", typ, err)
+			continue
+		}
+		if semConexao[typ] != (len(got) == 0) {
+			t.Errorf("%s: Destinations = %v; todo tipo que se conecta precisa declarar o destino", typ, got)
+		}
+	}
+
+	if _, err := checker.Destinations(domain.Monitor{Type: domain.MonitorType(255)}); err == nil {
+		t.Error("Destinations of an unknown type returned no error; it would skip the internal-network check")
 	}
 }
 
