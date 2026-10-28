@@ -125,7 +125,9 @@ export function Users({ eu }: { eu: User }) {
                   </span>
                 </span>
 
-                <span className="flex shrink-0 flex-wrap items-center gap-2">
+                {/* Encolhe no celular: com shrink-0 os três controles
+                    somavam mais que a tela e o Remover saía pela borda. */}
+                <span className="flex min-w-0 max-w-full items-center gap-2">
                   <Button
                     size="sm"
                     aria-expanded={editando === u.id}
@@ -138,7 +140,7 @@ export function Users({ eu }: { eu: User }) {
                       em troca. */}
                   {/* A largura vai no invólucro: o campo é w-full por
                       padrão, e as duas larguras na mesma classe brigavam. */}
-                  <span className="w-[168px]">
+                  <span className="min-w-0 flex-1 sm:w-[168px] sm:flex-none">
                     <Select
                       value={u.role}
                       onChange={(e) => trocarPapel(u, e.target.value as Role)}
