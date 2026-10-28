@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "./api/client";
 import { ApiError, type User } from "./api/types";
-import { Board } from "./screens/Board";
 import { Gate, Mark } from "./screens/Gate";
+import { GroupScreen } from "./screens/GroupScreen";
+import { Home } from "./screens/Home";
 import { MonitorDetail } from "./screens/MonitorDetail";
 import { MonitorForm } from "./screens/MonitorForm";
 import { Settings } from "./screens/Settings";
@@ -79,7 +80,10 @@ export function App() {
       <TopBar user={session.user} onSignOut={sair} />
 
       <main>
-        {route.name === "board" && <Board podeEscrever={session.user.role === "admin"} />}
+        {route.name === "board" && <Home podeEscrever={session.user.role === "admin"} />}
+        {route.name === "group" && (
+          <GroupScreen id={route.id} podeEscrever={session.user.role === "admin"} />
+        )}
         {route.name === "monitor" && (
           <MonitorDetail
             id={route.id}
