@@ -104,7 +104,7 @@ const maxChannelNameLength = 80
 type Channel struct {
 	ID   int64  `json:"id"`
 	Name string `json:"name"`
-	// Type identifica o notificador: webhook, discord, slack.
+	// Type identifica o notificador: webhook, discord, slack, email, ntfy.
 	Type string `json:"type"`
 	// Config é a configuração específica do tipo, opaca para o domínio.
 	//

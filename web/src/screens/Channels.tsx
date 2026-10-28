@@ -14,7 +14,16 @@ import {
   Textarea,
   TextLink,
 } from "../components/ui";
-import { montarConfig, type LinhaCabecalho } from "../lib/channel-config";
+import {
+  montarConfig,
+  montarConfigEmail,
+  montarConfigNtfy,
+  ntfyServidorPublico,
+  type EntradaEmail,
+  type EntradaNtfy,
+  type LinhaCabecalho,
+  type SegurancaSmtp,
+} from "../lib/channel-config";
 
 /**
  * Canais de aviso.
@@ -40,7 +49,32 @@ const TIPOS: Record<ChannelType, { label: string; ajuda: string; exemplo: string
     ajuda: "Recebe um JSON com os campos crus do evento, para integrar com o que você quiser.",
     exemplo: "https://seu-servico.exemplo/alertas",
   },
+  email: {
+    label: "E-mail",
+    ajuda: "Envia por SMTP, com assunto fixo: [UpWatch] monitor: estado.",
+    exemplo: "",
+  },
+  ntfy: {
+    label: "ntfy",
+    ajuda: "Alerta no celular pelo app do ntfy, sem conta. Assine o mesmo tópico no app.",
+    exemplo: "",
+  },
 };
+
+/** Tipos cujo destino é uma URL de webhook. */
+const POR_URL: ChannelType[] = ["discord", "slack", "webhook"];
+
+const EMAIL_VAZIO: EntradaEmail = {
+  host: "",
+  porta: "",
+  seguranca: "starttls",
+  usuario: "",
+  senha: "",
+  remetente: "",
+  destinatarios: "",
+};
+
+const NTFY_VAZIO: EntradaNtfy = { servidor: "", topico: "", token: "" };
 
 export function Channels() {
   const [canais, setCanais] = useState<Channel[] | null>(null);
@@ -163,6 +197,8 @@ function NewChannel({
   const [cabecalhos, setCabecalhos] = useState<LinhaCabecalho[]>([{ nome: "", valor: "" }]);
   const [mapeamento, setMapeamento] = useState("");
   const [avancado, setAvancado] = useState(false);
+  const [email, setEmail] = useState<EntradaEmail>(EMAIL_VAZIO);
+  const [ntfy, setNtfy] = useState<EntradaNtfy>(NTFY_VAZIO);
   const [enviando, setEnviando] = useState(false);
   const [campoErro, setCampoErro] = useState<{ campo: string; msg: string } | null>(null);
 
@@ -173,7 +209,12 @@ function NewChannel({
     // A montagem recusa antes de enviar para o erro aparecer embaixo do
     // campo certo: o servidor responderia "config inválida", e a tela não
     // teria como saber se o problema é a URL ou o mapeamento.
-    const { config, erro } = montarConfig({ url, cabecalhos, mapeamento });
+    const { config, erro } =
+      tipo === "email"
+        ? montarConfigEmail(email)
+        : tipo === "ntfy"
+          ? montarConfigNtfy(ntfy)
+          : montarConfig({ url, cabecalhos, mapeamento });
     if (erro) {
       setCampoErro(erro);
       return;
@@ -187,6 +228,8 @@ function NewChannel({
       setUrl("");
       setCabecalhos([{ nome: "", valor: "" }]);
       setMapeamento("");
+      setEmail(EMAIL_VAZIO);
+      setNtfy(NTFY_VAZIO);
       await onCreated();
     } catch (e) {
       if (e instanceof ApiError && e.field) {
@@ -227,16 +270,26 @@ function NewChannel({
         </Field>
       </div>
 
-      <Field label="endereço do webhook" hint={info.ajuda} error={erroDe("config")}>
-        <Input
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          placeholder={info.exemplo}
-          className="tabular"
-          type="url"
-          required
-        />
-      </Field>
+      {POR_URL.includes(tipo) && (
+        <Field label="endereço do webhook" hint={info.ajuda} error={erroDe("config")}>
+          <Input
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder={info.exemplo}
+            className="tabular"
+            type="url"
+            required
+          />
+        </Field>
+      )}
+
+      {tipo === "email" && (
+        <CamposEmail valor={email} onChange={setEmail} ajuda={info.ajuda} erroDe={erroDe} />
+      )}
+
+      {tipo === "ntfy" && (
+        <CamposNtfy valor={ntfy} onChange={setNtfy} ajuda={info.ajuda} erroDe={erroDe} />
+      )}
 
       {/* Só o canal genérico. Discord e Slack têm corpo ditado pelo
           destino, e oferecer os campos ali seria oferecer um jeito de
@@ -257,6 +310,177 @@ function NewChannel({
         {enviando ? "Salvando" : "Adicionar canal"}
       </Button>
     </form>
+  );
+}
+
+/** Porta que cada modo usa quando o campo fica em branco. */
+const PORTA_PADRAO: Record<SegurancaSmtp, string> = { starttls: "587", tls: "465", none: "25" };
+
+/**
+ * CamposEmail coleta o servidor SMTP e quem recebe.
+ *
+ * A senha é campo de senha e não volta do servidor: para trocá-la, o canal
+ * é recriado. Mostrar a senha salva exporia a credencial do e-mail
+ * corporativo a qualquer um com acesso de leitura.
+ */
+function CamposEmail({
+  valor,
+  onChange,
+  ajuda,
+  erroDe,
+}: {
+  valor: EntradaEmail;
+  onChange: (v: EntradaEmail) => void;
+  ajuda: string;
+  erroDe: (campo: string) => string | undefined;
+}) {
+  const muda = (campo: keyof EntradaEmail, v: string) => onChange({ ...valor, [campo]: v });
+
+  return (
+    <div className="flex flex-col gap-4">
+      <p className="text-small text-ink-3">{ajuda}</p>
+
+      <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_120px_160px]">
+        <Field label="servidor SMTP" error={erroDe("config")}>
+          <Input
+            value={valor.host}
+            onChange={(e) => muda("host", e.target.value)}
+            placeholder="smtp.exemplo.com"
+            className="tabular"
+            required
+          />
+        </Field>
+        <Field label="porta" error={erroDe("porta")}>
+          <Input
+            value={valor.porta}
+            onChange={(e) => muda("porta", e.target.value)}
+            placeholder={PORTA_PADRAO[valor.seguranca]}
+            inputMode="numeric"
+            className="tabular"
+          />
+        </Field>
+        <Field label="segurança">
+          <Select value={valor.seguranca} onChange={(e) => muda("seguranca", e.target.value)}>
+            <option value="starttls">STARTTLS</option>
+            <option value="tls">TLS implícito</option>
+            <option value="none">nenhuma</option>
+          </Select>
+        </Field>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field label="usuário" hint="Em branco para relé que não pede login.">
+          <Input
+            value={valor.usuario}
+            onChange={(e) => muda("usuario", e.target.value)}
+            autoComplete="off"
+          />
+        </Field>
+        <Field label="senha" hint="Guardada no servidor e nunca exibida de novo.">
+          <Input
+            value={valor.senha}
+            onChange={(e) => muda("senha", e.target.value)}
+            type="password"
+            autoComplete="new-password"
+          />
+        </Field>
+      </div>
+
+      <Field label="remetente">
+        <Input
+          value={valor.remetente}
+          onChange={(e) => muda("remetente", e.target.value)}
+          placeholder="UpWatch <alertas@exemplo.com>"
+          required
+        />
+      </Field>
+
+      <Field
+        label="destinatários"
+        hint="Separados por vírgula, ponto e vírgula ou um por linha."
+        error={erroDe("destinatarios")}
+      >
+        <Textarea
+          value={valor.destinatarios}
+          onChange={(e) => muda("destinatarios", e.target.value)}
+          placeholder="plantao@exemplo.com"
+          className="tabular text-small"
+        />
+      </Field>
+    </div>
+  );
+}
+
+/** CamposNtfy coleta servidor, tópico e o token opcional. */
+function CamposNtfy({
+  valor,
+  onChange,
+  ajuda,
+  erroDe,
+}: {
+  valor: EntradaNtfy;
+  onChange: (v: EntradaNtfy) => void;
+  ajuda: string;
+  erroDe: (campo: string) => string | undefined;
+}) {
+  const muda = (campo: keyof EntradaNtfy, v: string) => onChange({ ...valor, [campo]: v });
+
+  return (
+    <div className="flex flex-col gap-4">
+      <p className="text-small text-ink-3">{ajuda}</p>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        {/* No servidor público, quem souber o nome do tópico lê os
+            avisos. Dizer isso ao lado do campo evita "alertas" como
+            tópico de produção. */}
+        <Field
+          label="tópico"
+          hint="Quem souber o nome recebe: escolha um difícil de adivinhar."
+          error={erroDe("topico")}
+        >
+          <Input
+            value={valor.topico}
+            onChange={(e) => muda("topico", e.target.value)}
+            placeholder="upwatch-alertas-x7k2"
+            className="tabular"
+            required
+          />
+        </Field>
+        <Field label="servidor" hint="Em branco, o público." error={erroDe("config")}>
+          <Input
+            value={valor.servidor}
+            onChange={(e) => muda("servidor", e.target.value)}
+            placeholder="https://ntfy.sh"
+            className="tabular"
+            type="url"
+          />
+        </Field>
+      </div>
+
+      {/* O alerta diz o que caiu e por quê; no servidor público, isso é
+          legível por qualquer um que acerte o nome do tópico. Quem
+          cadastra precisa saber antes de escolher o nome, e não depois. */}
+      {ntfyServidorPublico(valor.servidor) && (
+        <p role="note" className="rounded-sm border-l-2 border-degraded px-3 py-2 text-small text-ink-2">
+          O servidor público é aberto: qualquer um que souber o tópico lê os alertas. Use um
+          tópico com ao menos 12 caracteres, difícil de adivinhar, ou um servidor próprio com
+          token.
+        </p>
+      )}
+
+      <Field
+        label="token"
+        hint="Só para servidor próprio com controle de acesso, por https. Nunca exibido de novo."
+      >
+        <Input
+          value={valor.token}
+          onChange={(e) => muda("token", e.target.value)}
+          type="password"
+          autoComplete="new-password"
+          placeholder="tk_…"
+        />
+      </Field>
+    </div>
   );
 }
 

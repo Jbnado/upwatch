@@ -45,10 +45,17 @@ medição" em vez de "fora do ar". Essa sonda só ganha esse poder depois
 de provar que funciona — uma sonda bloqueada por firewall silenciaria
 todos os alertas para sempre.
 
-**Avisa** por webhook, Discord e Slack, com um botão de teste em cada
-canal. Descobrir que o alerta não chega durante a queda é descobrir
-tarde. O webhook genérico aceita cabeçalhos próprios e deixa você
-escolher a forma do corpo — veja [Webhook](#webhook).
+**Avisa** por webhook, Discord, Slack, [e-mail](#e-mail) e [ntfy](#ntfy),
+com um botão de teste em cada canal. Descobrir que o alerta não chega
+durante a queda é descobrir tarde. O webhook genérico aceita cabeçalhos
+próprios e deixa você escolher a forma do corpo — veja
+[Webhook](#webhook).
+
+Uma entrega que falha é repetida até quatro vezes, com espera crescente,
+quando a falha pode passar: erro de rede, timeout, HTTP 429 ou 5xx, SMTP
+4xx. Quando o destino diz que aquela entrega nunca vai passar — HTTP 400,
+401, 403, 404, 413 ou 422, SMTP 5xx, inclusive a senha recusada (535) —, o
+aviso é dado como não entregue na primeira, e o motivo vai para o log.
 
 **Agrupa por etiqueta.** Homolog e produção lado a lado sem virar uma
 lista única de quarenta linhas: etiquete os alvos e o painel oferece
@@ -267,6 +274,26 @@ descobrir o erro de digitação durante o incidente é descobrir tarde
 demais. Discord e Slack recusam `body_template` pelo mesmo motivo — o
 corpo deles é ditado pelo destino.
 
+### Modelo da frase
+
+Em webhook, Discord e Slack, `template` troca a frase padrão por um modelo
+[text/template](https://pkg.go.dev/text/template) do Go, como
+`"{{.Monitor.Name}} => {{.Status}}"`. O modelo enxerga `Monitor` (`ID`,
+`Name`, `Target`, `Type` e `Tags`), `Status`, `Message`, `Duration`, `At` e
+`Text`, a frase pronta. A configuração do monitor fica de fora: ela guarda
+a senha do check HTTP e o token do push, e quem cadastra canal não precisa
+deles para escrever uma frase. Um modelo que tenta ler campo que não está
+na lista, como `.Monitor.Config`, é recusado no cadastro. Os marcadores de
+`body_template` seguem a mesma regra.
+
+Nome, alvo e causa vêm de fora — a causa de um monitor push é escrita por
+quem bate no UpWatch —, então não viram menção em massa. No Discord, o
+aviso vai com `allowed_mentions` vazio, e um `@everyone` na causa chega
+como texto, sem pingar ninguém. No Slack, `<`, `>` e `&` desses campos são
+escapados, e `<!channel>` ou um link disfarçado chegam como texto; o que
+você escreve no próprio `template`, como um link para o runbook, passa
+intacto.
+
 Os campos avançados também estão na interface, em Ajustes → Canais de
 aviso, atrás de "cabeçalhos e formato do corpo".
 
@@ -329,6 +356,89 @@ monitor é superusuário". A transação somente leitura não o segura: ele
 grava arquivo no servidor com `SELECT lo_export(...)` mesmo dentro dela.
 O usuário acima, só com `LOGIN`, roda a consulta personalizada
 normalmente.
+
+## E-mail
+
+O canal `email` envia por SMTP. Na API, a configuração é:
+
+```json
+{
+  "host": "smtp.exemplo.com",
+  "port": 587,
+  "security": "starttls",
+  "username": "alertas@exemplo.com",
+  "password": "…",
+  "from": "UpWatch <alertas@exemplo.com>",
+  "to": ["plantao@exemplo.com", "infra@exemplo.com"]
+}
+```
+
+`security` é `starttls` (padrão), `tls` — o TLS implícito da porta 465 —
+ou `none`. Sem `port`, vale 587, 465 ou 25, conforme o modo. Com
+`starttls`, um servidor que não oferece STARTTLS faz a entrega falhar em
+vez de seguir em claro, e `none` só é aceito sem usuário e senha: serve
+para o relé local, e não deixa a senha atravessar a rede aberta. O
+certificado do servidor é sempre validado. Quando o servidor anuncia só
+AUTH LOGIN, como o Microsoft 365, ele é usado no lugar de PLAIN.
+
+O assunto é sempre `[UpWatch] <monitor>: <estado>` — `fora do ar`,
+`no ar`, `degradado` ou `sem medição` —, para o cliente de e-mail agrupar
+e uma regra de caixa de entrada reconhecer o alerta. Nome de monitor com
+mais de 100 caracteres é cortado com reticências, para o estado não sumir
+no fim de um assunto longo demais. O corpo vai em texto
+e em HTML, com a causa, o alvo, o horário e, na volta, quanto tempo a
+queda durou. Nome e causa são escapados no HTML: o que o alvo devolve
+não vira marcação no e-mail.
+
+Um destinatário recusado pelo servidor — a pessoa saiu da empresa, a
+lista foi apagada — não cala o aviso para os outros: basta um endereço
+aceito para a mensagem seguir, e os recusados aparecem no log.
+
+Endereço com espaço, `<` ou `>` na parte local é recusado no cadastro,
+mesmo entre aspas: o endereço vai cru no envelope SMTP, e um `>` ali
+encerraria o endereço no meio do comando.
+
+O botão de teste diz por extenso o que deu errado — usuário e senha
+recusados, certificado não confiável, porta que esperava outro modo de
+TLS.
+
+## ntfy
+
+O canal `ntfy` publica no [ntfy](https://ntfy.sh), que leva o alerta ao
+celular sem conta: o app assina um tópico e recebe a notificação push.
+
+```json
+{
+  "server": "https://ntfy.sh",
+  "topic": "upwatch-alertas-x7k2",
+  "token": "tk_…"
+}
+```
+
+Sem `server`, vale o público. `token` é opcional, para servidor próprio
+com controle de acesso, e vai como `Authorization: Bearer` — por isso,
+com token, o servidor precisa ser `https://`; só o loopback (`localhost`,
+`127.0.0.1`, `::1`) é aceito por `http://`, porque não sai da máquina. O
+servidor é só o endereço: query, fragmento e usuário e senha na URL são
+recusados no cadastro.
+
+O servidor público é aberto: qualquer um que souber o tópico lê os
+alertas. Ali o tópico é a única credencial, e o cadastro exige ao menos 12
+caracteres — escolha um difícil de adivinhar, ou use servidor próprio com
+token.
+
+A queda chega com prioridade 5, a máxima; a volta e o degradado, com
+prioridade 3. A mesma urgência para tudo ensinaria a ignorar tudo. O título é
+`<monitor>: <estado>`, e cada estado tem seu ícone. A mensagem é cortada em
+4096 bytes, o limite acima do qual o ntfy a entrega como anexo; o corte cai
+na causa, e o alvo continua no fim.
+
+A senha do SMTP e o token do ntfy, como a URL dos webhooks, nunca voltam
+nas leituras da API. Também não aparecem no log nem no erro do botão de
+teste: quando a entrega falha, o erro mostra só esquema e host do destino,
+porque o caminho é onde ficam o token do webhook do Discord e do Slack e o
+tópico do ntfy. Para trocá-los, o `PUT /api/v1/channels/{id}` leva
+a configuração inteira de novo.
 
 ## Página pública de estado
 

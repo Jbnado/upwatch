@@ -9,8 +9,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/textproto"
+	neturl "net/url"
 	"strings"
 	"text/template"
 	"time"
@@ -41,22 +45,42 @@ type Notifier interface {
 	Send(ctx context.Context, n Notification) error
 }
 
+// canais é o registro de tipos atendidos, na ordem em que a interface os
+// oferece.
+//
+// Build e Types leem daqui: com duas listas, um tipo acabaria oferecido na
+// tela e recusado ao salvar, ou aceito pela API e inalcançável pela tela.
+// Um canal novo é uma linha aqui e um construtor.
+var canais = []struct {
+	tipo string
+	novo func(json.RawMessage) (Notifier, error)
+}{
+	{"webhook", NewWebhook},
+	{"discord", NewDiscord},
+	{"slack", NewSlack},
+	{"email", NewEmail},
+	{"ntfy", NewNtfy},
+}
+
 // Build monta o notificador do tipo pedido.
 func Build(kind string, config json.RawMessage) (Notifier, error) {
-	switch strings.ToLower(strings.TrimSpace(kind)) {
-	case "webhook":
-		return NewWebhook(config)
-	case "discord":
-		return NewDiscord(config)
-	case "slack":
-		return NewSlack(config)
-	default:
-		return nil, fmt.Errorf("notifier: tipo de canal desconhecido %q", kind)
+	tipo := strings.ToLower(strings.TrimSpace(kind))
+	for _, c := range canais {
+		if c.tipo == tipo {
+			return c.novo(config)
+		}
 	}
+	return nil, fmt.Errorf("notifier: tipo de canal desconhecido %q", kind)
 }
 
 // Types lista os canais atendidos, para a interface montar a escolha.
-func Types() []string { return []string{"webhook", "discord", "slack"} }
+func Types() []string {
+	tipos := make([]string, 0, len(canais))
+	for _, c := range canais {
+		tipos = append(tipos, c.tipo)
+	}
+	return tipos
+}
 
 // ---------- mensagem ----------
 
@@ -93,6 +117,23 @@ func Render(n Notification) string {
 	}
 }
 
+// statusLabel é o estado em português, para título e assunto.
+//
+// Um lugar só: e-mail e ntfy dizendo o mesmo estado com palavras
+// diferentes fariam uma regra de caixa de entrada pegar um e não o outro.
+func statusLabel(s domain.Status) string {
+	switch s {
+	case domain.StatusDown:
+		return "fora do ar"
+	case domain.StatusUp:
+		return "no ar"
+	case domain.StatusDegraded:
+		return "degradado"
+	default:
+		return "sem medição"
+	}
+}
+
 // humanDuration escreve a duração como se fala.
 //
 // "2 h 5 min" em vez de "2h5m0s": a saída padrão do Go serve para log, não
@@ -122,9 +163,25 @@ func humanDuration(d time.Duration) string {
 	}
 }
 
+// templateMonitor é o monitor como um modelo de mensagem o enxerga.
+//
+// Uma cópia mínima, e nunca o domain.Monitor: o modelo é escrito por quem
+// cadastra canal, e o monitor carrega em Config a senha do check HTTP e o
+// token do push. Com o monitor inteiro ao alcance, um webhook com
+// {{printf "%s" .Monitor.Config}} receberia esses segredos no próximo
+// aviso. Campo novo aqui é decisão de publicar aquele dado a quem cadastra
+// canal.
+type templateMonitor struct {
+	ID     int64
+	Name   string
+	Target string
+	Type   string
+	Tags   []string
+}
+
 // templateData é o que um modelo próprio enxerga.
 type templateData struct {
-	Monitor  domain.Monitor
+	Monitor  templateMonitor
 	Status   string
 	Message  string
 	Duration string
@@ -132,11 +189,34 @@ type templateData struct {
 	Text     string
 }
 
+func newTemplateData(n Notification, texto string) templateData {
+	return templateData{
+		Monitor: templateMonitor{
+			ID: n.Monitor.ID, Name: n.Monitor.Name, Target: n.Monitor.Target,
+			Type: n.Monitor.Type.String(), Tags: append([]string(nil), n.Monitor.Tags...),
+		},
+		Status: n.Status(), Message: n.Message,
+		Duration: humanDuration(n.Event.Duration), At: n.Event.At, Text: texto,
+	}
+}
+
+// exemploModelo é o evento com que o modelo é ensaiado no cadastro.
+var exemploModelo = templateData{
+	Monitor: templateMonitor{
+		ID: 1, Name: "api", Target: "https://api.exemplo.com", Type: "http", Tags: []string{"producao"},
+	},
+	Status: "down", Message: "status 502", Duration: "5 min",
+	At: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Text: "api está fora do ar: status 502",
+}
+
 // compileTemplate prepara o modelo do canal, se houver.
 //
 // A compilação acontece no cadastro para o erro aparecer ali, e não
 // durante o incidente — que é justamente quando a mensagem não pode
-// falhar.
+// falhar. O modelo também é ensaiado com um evento de exemplo: um campo
+// que não existe, como .Monitor.Config, só aparece na execução, e
+// descobri-lo no cadastro diz a quem escreveu que aquilo não está ao
+// alcance, em vez de o aviso cair calado no texto padrão.
 func compileTemplate(raw string) (*template.Template, error) {
 	if strings.TrimSpace(raw) == "" {
 		return nil, nil
@@ -144,6 +224,9 @@ func compileTemplate(raw string) (*template.Template, error) {
 
 	t, err := template.New("mensagem").Parse(raw)
 	if err != nil {
+		return nil, fmt.Errorf("notifier: modelo de mensagem inválido: %w", err)
+	}
+	if err := t.Execute(io.Discard, exemploModelo); err != nil {
 		return nil, fmt.Errorf("notifier: modelo de mensagem inválido: %w", err)
 	}
 	return t, nil
@@ -157,11 +240,7 @@ func renderWith(t *template.Template, n Notification) string {
 	}
 
 	var buf bytes.Buffer
-	err := t.Execute(&buf, templateData{
-		Monitor: n.Monitor, Status: n.Status(), Message: n.Message,
-		Duration: humanDuration(n.Event.Duration), At: n.Event.At, Text: padrao,
-	})
-	if err != nil {
+	if err := t.Execute(&buf, newTemplateData(n, padrao)); err != nil {
 		// Modelo que falha em execução não pode engolir o aviso: o texto
 		// padrão vai no lugar, porque avisar de forma feia é melhor que
 		// não avisar.
@@ -170,41 +249,139 @@ func renderWith(t *template.Template, n Notification) string {
 	return buf.String()
 }
 
+// ---------- erro permanente ----------
+
+// permanente é o erro que sabe dizer se repetir adianta.
+//
+// Uma interface, e não uma lista de tipos no despachante: quem entende o
+// protocolo é o canal, e é ele que diz se a recusa é definitiva.
+type permanente interface{ Permanent() bool }
+
+// permanentError marca um erro como definitivo.
+type permanentError struct{ err error }
+
+func (e *permanentError) Error() string   { return e.err.Error() }
+func (e *permanentError) Unwrap() error   { return e.err }
+func (e *permanentError) Permanent() bool { return true }
+
+// Permanent marca o erro como definitivo: a fila não repete a entrega.
+func Permanent(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &permanentError{err: err}
+}
+
+// IsPermanent informa se repetir a entrega não pode mudar o resultado.
+//
+// Na dúvida, não é: perder um aviso por desistir cedo demais é pior que
+// repetir uma recusa. Timeout e erro de rede caem aqui como transitórios.
+// Resposta 5xx do SMTP é permanente pelo próprio protocolo (RFC 5321,
+// 4.2.1) — o 4xx é o que o servidor usa para pedir que se tente de novo.
+func IsPermanent(err error) bool {
+	var p permanente
+	if errors.As(err, &p) {
+		return p.Permanent()
+	}
+	var smtp *textproto.Error
+	if errors.As(err, &smtp) {
+		return smtp.Code >= 500 && smtp.Code < 600
+	}
+	return false
+}
+
 // ---------- transporte HTTP ----------
 
-// post entrega o corpo e trata a resposta.
-//
-// Status de erro vira erro de verdade para a fila poder repetir; engolir
-// faria a notificação sumir em silêncio, que é o pior desfecho possível
-// num sistema de alerta.
+// post entrega o corpo em JSON e trata a resposta.
 func post(ctx context.Context, url string, headers map[string]string, payload any) error {
 	corpo, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("notifier: preparando payload: %w", err)
 	}
+	return postRaw(ctx, url, headers, "application/json", corpo)
+}
 
+// statusError é a recusa do destino, com o código para quem quiser
+// explicá-la melhor que "respondeu 403".
+type statusError struct{ Code int }
+
+func (e *statusError) Error() string {
+	return fmt.Sprintf("notifier: o canal respondeu %d", e.Code)
+}
+
+// Permanent diz se repetir a entrega pode dar outro resultado.
+//
+// Só os códigos em que o destino disse, sem ambiguidade, que aquela
+// requisição nunca vai passar: corpo malformado (400), credencial recusada
+// (401, 403), destino apagado (404), corpo grande demais (413) ou
+// recusado pelo conteúdo (422). 429 e 5xx ficam de fora: limite de taxa e
+// servidor sobrecarregado são exatamente o que a espera resolve.
+func (e *statusError) Permanent() bool {
+	switch e.Code {
+	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden,
+		http.StatusNotFound, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
+		return true
+	}
+	return false
+}
+
+// postRaw entrega um corpo já pronto e trata a resposta.
+//
+// Status de erro vira erro de verdade para a fila poder repetir; engolir
+// faria a notificação sumir em silêncio, que é o pior desfecho possível
+// num sistema de alerta.
+func postRaw(ctx context.Context, url string, headers map[string]string, contentType string, corpo []byte) error {
 	ctx, cancel := context.WithTimeout(ctx, sendTimeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(corpo))
 	if err != nil {
-		return fmt.Errorf("notifier: montando requisição: %w", err)
+		return fmt.Errorf("notifier: montando requisição: %w", maskURL(err))
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", contentType)
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("notifier: entregando aviso: %w", err)
+		return fmt.Errorf("notifier: entregando aviso: %w", maskURL(err))
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("notifier: o canal respondeu %d", resp.StatusCode)
+		return &statusError{Code: resp.StatusCode}
 	}
 	return nil
+}
+
+// maskURL tira do erro tudo que vem depois do host.
+//
+// O erro de rede do Go traz a URL inteira, e ele vai para o log e para a
+// resposta do botão de teste. Nos canais, o caminho e a query são a
+// credencial: o token do webhook do Discord e do Slack, o tópico do ntfy
+// — que no servidor público é a única coisa entre o alerta e qualquer um.
+// O host fica, porque sem ele ninguém sabe qual destino caiu. O erro
+// continua embrulhado, e timeout segue reconhecível como timeout.
+func maskURL(err error) error {
+	var ue *neturl.Error
+	if !errors.As(err, &ue) {
+		return err
+	}
+	ue.URL = semCredencial(ue.URL)
+	return err
+}
+
+// semCredencial reduz a URL a esquema e host.
+func semCredencial(bruta string) string {
+	u, err := neturl.Parse(bruta)
+	if err != nil || u.Host == "" {
+		return "(url omitida)"
+	}
+	if u.Path == "" && u.RawQuery == "" && u.Fragment == "" && u.User == nil {
+		return u.Scheme + "://" + u.Host
+	}
+	return u.Scheme + "://" + u.Host + "/…"
 }
 
 // requireURL confere que o canal sabe para onde enviar.
