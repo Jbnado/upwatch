@@ -172,7 +172,12 @@ campo não exista, use `absent`; para exigir que exista com valor `null`,
 `eq` com `null`.
 
 Números comparam pelo valor e sem passar por ponto flutuante: `340` é igual
-a `340.0`, e um id acima de 2^53 não se confunde com o vizinho.
+a `340.0`, e um id acima de 2^53 encontrado no corpo não se confunde com o
+vizinho. O valor esperado, porém, precisa caber exato num float64 — é como
+a interface o lê, e `9007199254740993` voltaria como `…992` na próxima
+gravação pela tela. Números com mais de 100 caracteres ou expoente fora de
+±10000 não entram em comparação: no cadastro são recusados, e no corpo
+derrubam o monitor com a causa "número fora da faixa comparável".
 
 O caminho é um subconjunto pequeno de JSONPath — `$`, `$.chave`,
 `$.lista[0].chave` e `$["chave com espaço"]` — sem filtros, wildcards nem

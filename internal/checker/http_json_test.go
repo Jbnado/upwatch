@@ -512,3 +512,43 @@ func TestHTTPJSONAssertionComparesAllDigitsInRange(t *testing.T) {
 		t.Errorf("Status = %v (%s), want %v: 10^99+1 must not equal 10^99", got.Status, got.Message, domain.StatusDown)
 	}
 }
+
+// A interface lê a configuração com JSON.parse, que guarda número em
+// float64: 9007199254740993 chega como ...992 e 1e999 como Infinity, que
+// volta como null. Aceitar esses valores pela API faria a primeira
+// gravação pela tela trocar a asserção sem ninguém mexer nela. O valor
+// esperado precisa sobreviver à ida e volta por float64 — o encontrado no
+// corpo, que nunca passa pela tela, continua comparado com todos os
+// dígitos.
+func TestHTTPValidateConfigRejectsExpectedNumbersFloat64CannotHold(t *testing.T) {
+	for _, n := range []string{"9007199254740993", "1e999", "-1e999", "0.1000000000000000000001", "1e-400"} {
+		t.Run(n, func(t *testing.T) {
+			cfg, _ := json.Marshal(map[string]any{"json_assertions": []map[string]any{
+				assertion("$.n", "eq", json.Number(n)),
+			}})
+
+			err := checker.NewHTTP().ValidateConfig(cfg)
+
+			if err == nil {
+				t.Fatalf("ValidateConfig(%s) returned nil error, want an error", cfg)
+			}
+			if !strings.Contains(err.Error(), "64 bits") {
+				t.Errorf("error = %q, want it to explain the 64-bit limit", err)
+			}
+		})
+	}
+}
+
+func TestHTTPValidateConfigAcceptsExpectedNumbersFloat64Holds(t *testing.T) {
+	for _, n := range []string{"0.1", "340.0", "9007199254740992", "9007199254740994", "1e308", "-0", "5e-324", "1.5E+3"} {
+		t.Run(n, func(t *testing.T) {
+			cfg, _ := json.Marshal(map[string]any{"json_assertions": []map[string]any{
+				assertion("$.n", "eq", json.Number(n)),
+			}})
+
+			if err := checker.NewHTTP().ValidateConfig(cfg); err != nil {
+				t.Errorf("ValidateConfig(%s) returned unexpected error: %v", cfg, err)
+			}
+		})
+	}
+}

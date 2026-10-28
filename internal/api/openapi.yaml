@@ -1560,7 +1560,9 @@ components:
           description: |
             Qualquer valor JSON. Obrigatório para todos os operadores menos
             `exists` e `absent`, que o recusam; número para `lt`, `lte`,
-            `gt` e `gte`.
+            `gt` e `gte`. Números no valor precisam caber exatos num
+            float64 (sobreviver a ida e volta pela menor grafia), ter até
+            100 caracteres e expoente entre -10000 e 10000.
       example:
         path: $.queue_lag
         op: lt

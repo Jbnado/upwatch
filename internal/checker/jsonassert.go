@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/big"
 	"strconv"
 	"strings"
@@ -89,9 +90,13 @@ func compileAssertion(a JSONAssertion) (compiledAssertion, error) {
 	if c.expected, err = decodeJSON(a.Value); err != nil {
 		return c, fmt.Errorf("valor inválido: %v", err)
 	}
-	if n, ok := firstUncomparable(c.expected); ok {
+	if n, ok := firstNumberWhere(c.expected, outOfComparableRange); ok {
 		return c, fmt.Errorf("número %s fora da faixa comparável: até %d caracteres e expoente entre -%d e %d",
 			show(n), maxNumberLen, maxNumberExp, maxNumberExp)
+	}
+	if n, ok := firstNumberWhere(c.expected, changesInFloat64); ok {
+		return c, fmt.Errorf("número %s não cabe exato em ponto flutuante de 64 bits, que é como a interface o "+
+			"lê; ele voltaria alterado na próxima gravação pela tela. Use um valor que caiba, ou compare como texto", show(n))
 	}
 	if isOrdering(a.Op) {
 		if _, ok := c.expected.(json.Number); !ok {
@@ -153,7 +158,7 @@ func (a compiledAssertion) evaluate(doc any) string {
 	}
 
 	if a.Op != opExists && a.Op != opAbsent {
-		if _, ok := firstUncomparable(found); ok {
+		if _, ok := firstNumberWhere(found, outOfComparableRange); ok {
 			return fmt.Sprintf("%s: número fora da faixa comparável (mais de %d caracteres ou expoente além de ±%d)",
 				a.Path, maxNumberLen, maxNumberExp)
 		}
@@ -353,36 +358,51 @@ const (
 	maxNumberExp = 10000
 )
 
-// inComparableRange diz se n está dentro da faixa. Confere o texto antes de
-// qualquer conversão, para o custo ficar proporcional ao tamanho do corpo.
-func inComparableRange(n json.Number) bool {
+// outOfComparableRange diz se n está fora da faixa. Confere o texto
+// antes de qualquer conversão, para o custo ficar proporcional ao tamanho
+// do corpo.
+func outOfComparableRange(n json.Number) bool {
 	s := n.String()
 	if len(s) > maxNumberLen {
-		return false
+		return true
 	}
 	i := strings.IndexAny(s, "eE")
 	if i < 0 {
-		return true
+		return false
 	}
 	exp, err := strconv.Atoi(s[i+1:])
-	return err == nil && exp >= -maxNumberExp && exp <= maxNumberExp
+	return err != nil || exp < -maxNumberExp || exp > maxNumberExp
 }
 
-// firstUncomparable procura, em v e no que ele contém, um número fora da
-// faixa comparável.
-func firstUncomparable(v any) (json.Number, bool) {
+// changesInFloat64 diz se n muda ao passar por float64 e voltar pela
+// menor grafia que o representa — exatamente o que JSON.parse e
+// JSON.stringify fazem na interface. 0.1 sobrevive; 9007199254740993 e
+// 1e999 não. Espera n já dentro da faixa comparável.
+func changesInFloat64(n json.Number) bool {
+	f, err := strconv.ParseFloat(n.String(), 64)
+	if err != nil || math.IsInf(f, 0) {
+		return true
+	}
+	want, ok1 := new(big.Rat).SetString(n.String())
+	got, ok2 := new(big.Rat).SetString(strconv.FormatFloat(f, 'g', -1, 64))
+	return !ok1 || !ok2 || want.Cmp(got) != 0
+}
+
+// firstNumberWhere procura, em v e no que ele contém, um número para o
+// qual pred vale.
+func firstNumberWhere(v any, pred func(json.Number) bool) (json.Number, bool) {
 	switch x := v.(type) {
 	case json.Number:
-		return x, !inComparableRange(x)
+		return x, pred(x)
 	case []any:
 		for _, item := range x {
-			if n, ok := firstUncomparable(item); ok {
+			if n, ok := firstNumberWhere(item, pred); ok {
 				return n, true
 			}
 		}
 	case map[string]any:
 		for _, item := range x {
-			if n, ok := firstUncomparable(item); ok {
+			if n, ok := firstNumberWhere(item, pred); ok {
 				return n, true
 			}
 		}
@@ -391,7 +411,7 @@ func firstUncomparable(v any) (json.Number, bool) {
 }
 
 // compareNumbers devolve -1, 0 ou 1. Os dois chegam validados pelo
-// decodificador de JSON e conferidos por inComparableRange — do cadastro, o
+// decodificador de JSON e conferidos por outOfComparableRange — do cadastro, o
 // esperado; de evaluate, o encontrado —, então o parse não falha nem
 // satura.
 func compareNumbers(a, b json.Number) int {
