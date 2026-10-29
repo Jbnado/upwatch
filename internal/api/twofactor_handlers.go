@@ -44,9 +44,17 @@ func (a *API) handleTOTPStatus(w http.ResponseWriter, r *http.Request) {
 // handleTOTPSetup começa o cadastro: o segredo e o endereço do QR code.
 //
 // É a única resposta em que o segredo aparece. Chamar de novo sorteia
-// outro e descarta o anterior, que nunca chegou a valer.
+// outro e descarta o anterior, que nunca chegou a valer. Pede a senha
+// atual (ver auth.Service.BeginTOTP).
 func (a *API) handleTOTPSetup(w http.ResponseWriter, r *http.Request) {
-	e, err := a.auth.BeginTOTP(r.Context(), mustUser(r).ID)
+	var body struct {
+		Password string `json:"password"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+
+	e, err := a.auth.BeginTOTP(r.Context(), mustUser(r).ID, body.Password)
 	if err != nil {
 		writeStoreError(w, err)
 		return

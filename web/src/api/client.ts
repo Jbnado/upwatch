@@ -130,7 +130,9 @@ export const api = {
 
   totpStatus: () => request<TOTPStatus>("/auth/2fa"),
 
-  totpSetup: () => request<TOTPSetup>("/auth/2fa/setup", { method: "POST" }),
+  /** totpSetup começa o cadastro; pede a senha atual. */
+  totpSetup: (password: string) =>
+    request<TOTPSetup>("/auth/2fa/setup", { method: "POST", body: JSON.stringify({ password }) }),
 
   totpEnable: (code: string) =>
     request<RecoveryCodes>("/auth/2fa/enable", { method: "POST", body: JSON.stringify({ code }) }),

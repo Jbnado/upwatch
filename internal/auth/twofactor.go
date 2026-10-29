@@ -204,11 +204,31 @@ func (s *Service) TOTPStatus(ctx context.Context, userID int64) (TOTPStatus, err
 //
 // Pendente até a confirmação: ligar na hora deixaria trancado fora quem
 // fechou a tela antes de escanear o código.
-func (s *Service) BeginTOTP(ctx context.Context, userID int64) (Enrollment, error) {
+//
+// Pede a senha, contada no bloqueio. Com a sessão só, quem roubou o
+// cookie cadastraria o próprio aplicativo, e a confirmação, que derruba
+// as outras sessões, deixaria o dono de fora.
+func (s *Service) BeginTOTP(ctx context.Context, userID int64, password string) (Enrollment, error) {
 	u, err := s.store.Users().Get(ctx, userID)
 	if err != nil {
 		return Enrollment{}, err
 	}
+	// Antes da senha: com o fator ligado, a senha certa não pode zerar as
+	// falhas, e recomeçar o cadastro seria recusado de qualquer jeito.
+	if u.TOTPEnabled {
+		return Enrollment{}, ErrTOTPEnabled
+	}
+	att, err := s.attempts.reserve(u.Username)
+	if err != nil {
+		return Enrollment{}, err
+	}
+	defer att.release()
+	if !u.CheckPassword(password) {
+		att.fail()
+		return Enrollment{}, ErrInvalidCredentials
+	}
+	att.succeed()
+
 	secret, err := totp.NewSecret()
 	if err != nil {
 		return Enrollment{}, err

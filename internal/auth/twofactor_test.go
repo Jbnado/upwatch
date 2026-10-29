@@ -25,7 +25,7 @@ func (f *fixture) withTOTP(t *testing.T) enrolled {
 	ctx := context.Background()
 	u := f.withAdmin(t)
 
-	e, err := f.svc.BeginTOTP(ctx, u.ID)
+	e, err := f.svc.BeginTOTP(ctx, u.ID, goodPassword)
 	if err != nil {
 		t.Fatalf("BeginTOTP returned unexpected error: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestEnablingTOTPRevokesOtherSessions(t *testing.T) {
 	current := mustLogin(t, f)
 	other := mustLogin(t, f)
 
-	e, err := f.svc.BeginTOTP(ctx, u.ID)
+	e, err := f.svc.BeginTOTP(ctx, u.ID, goodPassword)
 	if err != nil {
 		t.Fatalf("BeginTOTP returned unexpected error: %v", err)
 	}
@@ -310,7 +310,7 @@ func TestConfirmRejectsWrongCode(t *testing.T) {
 	u := f.withAdmin(t)
 	ctx := context.Background()
 
-	e, _ := f.svc.BeginTOTP(ctx, u.ID)
+	e, _ := f.svc.BeginTOTP(ctx, u.ID, goodPassword)
 	if _, err := f.svc.ConfirmTOTP(ctx, u.ID, "", wrongCode(f.code(t, e.Secret))); !errors.Is(err, auth.ErrInvalidCode) {
 		t.Fatalf("error = %v, want ErrInvalidCode", err)
 	}
@@ -324,7 +324,7 @@ func TestBeginRefusesWhenEnabled(t *testing.T) {
 	f := newFixture(t)
 	e := f.withTOTP(t)
 
-	if _, err := f.svc.BeginTOTP(context.Background(), e.user.ID); !errors.Is(err, auth.ErrTOTPEnabled) {
+	if _, err := f.svc.BeginTOTP(context.Background(), e.user.ID, goodPassword); !errors.Is(err, auth.ErrTOTPEnabled) {
 		t.Errorf("error = %v, want ErrTOTPEnabled", err)
 	}
 }

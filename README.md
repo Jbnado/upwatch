@@ -369,7 +369,9 @@ No login, a senha certa de uma conta com segundo fator não abre sessão:
 devolve um desafio que vale cinco minutos, aceita cinco códigos e serve
 uma vez. Código errado conta no mesmo bloqueio da senha errada (cinco
 falhas, quinze minutos). Senha errada responde igual com ou sem segundo
-fator, para não revelar quais contas o têm. A API está descrita em
+fator, para não revelar quais contas o têm. Começar o cadastro pede a
+senha atual, que também conta no bloqueio: com a sessão só, quem roubou
+o cookie cadastraria o próprio aplicativo e deixaria o dono de fora. A API está descrita em
 `/api/v1/openapi.yaml` (`/auth/login/2fa` e `/auth/2fa/*`).
 
 **`UPWATCH_REQUIRE_2FA_ADMIN`** vem desligado, para uma atualização não

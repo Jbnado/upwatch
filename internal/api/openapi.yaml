@@ -389,6 +389,18 @@ paths:
         guarda como pendente. A resposta traz o segredo em base32 e o
         endereço `otpauth://` do QR code; é a única vez que o segredo sai
         da API. Chamar de novo descarta o pendente anterior.
+
+        Exige a senha atual. A errada conta no bloqueio da conta, como no
+        login.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string }
       responses:
         "200":
           description: Segredo pendente
@@ -401,6 +413,11 @@ paths:
                   uri: { type: string }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "429":
+          description: Tentativas demais; aguarde antes de tentar novamente
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/v1/auth/2fa/enable:
     post:

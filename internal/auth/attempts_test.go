@@ -115,6 +115,30 @@ func TestChangePasswordCountsTowardLockout(t *testing.T) {
 	}
 }
 
+// Começar o cadastro do segundo fator pede a senha, e a errada conta.
+func TestBeginTOTPNeedsThePassword(t *testing.T) {
+	f := newFixture(t)
+	admin := f.withAdmin(t)
+	ctx := context.Background()
+
+	for i := range auth.MaxLoginAttempts {
+		if _, err := f.svc.BeginTOTP(ctx, admin.ID, fmt.Sprintf("palpite-numero-%03d", i)); !errors.Is(err, auth.ErrInvalidCredentials) {
+			t.Fatalf("BeginTOTP #%d = %v, want ErrInvalidCredentials", i+1, err)
+		}
+	}
+	st, err := f.svc.TOTPStatus(ctx, admin.ID)
+	if err != nil {
+		t.Fatalf("TOTPStatus returned unexpected error: %v", err)
+	}
+	if st.Pending {
+		t.Error("cadastro pendente depois de senhas erradas, want nenhum")
+	}
+
+	if _, err := f.svc.BeginTOTP(ctx, admin.ID, goodPassword); !errors.Is(err, auth.ErrTooManyAttempts) {
+		t.Errorf("BeginTOTP com a senha certa depois do limite = %v, want ErrTooManyAttempts", err)
+	}
+}
+
 // Falhas abaixo do limite caducam depois de uma janela sem erro novo.
 func TestFailuresBelowThresholdDecay(t *testing.T) {
 	f := newFixture(t)
