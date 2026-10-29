@@ -230,6 +230,13 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 		return nil, err
 	}
 
+	// Validado na leitura da configuração; o erro só voltaria aqui se a
+	// validação tivesse sido pulada.
+	trustedProxies, err := cfg.TrustedProxyPrefixes()
+	if err != nil {
+		return nil, err
+	}
+
 	apiHandler := api.New(api.Options{
 		Store:         st,
 		Auth:          authSvc,
@@ -247,6 +254,7 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 
 		AllowScopedPrivateTargets: !cfg.RestrictPrivateTargets,
 		Require2FAAdmin:           cfg.Require2FAAdmin,
+		TrustedProxies:            trustedProxies,
 	})
 
 	return &application{

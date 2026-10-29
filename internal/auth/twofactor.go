@@ -118,16 +118,18 @@ func (s *Service) CompleteLogin(ctx context.Context, challenge, code string) (st
 		}
 		return "", err
 	}
-	if s.locked(u.Username) {
-		return "", ErrTooManyAttempts
+	att, err := s.attempts.reserve(u.Username)
+	if err != nil {
+		return "", err
 	}
+	defer att.release()
 
 	ok, err := s.checkSecondFactor(ctx, u.ID, code)
 	if err != nil {
 		return "", err
 	}
 	if !ok {
-		s.recordFailure(u.Username)
+		att.fail()
 		return "", ErrInvalidCode
 	}
 
@@ -140,7 +142,7 @@ func (s *Service) CompleteLogin(ctx context.Context, challenge, code string) (st
 		}
 		return "", err
 	}
-	s.clearFailures(u.Username)
+	att.succeed()
 	return s.openSession(ctx, u.ID)
 }
 
@@ -202,11 +204,31 @@ func (s *Service) TOTPStatus(ctx context.Context, userID int64) (TOTPStatus, err
 //
 // Pendente até a confirmação: ligar na hora deixaria trancado fora quem
 // fechou a tela antes de escanear o código.
-func (s *Service) BeginTOTP(ctx context.Context, userID int64) (Enrollment, error) {
+//
+// Pede a senha, contada no bloqueio. Com a sessão só, quem roubou o
+// cookie cadastraria o próprio aplicativo, e a confirmação, que derruba
+// as outras sessões, deixaria o dono de fora.
+func (s *Service) BeginTOTP(ctx context.Context, userID int64, password string) (Enrollment, error) {
 	u, err := s.store.Users().Get(ctx, userID)
 	if err != nil {
 		return Enrollment{}, err
 	}
+	// Antes da senha: com o fator ligado, a senha certa não pode zerar as
+	// falhas, e recomeçar o cadastro seria recusado de qualquer jeito.
+	if u.TOTPEnabled {
+		return Enrollment{}, ErrTOTPEnabled
+	}
+	att, err := s.attempts.reserve(u.Username)
+	if err != nil {
+		return Enrollment{}, err
+	}
+	defer att.release()
+	if !u.CheckPassword(password) {
+		att.fail()
+		return Enrollment{}, ErrInvalidCredentials
+	}
+	att.succeed()
+
 	secret, err := totp.NewSecret()
 	if err != nil {
 		return Enrollment{}, err
@@ -343,11 +365,13 @@ func (s *Service) proveAccount(ctx context.Context, userID int64, password, code
 	if !u.TOTPEnabled {
 		return ErrTOTPNotEnabled
 	}
-	if s.locked(u.Username) {
-		return ErrTooManyAttempts
+	att, err := s.attempts.reserve(u.Username)
+	if err != nil {
+		return err
 	}
+	defer att.release()
 	if !u.CheckPassword(password) {
-		s.recordFailure(u.Username)
+		att.fail()
 		return ErrInvalidCredentials
 	}
 	ok, err := s.checkSecondFactor(ctx, userID, code)
@@ -355,10 +379,10 @@ func (s *Service) proveAccount(ctx context.Context, userID int64, password, code
 		return err
 	}
 	if !ok {
-		s.recordFailure(u.Username)
+		att.fail()
 		return ErrInvalidCode
 	}
-	s.clearFailures(u.Username)
+	att.succeed()
 	return nil
 }
 

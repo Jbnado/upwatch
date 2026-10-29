@@ -71,19 +71,31 @@ export function TwoFactor({ onChanged }: { onChanged?: () => void }) {
   );
 }
 
-/** Cadastro sorteia o segredo, mostra o QR code e confirma com um código. */
+/**
+ * Cadastro pede a senha, sorteia o segredo, mostra o QR code e confirma
+ * com um código.
+ *
+ * A senha vem antes do segredo: com a sessão só, quem a roubou
+ * cadastraria o próprio aplicativo e deixaria o dono de fora.
+ */
 function Cadastro({ onEnabled }: { onEnabled: (codigos: string[]) => void }) {
   const [setup, setSetup] = useState<TOTPSetup | null>(null);
+  const [senha, setSenha] = useState("");
   const [codigo, setCodigo] = useState("");
   const [erro, setErro] = useState<string | null>(null);
   const [enviando, setEnviando] = useState(false);
 
-  async function comecar() {
+  async function comecar(e: FormEvent) {
+    e.preventDefault();
+    setEnviando(true);
     setErro(null);
     try {
-      setSetup(await api.totpSetup());
+      setSetup(await api.totpSetup(senha));
+      setSenha("");
     } catch (e) {
       setErro(e instanceof ApiError ? e.message : "Não foi possível começar o cadastro.");
+    } finally {
+      setEnviando(false);
     }
   }
 
@@ -104,13 +116,23 @@ function Cadastro({ onEnabled }: { onEnabled: (codigos: string[]) => void }) {
 
   if (!setup) {
     return (
-      <div className="flex flex-col gap-3">
+      <form onSubmit={comecar} className="flex flex-col gap-3">
         {erro && <Alert>{erro}</Alert>}
-        <p className="text-body">Desligada.</p>
-        <Button variant="primary" onClick={comecar} className="self-start">
+        <p className="text-body">Desligada. Para começar o cadastro, confirme com a senha.</p>
+        <Field label="senha atual">
+          <Input
+            type="password"
+            value={senha}
+            onChange={(e) => setSenha(e.target.value)}
+            autoComplete="current-password"
+            required
+            className="sm:max-w-sm"
+          />
+        </Field>
+        <Button type="submit" variant="primary" disabled={enviando} className="self-start">
           Ligar verificação em duas etapas
         </Button>
-      </div>
+      </form>
     );
   }
 

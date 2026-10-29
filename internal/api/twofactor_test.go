@@ -14,8 +14,14 @@ import (
 // próximo código não ser o mesmo da confirmação.
 func (s *server) enroll(t *testing.T) (string, []string) {
 	t.Helper()
+	return s.enrollWith(t, adminPassword)
+}
 
-	resp := s.do(t, http.MethodPost, "/api/v1/auth/2fa/setup", nil)
+// enrollWith é enroll para uma conta com outra senha.
+func (s *server) enrollWith(t *testing.T, password string) (string, []string) {
+	t.Helper()
+
+	resp := s.do(t, http.MethodPost, "/api/v1/auth/2fa/setup", map[string]any{"password": password})
 	assertStatus(t, resp, http.StatusOK)
 	setup := decode[struct {
 		Secret string `json:"secret"`
@@ -158,7 +164,7 @@ func TestAPITokenIgnoresTOTP(t *testing.T) {
 	s := newServerWith(t, func(o *api.Options) { o.Require2FAAdmin = true })
 	s.setup(t)
 
-	resp := s.do(t, http.MethodPost, "/api/v1/auth/2fa/setup", nil)
+	resp := s.do(t, http.MethodPost, "/api/v1/auth/2fa/setup", map[string]any{"password": adminPassword})
 	assertStatus(t, resp, http.StatusOK)
 	s.enroll(t)
 
@@ -232,7 +238,7 @@ func TestAdminResetsAnotherUsersTOTP(t *testing.T) {
 	id := s.criarConta(t, "operadora", "admin")
 
 	op := s.como(s.entrar(t, "operadora", "senha-de-teste-12345"))
-	op.enroll(t)
+	op.enrollWith(t, "senha-de-teste-12345")
 
 	users := decode[struct {
 		Items []map[string]any `json:"items"`
@@ -299,4 +305,28 @@ func TestDisableTOTPViaAPI(t *testing.T) {
 	if st["enabled"] != false {
 		t.Errorf("status = %v, want enabled false", st)
 	}
+}
+
+// Começar o cadastro pede a senha atual: com a sessão só, quem roubou o
+// cookie cadastraria o próprio aplicativo.
+func TestTOTPSetupNeedsThePassword(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+
+	assertStatus(t, s.do(t, http.MethodPost, "/api/v1/auth/2fa/setup", map[string]any{}), http.StatusUnauthorized)
+	assertStatus(t, s.do(t, http.MethodPost, "/api/v1/auth/2fa/setup",
+		map[string]any{"password": "senha-errada-porem-longa"}), http.StatusUnauthorized)
+
+	resp := s.do(t, http.MethodGet, "/api/v1/auth/2fa", nil)
+	assertStatus(t, resp, http.StatusOK)
+	if st := decode[map[string]any](t, resp); st["pending"] != false {
+		t.Errorf("estado = %v, want nenhum cadastro pendente", st)
+	}
+
+	// As erradas contam no bloqueio da conta.
+	for range 3 {
+		s.do(t, http.MethodPost, "/api/v1/auth/2fa/setup", map[string]any{"password": "senha-errada-porem-longa"})
+	}
+	assertStatus(t, s.do(t, http.MethodPost, "/api/v1/auth/2fa/setup",
+		map[string]any{"password": adminPassword}), http.StatusTooManyRequests)
 }

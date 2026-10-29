@@ -269,7 +269,8 @@ paths:
         Senha errada e conta inexistente devolvem a mesma resposta, de
         propósito: distingui-las permitiria descobrir quais contas existem.
 
-        Falhas repetidas bloqueiam a conta temporariamente.
+        Falhas repetidas bloqueiam a conta temporariamente. Além disso, os
+        dois passos do login dividem um limite por origem.
 
         Conta com verificação em duas etapas não recebe sessão aqui: a
         resposta traz `status: two_factor_required` e um `challenge`, que
@@ -300,11 +301,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/LoginResult" }
         "401": { $ref: "#/components/responses/Unauthorized" }
-        "429":
-          description: Tentativas demais; aguarde antes de tentar novamente
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/LoginTooManyRequests" }
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/auth/login/2fa:
@@ -343,11 +340,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/LoginResult" }
         "401": { $ref: "#/components/responses/Unauthorized" }
-        "429":
-          description: Tentativas demais; aguarde antes de tentar novamente
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/LoginTooManyRequests" }
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/auth/logout:
@@ -412,6 +405,18 @@ paths:
         guarda como pendente. A resposta traz o segredo em base32 e o
         endereço `otpauth://` do QR code; é a única vez que o segredo sai
         da API. Chamar de novo descarta o pendente anterior.
+
+        Exige a senha atual. A errada conta no bloqueio da conta, como no
+        login.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string }
       responses:
         "200":
           description: Segredo pendente
@@ -424,6 +429,12 @@ paths:
                   uri: { type: string }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "429":
+          description: Tentativas demais; aguarde antes de tentar novamente
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/v1/auth/2fa/enable:
     post:
@@ -512,6 +523,8 @@ paths:
         Encerra todas as sessões abertas, inclusive a desta requisição.
         Trocar a senha porque ela pode ter vazado não adianta se quem a
         obteve continuar logado.
+
+        A senha atual errada conta no bloqueio da conta, como no login.
       requestBody:
         required: true
         content:
@@ -526,6 +539,11 @@ paths:
         "204": { description: Senha trocada e sessões encerradas }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "429":
+          description: Tentativas demais; aguarde antes de tentar novamente
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/auth/tokens:
@@ -2457,12 +2475,27 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
     PushTooManyRequests:
       description: |
-        Requisições demais da mesma origem. O limite é por endereço da
-        conexão; atrás de proxy reverso, todos dividem o do proxy.
+        Requisições demais da mesma origem. A origem é o endereço da
+        conexão, ou o bloco /64 dele no IPv6; atrás de proxy reverso,
+        todos dividem o do proxy, a menos que ele esteja em
+        `UPWATCH_TRUSTED_PROXIES`.
       headers:
         Retry-After:
           schema: { type: integer }
           description: Segundos até a próxima tentativa valer
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    LoginTooManyRequests:
+      description: |
+        Tentativas demais. Ou a conta está bloqueada pelas falhas
+        seguidas, ou a origem esgotou o limite dos dois passos do login
+        (contado como o de `PushTooManyRequests`); só neste caso vem
+        `Retry-After`.
+      headers:
+        Retry-After:
+          schema: { type: integer }
+          description: Segundos até a próxima tentativa valer (limite por origem)
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }

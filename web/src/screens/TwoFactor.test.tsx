@@ -33,6 +33,12 @@ beforeEach(() => {
   for (const f of Object.values(api)) vi.mocked(f).mockReset();
 });
 
+/** comecar digita a senha e pede o cadastro. */
+async function comecar(senha = "uma-senha-bem-longa") {
+  fireEvent.change(await screen.findByLabelText(/^senha atual/), { target: { value: senha } });
+  fireEvent.click(screen.getByRole("button", { name: "Ligar verificação em duas etapas" }));
+}
+
 describe("TwoFactor, cadastro", () => {
   it("mostra QR code e chave, confirma com o código e mostra os códigos uma vez", async () => {
     vi.mocked(api.totpStatus).mockResolvedValueOnce(desligada).mockResolvedValue(ligada);
@@ -44,11 +50,12 @@ describe("TwoFactor, cadastro", () => {
     const onChanged = vi.fn();
     render(<TwoFactor onChanged={onChanged} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Ligar verificação em duas etapas" }));
+    await comecar();
 
     expect(await screen.findByRole("img", { name: /QR code/ })).toBeInTheDocument();
     // A chave em blocos de quatro, como os aplicativos a mostram.
     expect(screen.getByText("JBSW Y3DP EHPK 3PXP JBSW Y3DP EHPK 3PXP")).toBeInTheDocument();
+    expect(api.totpSetup).toHaveBeenCalledWith("uma-senha-bem-longa");
     expect(api.totpEnable).not.toHaveBeenCalled();
 
     fireEvent.change(screen.getByLabelText(/código que o aplicativo mostra/), {
@@ -78,7 +85,7 @@ describe("TwoFactor, cadastro", () => {
     vi.mocked(api.totpEnable).mockResolvedValue({ recovery_codes: CODIGOS });
     render(<TwoFactor />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Ligar verificação em duas etapas" }));
+    await comecar();
     fireEvent.change(await screen.findByLabelText(/código que o aplicativo mostra/), {
       target: { value: "123456" },
     });
@@ -96,7 +103,7 @@ describe("TwoFactor, cadastro", () => {
     );
     render(<TwoFactor />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Ligar verificação em duas etapas" }));
+    await comecar();
     fireEvent.change(await screen.findByLabelText(/código que o aplicativo mostra/), {
       target: { value: "000000" },
     });
@@ -104,6 +111,29 @@ describe("TwoFactor, cadastro", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("código inválido");
     expect(screen.queryByRole("list", { name: "códigos de recuperação" })).not.toBeInTheDocument();
+  });
+});
+
+describe("TwoFactor, senha antes do cadastro", () => {
+  it("não começa sem a senha", async () => {
+    vi.mocked(api.totpStatus).mockResolvedValue(desligada);
+    render(<TwoFactor />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Ligar verificação em duas etapas" }));
+
+    expect(api.totpSetup).not.toHaveBeenCalled();
+  });
+
+  it("mostra a senha recusada sem mostrar segredo nenhum", async () => {
+    vi.mocked(api.totpStatus).mockResolvedValue(desligada);
+    vi.mocked(api.totpSetup).mockRejectedValue(new ApiError(401, "unauthorized", "credenciais inválidas"));
+    render(<TwoFactor />);
+
+    await comecar("senha-errada-porem-longa");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("credenciais inválidas");
+    expect(screen.queryByRole("img", { name: /QR code/ })).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/^senha atual/)).toBeInTheDocument();
   });
 });
 

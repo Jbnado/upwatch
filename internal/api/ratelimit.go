@@ -2,9 +2,10 @@ package api
 
 import (
 	"math"
-	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,10 +20,7 @@ import (
 // minuto — a rajada cobre o minuto cheio, e a reposição sustenta cinco por
 // segundo.
 //
-// A origem é o endereço da conexão. Atrás de um proxy reverso todas as
-// requisições chegam do proxy e dividem o mesmo balde; confiar num
-// cabeçalho como X-Forwarded-For deixaria o próprio atacante escolher a
-// origem a cada requisição e anularia o limite.
+// A origem é o endereço da conexão (ver originResolver).
 const (
 	pushBurst     = 300
 	pushPerSecond = 5
@@ -33,6 +31,19 @@ const (
 	// errou a cópia termina sem esperar, e um chute vira dias por milhar.
 	setupBurst     = 10
 	setupPerSecond = 1.0 / 30
+
+	// Limite do login e do segundo passo por origem, num balde só: um
+	// login com dois fatores gasta duas fichas. O bloqueio por conta não
+	// segura quem espalha palpites por muitas contas; isto segura. A
+	// rajada cobre um escritório inteiro chegando atrás do mesmo endereço,
+	// e a reposição, dez por minuto, deixa o chute em lote sem graça.
+	loginBurst     = 30
+	loginPerSecond = 1.0 / 6
+
+	// ipv6PrefixBits é o tamanho do bloco IPv6 que conta como uma origem.
+	// Um /64 é o que um provedor entrega a um único cliente: contar cada
+	// endereço dele à parte daria a cada um trilhões de baldes cheios.
+	ipv6PrefixBits = 64
 
 	// maxTrackedClients limita a memória do limitador. Passado o teto, os
 	// baldes cheios — de quem não está gastando nada — são esquecidos.
@@ -45,6 +56,7 @@ const (
 // que o zera não abre brecha que valha uma dependência nova.
 type rateLimiter struct {
 	clock     clock.Clock
+	origins   originResolver
 	burst     float64
 	perSecond float64
 
@@ -57,8 +69,11 @@ type bucket struct {
 	last   time.Time
 }
 
-func newRateLimiter(c clock.Clock, burst, perSecond float64) *rateLimiter {
-	return &rateLimiter{clock: c, burst: burst, perSecond: perSecond, buckets: map[string]*bucket{}}
+func newRateLimiter(c clock.Clock, origins originResolver, burst, perSecond float64) *rateLimiter {
+	return &rateLimiter{
+		clock: c, origins: origins, burst: burst, perSecond: perSecond,
+		buckets: map[string]*bucket{},
+	}
 }
 
 // allow consome uma ficha da origem e devolve, quando não há, quanto
@@ -101,7 +116,7 @@ func (l *rateLimiter) forgetIdle(now time.Time) {
 // limit recusa com 429 a origem que esgotou o balde.
 func (l *rateLimiter) limit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ok, wait := l.allow(clientOrigin(r))
+		ok, wait := l.allow(l.origins.origin(r))
 		if !ok {
 			// Retry-After em segundos inteiros, arredondado para cima: zero
 			// mandaria o cliente tentar de novo na hora.
@@ -114,12 +129,80 @@ func (l *rateLimiter) limit(next http.Handler) http.Handler {
 	})
 }
 
-// clientOrigin é o endereço da conexão, sem a porta: cada requisição de um
-// mesmo cliente pode chegar de uma porta diferente.
-func clientOrigin(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
+// originResolver decide de onde veio uma requisição.
+//
+// Sem proxies confiáveis, a origem é o endereço da conexão, e ponto.
+// Atrás de um proxy reverso, todas as requisições chegam dele e dividiriam
+// um balde só; por isso o operador pode declarar os proxies dele
+// (UPWATCH_TRUSTED_PROXIES), e só quando a conexão vem de um deles o
+// X-Forwarded-For é lido. Ler o cabeçalho de qualquer um deixaria o
+// próprio atacante escolher a origem a cada requisição e anularia o
+// limite.
+type originResolver struct {
+	trusted []netip.Prefix
+}
+
+// origin é a chave do balde: o endereço IPv4, ou o /64 do IPv6.
+func (o originResolver) origin(r *http.Request) string {
+	addr, ok := parseAddr(r.RemoteAddr)
+	if !ok {
 		return r.RemoteAddr
 	}
-	return host
+	if o.isTrusted(addr) {
+		addr = o.forwardedClient(r, addr)
+	}
+	if addr.Is6() {
+		return netip.PrefixFrom(addr, ipv6PrefixBits).Masked().String()
+	}
+	return addr.String()
+}
+
+// forwardedClient percorre o X-Forwarded-For da direita para a esquerda e
+// para no primeiro endereço que não é proxy confiável: é o cliente. Os
+// da esquerda dele foram escritos pelo próprio cliente e não valem nada.
+//
+// Se todos forem proxies, vale o mais à esquerda; se um não se ler como
+// endereço, vale o último proxy lido, que é o que se sabe com certeza.
+func (o originResolver) forwardedClient(r *http.Request, peer netip.Addr) netip.Addr {
+	var hops []string
+	for _, v := range r.Header.Values("X-Forwarded-For") {
+		hops = append(hops, strings.Split(v, ",")...)
+	}
+
+	client := peer
+	for i := len(hops) - 1; i >= 0; i-- {
+		addr, ok := parseAddr(strings.TrimSpace(hops[i]))
+		if !ok {
+			return client
+		}
+		client = addr
+		if !o.isTrusted(addr) {
+			return client
+		}
+	}
+	return client
+}
+
+func (o originResolver) isTrusted(addr netip.Addr) bool {
+	for _, p := range o.trusted {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+// parseAddr lê um endereço com ou sem porta. IPv4 escrito como IPv6
+// ("::ffff:1.2.3.4") volta como IPv4, para cair no mesmo balde.
+func parseAddr(s string) (netip.Addr, bool) {
+	if ap, err := netip.ParseAddrPort(s); err == nil {
+		return ap.Addr().WithZone("").Unmap(), true
+	}
+	addr, err := netip.ParseAddr(s)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	// Zona ("fe80::1%eth0") não muda quem é o cliente, e com ela cada
+	// interface viraria um balde.
+	return addr.WithZone("").Unmap(), true
 }

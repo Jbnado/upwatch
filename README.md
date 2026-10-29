@@ -220,6 +220,7 @@ configuração nenhuma e uma instalação séria versiona o YAML.
 | `UPWATCH_SECRET_KEY` | vazio | Chave (base64 de 32 bytes) que cifra as credenciais no banco; vazia, o SQLite usa a gerada ao lado do banco; aceita `_FILE` (ver [Segredos](#segredos)) |
 | `UPWATCH_RESTRICT_PRIVATE_TARGETS` | `true` | Recusa, para contas com acesso restrito a grupos, monitor cujo alvo resolva para a rede interna do servidor, no cadastro e na conexão |
 | `UPWATCH_REQUIRE_2FA_ADMIN` | `false` | Exige verificação em duas etapas de todo administrador: quem entra sem ela só consegue cadastrá-la (ver [Verificação em duas etapas](#verificação-em-duas-etapas)) |
+| `UPWATCH_TRUSTED_PROXIES` | vazio | Proxies reversos na frente da instalação, em CIDR ou endereço, separados por vírgula (`10.0.0.0/8, 192.168.1.10`); só de uma conexão vinda deles o `X-Forwarded-For` é lido nos limites por origem (ver [Limites por origem](#limites-por-origem)) |
 
 Durações aceitam sufixo de dias: `90d` é o mesmo que `2160h`.
 
@@ -274,6 +275,26 @@ uma conta restrita mudar o destino de novo. Desligar a regra desliga as
 duas conferências, inclusive para o monitor já salvo. A sonda
 (`upwatch-probe`) não faz nenhuma das duas: ela roda dentro da rede
 privada justamente para alcançá-la.
+
+### Limites por origem
+
+O login (os dois passos, num balde só: 30 de rajada, 10 por minuto
+depois disso), o `POST /api/v1/setup` e o push limitam a taxa por
+origem, além do bloqueio por conta do login (cinco falhas, quinze
+minutos). Acima do limite, 429 com `Retry-After`. A origem é o endereço
+da conexão; no IPv6, o bloco /64 inteiro, que é o que um provedor
+entrega a um cliente só.
+
+Atrás de proxy reverso, todos os clientes chegam do proxy e dividiriam o
+mesmo limite. **`UPWATCH_TRUSTED_PROXIES`** resolve: declare ali os
+endereços dos proxies, e de uma conexão vinda deles o cliente passa a
+ser lido do `X-Forwarded-For` — o primeiro endereço, da direita para a
+esquerda, que não é um dos proxies declarados. O que fica à esquerda dele
+foi escrito pelo próprio cliente e é ignorado. Vazio, o padrão, nunca lê
+o cabeçalho: de qualquer conexão, ele deixaria quem ataca escolher a
+própria origem a cada pedido. Declare só o que de fato é o seu proxy, e
+confira que ele sobrescreve ou acrescenta o `X-Forwarded-For` em vez de
+repassar o do cliente sozinho.
 
 ## Segredos
 
@@ -372,7 +393,9 @@ No login, a senha certa de uma conta com segundo fator não abre sessão:
 devolve um desafio que vale cinco minutos, aceita cinco códigos e serve
 uma vez. Código errado conta no mesmo bloqueio da senha errada (cinco
 falhas, quinze minutos). Senha errada responde igual com ou sem segundo
-fator, para não revelar quais contas o têm. A API está descrita em
+fator, para não revelar quais contas o têm. Começar o cadastro pede a
+senha atual, que também conta no bloqueio: com a sessão só, quem roubou
+o cookie cadastraria o próprio aplicativo e deixaria o dono de fora. A API está descrita em
 `/api/v1/openapi.yaml` (`/auth/login/2fa` e `/auth/2fa/*`).
 
 **`UPWATCH_REQUIRE_2FA_ADMIN`** vem desligado, para uma atualização não
@@ -975,7 +998,8 @@ atrás de VPN. O sinal vai para `/api/v1/push/{token}`, por `GET` ou
 `POST`, sem sessão — o token no caminho é a credencial. Cada token
 pertence a um monitor só, e o endpoint limita a taxa por origem (300 de
 rajada, 5 por segundo depois disso; acima, 429 com `Retry-After`). Atrás de
-proxy reverso, todos os crons dividem o limite do proxy.
+proxy reverso, todos os crons dividem o limite do proxy, a menos que ele
+esteja em `UPWATCH_TRUSTED_PROXIES` (ver [Limites por origem](#limites-por-origem)).
 
 ```bash
 # Estou vivo (o mesmo que status=up)
