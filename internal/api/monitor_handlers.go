@@ -38,6 +38,9 @@ type monitorRequest struct {
 	// GroupID nulo é "Sem grupo". Como o resto do corpo, o PUT sobrescreve:
 	// omitir move o monitor para "Sem grupo".
 	GroupID *int64 `json:"group_id,omitempty"`
+	// ReminderMinutes nulo herda do grupo; zero desliga. Omitir no PUT
+	// volta a herdar.
+	ReminderMinutes *int `json:"reminder_minutes,omitempty"`
 }
 
 // toDomain converte o corpo recebido, aplicando os padrões.
@@ -69,6 +72,7 @@ func (req monitorRequest) toDomain() (domain.Monitor, error) {
 		Config:                req.Config,
 		ParentID:              req.ParentID,
 		GroupID:               req.GroupID,
+		ReminderInterval:      minutesToDuration(req.ReminderMinutes),
 		Enabled:               enabled,
 		// Normalizada na entrada, não na leitura: "Produção" e "produção"
 		// digitadas em momentos diferentes viram o mesmo grupo, e quem
@@ -90,6 +94,7 @@ type monitorResponse struct {
 	Config                json.RawMessage `json:"config,omitempty"`
 	ParentID              *int64          `json:"parent_id,omitempty"`
 	GroupID               *int64          `json:"group_id"`
+	ReminderMinutes       *int            `json:"reminder_minutes"`
 	Enabled               bool            `json:"enabled"`
 	Tags                  []string        `json:"tags"`
 	CreatedAt             time.Time       `json:"created_at"`
@@ -127,6 +132,7 @@ func toMonitorResponse(m domain.Monitor, to checker.Audience) monitorResponse {
 		Config:                checker.RedactConfig(m.Type, m.Config, to),
 		ParentID:              m.ParentID,
 		GroupID:               m.GroupID,
+		ReminderMinutes:       durationToMinutes(m.ReminderInterval),
 		Enabled:               m.Enabled, Tags: tags,
 		CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt,
 	}

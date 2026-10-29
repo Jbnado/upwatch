@@ -124,7 +124,7 @@ func (t *teams) Send(ctx context.Context, n Notification) error {
 // mostra em branco o cartão com recurso que ele não conhece, e o aviso
 // some sem erro do lado de cá.
 func teamsCard(n Notification, frase string) map[string]any {
-	estilo, cor, rotulo := teamsEstado(n.Event)
+	estilo, cor, rotulo := teamsEstado(n)
 
 	titulo := n.Monitor.Name
 	if n.Group != "" {
@@ -196,11 +196,17 @@ func teamsCard(n Notification, frase string) map[string]any {
 }
 
 // teamsEstado é o estilo do cabeçalho, a cor e o rótulo do estado.
-func teamsEstado(e domain.StateChange) (estilo, cor, rotulo string) {
-	switch e.Kind {
-	case domain.ChangeDown:
+//
+// O lembrete tem rótulo próprio, com a mesma urgência da queda: quem lê
+// precisa ver de relance que não é uma queda nova, e sim a mesma que
+// ninguém resolveu.
+func teamsEstado(n Notification) (estilo, cor, rotulo string) {
+	switch {
+	case n.Reminder:
+		return "attention", "Attention", "AINDA FORA DO AR"
+	case n.Event.Kind == domain.ChangeDown:
 		return "attention", "Attention", "FORA DO AR"
-	case domain.ChangeDegraded:
+	case n.Event.Kind == domain.ChangeDegraded:
 		return "warning", "Warning", "DEGRADADO"
 	default:
 		return "good", "Good", "VOLTOU"

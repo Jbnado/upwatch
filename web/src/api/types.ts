@@ -32,6 +32,11 @@ export type Monitor = {
   parent_id?: number;
   /** Grupo folha do monitor; null é "Sem grupo". */
   group_id?: number | null;
+  /**
+   * Minutos entre lembretes de uma queda aberta e não reconhecida. null
+   * herda do grupo; 0 desliga.
+   */
+  reminder_minutes?: number | null;
   enabled: boolean;
   tags: string[];
   created_at: string;
@@ -55,6 +60,8 @@ export type MonitorInput = {
   group_id?: number | null;
   /** O PUT sobrescreve: omitir desliga o pai. */
   parent_id?: number | null;
+  /** O PUT sobrescreve: omitir volta a herdar. */
+  reminder_minutes?: number | null;
 };
 
 /**
@@ -101,6 +108,15 @@ export type Summary = {
    * "sem sinal — pai fora" no lugar do estado: a falha não é dele.
    */
   affected_by?: AffectedBy;
+  /** Quem disse estar olhando a queda aberta; ausente sem reconhecimento. */
+  acknowledgement?: Acknowledgement;
+};
+
+/** O "estou vendo" de alguém sobre uma queda aberta. */
+export type Acknowledgement = {
+  by: string;
+  at: string;
+  note?: string;
 };
 
 export type SummaryPoint = {
@@ -153,8 +169,18 @@ export type Group = {
   parent_id: number | null;
   /** Nome completo, como "RPA / prod". */
   path: string;
+  /** Lembrete dos monitores que não escolheram o próprio; null herda, 0 desliga. */
+  reminder_minutes?: number | null;
   created_at: string;
   updated_at: string;
+};
+
+export type GroupInput = {
+  name: string;
+  slug?: string;
+  parent_id?: number;
+  /** O PUT sobrescreve: omitir volta a herdar. */
+  reminder_minutes?: number | null;
 };
 
 /**
@@ -262,7 +288,15 @@ export type Channel = {
   enabled: boolean;
   created_at: string;
   updated_at: string;
+  /** Onde o canal está ligado direto; para conta com escopo, só o dela. */
+  targets?: ChannelTargets;
 };
+
+/**
+ * Grupos e monitores ligados ao canal. Grupo vale para os monitores dele
+ * e, no sistema, para os ambientes, inclusive os criados depois.
+ */
+export type ChannelTargets = { group_ids: number[]; monitor_ids: number[] };
 
 /** O canal com a configuração para editar, que só volta a quem pode salvá-la. */
 export type ChannelDetail = Channel & { config?: ConfigEditavel };
@@ -272,6 +306,8 @@ export type ChannelInput = {
   type: ChannelType;
   enabled?: boolean;
   config: ConfigCanal | ConfigEmail | ConfigNtfy;
+  /** Troca todos os vínculos junto; ausente na edição, mantém os atuais. */
+  targets?: ChannelTargets;
 };
 
 export type Incident = {
@@ -282,6 +318,9 @@ export type Incident = {
   duration_seconds: number;
   cause?: string;
   open: boolean;
+  acknowledgement: Acknowledgement | null;
+  /** Último lembrete enviado sobre a queda. */
+  reminded_at?: string;
 };
 
 export type Page<T> = {

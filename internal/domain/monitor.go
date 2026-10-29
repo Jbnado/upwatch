@@ -146,6 +146,10 @@ type Monitor struct {
 	// toda instalação anterior aos grupos cai na migração.
 	GroupID *int64 `json:"group_id,omitempty"`
 
+	// ReminderInterval é de quanto em quanto tempo uma queda aberta e não
+	// reconhecida é relembrada. Nulo herda do grupo; zero desliga.
+	ReminderInterval *time.Duration `json:"reminder_interval,omitempty"`
+
 	Enabled bool     `json:"enabled"`
 	Tags    []string `json:"tags,omitempty"`
 
@@ -216,6 +220,9 @@ func (m Monitor) Validate() error {
 	}
 	if m.ParentID != nil && *m.ParentID == m.ID && m.ID != 0 {
 		return invalid("parent_id", "um monitor não pode ser pai de si mesmo")
+	}
+	if err := ValidateReminderInterval(m.ReminderInterval); err != nil {
+		return err
 	}
 	if err := validateTags(m.Tags); err != nil {
 		return err

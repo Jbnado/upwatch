@@ -14,6 +14,7 @@ import {
   Select,
 } from "../components/ui";
 import { crumb } from "../lib/groups";
+import { herdado, lerLembrete, opcoesLembrete, valorLembrete } from "../lib/reminders";
 import { NO_CHANNEL_LINK_HINT, canLinkChannels, canRenameGroup } from "../lib/scope";
 import { channelTypeLabel } from "./Channels";
 
@@ -335,7 +336,12 @@ function GroupRow({
         />
       )}
 
-      {aberto === "avisos" && <CanaisDoGrupo group={group} vincula={canLinkChannels(scope)} />}
+      {aberto === "avisos" && (
+        <div className="flex flex-col gap-2">
+          <LembreteDoGrupo group={group} groups={groups} onChanged={onChanged} />
+          <CanaisDoGrupo group={group} vincula={canLinkChannels(scope)} />
+        </div>
+      )}
     </div>
   );
 }
@@ -372,6 +378,8 @@ function EditarGrupo({
       await api.updateMonitorGroup(group.id, {
         name: nome,
         parent_id: pai ? Number(pai) : undefined,
+        // O PUT sobrescreve: sem repetir o lembrete, renomear o desligaria.
+        reminder_minutes: group.reminder_minutes ?? null,
       });
       await onDone();
     } catch (e) {
@@ -416,6 +424,64 @@ function EditarGrupo({
         </Button>
       </span>
     </form>
+  );
+}
+
+/**
+ * LembreteDoGrupo escolhe de quanto em quanto tempo a queda aberta de um
+ * monitor do grupo é relembrada, para os que não escolheram o próprio.
+ * Mora junto dos canais porque responde à mesma pergunta: quem fica
+ * sabendo, e quantas vezes.
+ *
+ * Grava ao escolher, como as caixas de canal ao lado. O PUT leva nome,
+ * slug e pai como estão: é a mesma rota da edição, e só o lembrete muda.
+ */
+function LembreteDoGrupo({
+  group,
+  groups,
+  onChanged,
+}: {
+  group: Group;
+  groups: Group[];
+  onChanged: () => Promise<void>;
+}) {
+  const [valor, setValor] = useState(valorLembrete(group.reminder_minutes));
+  const [erro, setErro] = useState<string | null>(null);
+
+  async function mudar(novo: string) {
+    const anterior = valor;
+    setValor(novo);
+    setErro(null);
+    try {
+      await api.updateMonitorGroup(group.id, {
+        name: group.name,
+        slug: group.slug,
+        parent_id: group.parent_id ?? undefined,
+        reminder_minutes: lerLembrete(novo),
+      });
+      await onChanged();
+    } catch (e) {
+      setValor(anterior);
+      setErro(e instanceof ApiError ? e.message : "Não foi possível mudar o lembrete.");
+    }
+  }
+
+  return (
+    <div className="max-w-sm">
+      <Field
+        label="relembrar queda aberta"
+        hint="Enquanto ninguém disser que está olhando, o aviso se repete."
+        error={erro ?? undefined}
+      >
+        <Select value={valor} onChange={(e) => void mudar(e.target.value)}>
+          {opcoesLembrete(lerLembrete(valor), herdado(group.parent_id, groups)).map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </Select>
+      </Field>
+    </div>
   );
 }
 

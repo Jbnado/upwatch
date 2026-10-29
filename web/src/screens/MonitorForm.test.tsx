@@ -89,3 +89,37 @@ describe("MonitorForm e o pai", () => {
     expect(vi.mocked(api.updateMonitor).mock.lastCall?.[1]).toMatchObject({ parent_id: null });
   });
 });
+
+/**
+ * O lembrete. O PUT sobrescreve, e omitir volta a herdar: o formulário que
+ * não carrega o intervalo religaria, a cada edição, o lembrete que alguém
+ * desligou de propósito.
+ */
+describe("MonitorForm e o lembrete", () => {
+  it("mantém o desligado ao salvar uma edição", async () => {
+    vi.mocked(api.getMonitor).mockResolvedValue({ ...REDIS, reminder_minutes: 0 });
+    render(<MonitorForm id={2} />);
+    const campo = await screen.findByRole("combobox", { name: /relembrar queda aberta/ });
+    await waitFor(() => expect(campo).toHaveValue("0"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Salvar alterações" }));
+
+    await waitFor(() => expect(api.updateMonitor).toHaveBeenCalled());
+    expect(vi.mocked(api.updateMonitor).mock.lastCall?.[1]).toMatchObject({ reminder_minutes: 0 });
+  });
+
+  it("diz o que herdar vai dar", async () => {
+    vi.mocked(api.listGroups).mockResolvedValue({ items: [SONDAS, { ...PROD, reminder_minutes: 30 }] });
+    render(<MonitorForm id={2} />);
+    const campo = await screen.findByRole("combobox", { name: /relembrar queda aberta/ });
+
+    await waitFor(() =>
+      expect(within(campo).getByRole("option", { name: "herdar de prod (a cada 30 min)" })).toBeInTheDocument(),
+    );
+    fireEvent.change(campo, { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Salvar alterações" }));
+
+    await waitFor(() => expect(api.updateMonitor).toHaveBeenCalled());
+    expect(vi.mocked(api.updateMonitor).mock.lastCall?.[1]).toMatchObject({ reminder_minutes: null });
+  });
+});

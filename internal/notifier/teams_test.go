@@ -163,6 +163,37 @@ func TestTeamsSendsAnAdaptiveCardForARecovery(t *testing.T) {
 	}`))
 }
 
+// O lembrete leva a mesma urgência da queda, com rótulo próprio: quem lê
+// precisa ver que é a mesma queda que segue aberta, e não uma nova.
+func TestTeamsSendsAnAdaptiveCardForAReminder(t *testing.T) {
+	comURLPublica(t, "https://upwatch.exemplo.com")
+	n, corpo := teamsCapture(t, `{"url":"$URL"}`)
+
+	if err := send(t, n, reminder(2*time.Hour+30*time.Minute)); err != nil {
+		t.Fatalf("Send returned unexpected error: %v", err)
+	}
+
+	assertJSON(t, corpo(), mensagemTeams(`{
+		"$schema":"http://adaptivecards.io/schemas/adaptive-card.json",
+		"type":"AdaptiveCard","version":"1.4",
+		"msteams":{"width":"Full"},
+		"body":[
+			{"type":"Container","style":"attention","bleed":true,"items":[
+				{"type":"TextBlock","text":"AINDA FORA DO AR","weight":"Bolder","color":"Attention","size":"Small","wrap":true},
+				{"type":"TextBlock","text":"api de produção","weight":"Bolder","size":"Large","wrap":true,"spacing":"None"}
+			]},
+			{"type":"TextBlock","text":"api de produção continua fora do ar há 2 h 30 min: status 502 fora do esperado","wrap":true},
+			{"type":"FactSet","facts":[
+				{"title":"Causa","value":"status 502 fora do esperado"},
+				{"title":"Duração","value":"2 h 30 min"},
+				{"title":"Alvo","value":"https://api.exemplo.com/health"}
+			]},
+			{"type":"TextBlock","text":"{{DATE(2026-07-28T14:30:00Z, SHORT)}} {{TIME(2026-07-28T14:30:00Z)}}","isSubtle":true,"size":"Small","wrap":true}
+		],
+		"actions":[{"type":"Action.OpenUrl","title":"Abrir no UpWatch","url":"https://upwatch.exemplo.com/monitors/7"}]
+	}`))
+}
+
 // O botão Testar manda um monitor sem id: o link vai para o painel, e o
 // cartão sai igual ao de uma volta de verdade.
 func TestTeamsTestNotificationRenders(t *testing.T) {

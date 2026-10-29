@@ -17,6 +17,7 @@ import { opcoesDePai } from "../lib/dependencies";
 import { navigate } from "../lib/router";
 import { ehProtocolo, lerProtocolo, montarProtocolo, protocoloVazio } from "../lib/protocol-config";
 import { ProtocolFields } from "./ProtocolFields";
+import { herdado, lerLembrete, opcoesLembrete, valorLembrete } from "../lib/reminders";
 
 /**
  * Cadastro e edição de alvo.
@@ -171,6 +172,7 @@ export function MonitorForm({ id }: { id?: number }) {
         group_id: m.group_id,
         // O PUT sobrescreve: sem carregar o pai, toda edição o apagaria.
         parent_id: m.parent_id ?? null,
+        reminder_minutes: m.reminder_minutes ?? null,
       });
       const push = lerPush(m.config, fusoLocal());
       setPushToken(push.token);
@@ -451,6 +453,23 @@ export function MonitorForm({ id }: { id?: number }) {
             />
           </Field>
         </div>
+
+        <Field
+          label="relembrar queda aberta"
+          hint="Enquanto ninguém disser que está olhando, o aviso se repete com há quanto tempo dura."
+          error={erroDe("reminder_minutes")}
+        >
+          <Select
+            value={valorLembrete(form.reminder_minutes)}
+            onChange={(e) => set("reminder_minutes", lerLembrete(e.target.value))}
+          >
+            {opcoesLembrete(form.reminder_minutes, herdado(form.group_id, grupos)).map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </Select>
+        </Field>
 
         {form.type === "http" && (
           <AssercoesJSON

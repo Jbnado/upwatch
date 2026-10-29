@@ -34,6 +34,10 @@ type Group struct {
 	// sistema do ambiente.
 	ParentID *int64 `json:"parent_id,omitempty"`
 
+	// ReminderInterval vale para os monitores do grupo que não escolheram
+	// o próprio. Nulo herda do sistema (ou da instalação); zero desliga.
+	ReminderInterval *time.Duration `json:"reminder_interval,omitempty"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -53,6 +57,9 @@ func (g Group) Validate() error {
 	}
 	if g.ParentID != nil && g.ID != 0 && *g.ParentID == g.ID {
 		return invalid("parent_id", "um grupo não pode ser pai de si mesmo")
+	}
+	if err := ValidateReminderInterval(g.ReminderInterval); err != nil {
+		return err
 	}
 	return nil
 }

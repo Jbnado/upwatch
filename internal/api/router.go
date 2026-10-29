@@ -309,6 +309,8 @@ func (a *API) routes() http.Handler {
 			// "Definir pai" para vários monitores de uma vez: o {id} é o
 			// pai, e cada filho é conferido contra o escopo no handler.
 			t.handle(http.MethodPost, "/monitors/{id}/children", policyMonitor, a.handleSetChildren)
+			// "Estou vendo": cala os lembretes daquela queda.
+			t.handle(http.MethodPost, "/monitors/{id}/incidents/{incidentID}/ack", policyMonitor, a.handleAcknowledgeIncident)
 			t.handle(http.MethodDelete, "/monitors/{id}/children/{childID}", policyMonitor, a.handleUnlinkChild)
 
 			t.handle(http.MethodPut, "/monitors/{id}/channels/{channelID}", policyFullScope|policyMonitor, a.handleLinkChannel)
@@ -327,6 +329,9 @@ func (a *API) routes() http.Handler {
 
 			t.handle(http.MethodPost, "/channels", policyFullScope, a.handleCreateChannel)
 			t.handle(http.MethodPut, "/channels/{id}", policyFullScope, a.handleUpdateChannel)
+			// Todos os vínculos do canal de uma vez, como o formulário dele
+			// salva. Mesma exigência dos vínculos avulsos.
+			t.handle(http.MethodPut, "/channels/{id}/targets", policyFullScope, a.handleSetChannelTargets)
 			t.handle(http.MethodDelete, "/channels/{id}", policyFullScope, a.handleDeleteChannel)
 			// Entrega um aviso de exemplo. Sem isto, a única forma de saber
 			// que o canal funciona seria esperar uma queda de verdade.

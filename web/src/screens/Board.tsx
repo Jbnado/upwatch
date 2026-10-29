@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { api } from "../api/client";
-import type { AffectedBy, Monitor, Status, Summary as SummaryDTO } from "../api/types";
+import type { Acknowledgement, AffectedBy, Monitor, Status, Summary as SummaryDTO } from "../api/types";
 import { Pulse } from "../components/Pulse";
 import type { PulseSample } from "../components/pulse-bars";
 import { RangePicker } from "../components/RangePicker";
@@ -19,6 +19,7 @@ import { aninharDependentes, rotuloCalado } from "../lib/dependencies";
 import { ago, latency, uptime } from "../lib/format";
 import { byProblem, crumb, matches, shortName, type StateFilter } from "../lib/groups";
 import { DEFAULT_RANGE, windowFor, type Range } from "../lib/ranges";
+import { vistoPor } from "../lib/reminders";
 import { navigate } from "../lib/router";
 import { isStale } from "../lib/series";
 
@@ -54,6 +55,8 @@ type Reading = {
   lastCheckAt?: string | null;
   /** O pai em queda que cala o monitor, quando há. */
   affectedBy?: AffectedBy;
+  /** Quem disse estar olhando a queda aberta. */
+  acknowledgement?: Acknowledgement;
 };
 
 /** O grupo que a lista mostra; id nulo é "Sem grupo". */
@@ -405,6 +408,13 @@ function Row({
             {rotuloCalado(reading.affectedBy)}
           </span>
         )}
+        {reading.acknowledgement && status === "down" && (
+          // Quem chega ao painel durante a queda precisa saber que alguém
+          // já está nela, antes de abrir o detalhe e começar do zero.
+          <span className="shrink-0 truncate text-micro text-ink-3" title={reading.acknowledgement.note || undefined}>
+            {vistoPor(reading.acknowledgement)}
+          </span>
+        )}
         {stale && (
           // Monitor que parou de ser verificado é uma falha própria, não
           // do alvo; sem este aviso ela passaria por "tudo estável".
@@ -715,6 +725,7 @@ function leitura(monitor: Monitor, resumo: SummaryDTO | undefined): Reading {
     // o último estado confirmado, que diria "no ar" sem ninguém conferir.
     status: resumo.affected_by ? "unknown" : resumo.status,
     affectedBy: resumo.affected_by,
+    acknowledgement: resumo.acknowledgement,
     uptimePercent: resumo.uptime_percent,
     p95: resumo.latency_p95_ms,
     lastCheckAt: resumo.last_check_at,
