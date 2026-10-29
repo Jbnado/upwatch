@@ -486,6 +486,20 @@ vem vazio para monitor sem grupo — monitores costumam se chamar só `api`
 ou `front`, e é o grupo que diz qual sistema caiu. Pelo mesmo motivo, a
 frase padrão traz o grupo entre parênteses depois do nome.
 
+Os cabeçalhos de `headers` existem para autenticar contra o destino, e
+por isso exigem `https://`: por `http://` eles atravessariam a rede em
+claro. A exceção é o loopback (`localhost`, `127.0.0.1`, `::1`), que não
+sai da máquina — a mesma regra do token do ntfy. A recusa vale ao criar e
+ao editar o canal; um canal gravado antes dela, com `http://` e
+cabeçalho, continua entregando, e a regra aparece na próxima vez que ele
+for salvo.
+
+Nenhum canal segue redirecionamento. Num 307 ou 308 para outro host, o
+cliente HTTP do Go só tira `Authorization` e `Cookie`, e um `X-Api-Key`
+iria junto para quem redirecionou. A resposta 3xx conta como falha da
+entrega, com o motivo — "o canal respondeu com redirecionamento" —, e
+não é repetida: cadastre o endereço final.
+
 `event` diz o que o aviso conta: `transition` é a mudança de estado, e
 `reminder` é o [lembrete](#o-que-ele-faz) de uma queda que segue aberta.
 No lembrete os outros campos continuam os da queda — mesmo `monitor_id`,
@@ -557,14 +571,42 @@ deles para escrever uma frase. Um modelo que tenta ler campo que não está
 na lista, como `.Monitor.Config`, é recusado no cadastro. Os marcadores de
 `body_template` seguem a mesma regra.
 
-Nome, alvo e causa vêm de fora — a causa de um monitor push é escrita por
-quem bate no UpWatch —, então não viram menção em massa. No Discord, o
-aviso vai com `allowed_mentions` vazio, e um `@everyone` na causa chega
-como texto, sem pingar ninguém. No Slack, `<`, `>` e `&` desses campos são
-escapados, e `<!channel>` ou um link disfarçado chegam como texto; o que
-você escreve no próprio `template`, como um link para o runbook, passa
-intacto. No Teams, menção só existe quando o cartão a declara, e o
-UpWatch não declara nenhuma.
+A execução de um modelo não pode ser interrompida no meio, então o que ele
+pode fazer é limitado antes de rodar, e o cadastro recusa o que passa
+disso:
+
+- o modelo tem até 8 KiB;
+- `range` só percorre as etiquetas (`{{range .Monitor.Tags}}`), e sem
+  outro `range` dentro — `{{range 1000000000}}` ou `{{range .Monitor.ID}}`
+  dariam bilhões de voltas;
+- `define`, `template` e `block` não são aceitos: com eles, um modelo
+  chama a si mesmo e o trabalho dobra a cada chamada;
+- o texto produzido, e cada texto montado com `print`, `printf`, `html`,
+  `js` ou `urlquery`, tem até 64 KiB, e o `printf` não aceita largura ou
+  precisão acima de 1000 nem vinda de argumento (`%*d`).
+
+Na hora do aviso, o modelo que passa de 64 KiB — a causa de verdade pode
+ser bem maior que a do ensaio no cadastro — dá lugar à frase padrão, e o
+aviso sai do mesmo jeito.
+
+Nome, grupo, alvo e causa vêm de fora — a causa de um monitor push é
+escrita por quem bate no UpWatch —, então não viram menção em massa nem
+formatação. O que você escreve no próprio `template`, como um link para o
+runbook, passa intacto em todos os canais.
+
+- **Discord:** o aviso vai com `allowed_mentions` vazio, e um `@everyone`
+  na causa chega como texto, sem pingar ninguém. O Markdown desses campos
+  é escapado com barra invertida (`` \ * _ ~ ` | > # - [ ] ( ) ``), e
+  `[Reautentique aqui](https://…)` chega como texto, não como link
+  disfarçado. Um endereço solto (`https://…`) fica como está, porque o
+  Discord faz o link pelo texto cru e o escape o quebraria.
+- **Slack:** `<`, `>` e `&` são escapados, e `<!channel>` ou um link
+  disfarçado chegam como texto.
+- **Teams:** menção só existe quando o cartão a declara, e o UpWatch não
+  declara nenhuma. O Markdown é escapado como no Discord (mais `+`), no
+  título, na frase, na causa e no alvo, e as chaves também: um
+  `{{DATE(...)}}` ou `{{TIME(...)}}` na causa chega como texto, sem virar
+  data. O horário que o próprio cartão mostra continua no fuso de quem lê.
 
 Os campos avançados também estão na interface, em Ajustes → Canais de
 aviso, atrás de "cabeçalhos e formato do corpo".
