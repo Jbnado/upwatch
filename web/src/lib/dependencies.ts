@@ -1,4 +1,5 @@
 import type { AffectedBy, Group, Monitor } from "../api/types";
+import type { LockedBox } from "./service-tree";
 
 /**
  * Monitores dependentes, do lado da tela.
@@ -127,13 +128,15 @@ export function aninharDependentes<T>(
 }
 
 /**
- * candidatosAFilho são os monitores que podem passar a depender do pai:
- * nem ele, nem os ancestrais dele (fecharia ciclo), nem quem já depende.
+ * travasDeFilho são as caixas que não se marcam ao ligar dependentes ao
+ * pai: ele e os ancestrais dele (fechariam ciclo), vazios, e quem já
+ * depende dele, marcados. Ficam à vista, com o porquê, em vez de sumir
+ * da árvore: sumidos, a pessoa procuraria o monitor sem achar.
  */
-export function candidatosAFilho(pai: number, monitores: Monitor[]): Monitor[] {
-  const proibidos = ancestrais(pai, monitores);
-  proibidos.add(pai);
-  return monitores
-    .filter((m) => !proibidos.has(m.id) && m.parent_id !== pai)
-    .sort(porNome);
+export function travasDeFilho(pai: number, monitores: Monitor[]): Map<number, LockedBox> {
+  const travas = new Map<number, LockedBox>();
+  for (const m of filhosDe(pai, monitores)) travas.set(m.id, { checked: true, reason: "já depende deste" });
+  for (const id of ancestrais(pai, monitores)) travas.set(id, { checked: false, reason: "este depende dele" });
+  travas.set(pai, { checked: false, reason: "é este monitor" });
+  return travas;
 }

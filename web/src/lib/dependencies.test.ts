@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Group, Monitor } from "../api/types";
-import { aninharDependentes, candidatosAFilho, filhosDe, opcoesDePai, rotuloCalado } from "./dependencies";
+import { aninharDependentes, filhosDe, opcoesDePai, rotuloCalado, travasDeFilho } from "./dependencies";
 
 /**
  * Monitores dependentes: a sonda (pai) e as verificações dela (filhos).
@@ -80,8 +80,14 @@ describe("filhos", () => {
     expect(filhosDe(1, [avo, pai, filho, solto]).map((m) => m.id)).toEqual([2]);
   });
 
-  it("oferece para ligar só quem não fecha ciclo nem já está ligado", () => {
-    expect(candidatosAFilho(1, [avo, pai, filho, solto]).map((m) => m.id)).toEqual([3]);
+  it("trava quem fecharia ciclo e quem já está ligado, dizendo por quê", () => {
+    const travas = travasDeFilho(1, [avo, pai, filho, solto]);
+
+    expect(Object.fromEntries(travas)).toEqual({
+      0: { checked: false, reason: "este depende dele" },
+      1: { checked: false, reason: "é este monitor" },
+      2: { checked: true, reason: "já depende deste" },
+    });
   });
 });
 

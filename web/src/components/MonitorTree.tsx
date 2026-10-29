@@ -9,13 +9,11 @@ import {
   openByDefault,
   subtreeIds,
   toggleNode,
+  type LockedBox,
   type ServiceNode,
 } from "../lib/service-tree";
 import { CheckTree, type TreeItem } from "./CheckTree";
 import { InlineLink, Input } from "./ui";
-
-/** Caixa que o clique não muda, com o porquê ao lado. */
-export type LockedBox = { checked: boolean; reason: string };
 
 /**
  * MonitorTree mostra e escolhe monitores pela árvore Sistema › Ambiente ›
@@ -75,11 +73,16 @@ export function MonitorTree({
   const travados = useMemo(() => new Set(locked?.keys() ?? []), [locked]);
 
   // Abertos na primeira vez em que há dados: os ambientes com algo
-  // marcado. Depois, quem manda é a pessoa — marcar um serviço não
-  // deveria abrir nem fechar nada sozinho. Sem caixas, tudo começa
-  // aberto: a árvore é para ler.
+  // marcado, travado ou não. Depois, quem manda é a pessoa — marcar um
+  // serviço não deveria abrir nem fechar nada sozinho. Sem caixas, tudo
+  // começa aberto: a árvore é para ler.
   const [abertos, setAbertos] = useState<Set<string> | null>(null);
-  const abertosAgora = abertos ?? (marcavel ? openByDefault(arvore, marcados) : todasAsChaves(arvore));
+  const fixosMarcados = [...(locked ?? [])].filter(([, t]) => t.checked).map(([id]) => id);
+  const abertosAgora =
+    abertos ??
+    (marcavel
+      ? openByDefault(arvore, new Set([...marcados, ...fixosMarcados]))
+      : todasAsChaves(arvore));
 
   const buscando = busca.trim() !== "";
 

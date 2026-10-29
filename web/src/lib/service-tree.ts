@@ -37,6 +37,9 @@ export type ServiceNode = {
 
 export type CheckState = "checked" | "unchecked" | "mixed";
 
+/** Caixa que o clique não muda, com o porquê ao lado. */
+export type LockedBox = { checked: boolean; reason: string };
+
 const NOMES = new Intl.Collator("pt-BR", { numeric: true, sensitivity: "base" });
 const porNome = (a: { name: string }, b: { name: string }) => NOMES.compare(a.name, b.name);
 
