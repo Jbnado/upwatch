@@ -2,8 +2,10 @@ package api_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"testing"
 	"time"
 
@@ -101,18 +103,64 @@ func TestIncidentsRejectAMalformedCursor(t *testing.T) {
 	}
 }
 
-// O after_id antigo, seguido como cursor, devolvia sempre a mesma página.
-// Recusá-lo com a indicação do parâmetro novo faz o cliente antigo falhar
-// de forma visível, em vez de continuar em laço.
-func TestIncidentsRefuseTheOldAfterID(t *testing.T) {
+// Quem já integra pelo after_id não pode quebrar: ele continua aceito,
+// agora com o sentido corrigido (mais antigos que o id), e a resposta
+// segue trazendo next_after_id junto do next_cursor. Assim o cliente
+// antigo, que só conhece os nomes velhos, passa a percorrer o histórico
+// em vez de ficar preso na primeira página.
+func TestIncidentsKeepAfterIDAsDeprecatedAlias(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+	id := s.createMonitor(t, newMonitorBody("api"))
+	want := s.seedIncidents(t, id, 7)
+
+	var got []int64
+	after := int64(0)
+	for voltas := 0; ; voltas++ {
+		if voltas > 20 {
+			t.Fatalf("still paging after %d pages, ids so far %v", voltas, got)
+		}
+		q := url.Values{"limit": {"3"}}
+		if after != 0 {
+			q.Set("after_id", strconv.FormatInt(after, 10))
+		}
+		resp := s.do(t, http.MethodGet, "/api/v1/incidents?"+q.Encode(), nil)
+		assertStatus(t, resp, http.StatusOK)
+		page := decode[struct {
+			incidentPage
+			NextAfterID int64 `json:"next_after_id"`
+		}](t, resp)
+
+		for _, i := range page.Items {
+			got = append(got, i.ID)
+		}
+		if !page.HasMore {
+			if page.NextAfterID != 0 {
+				t.Errorf("last page carries next_after_id %d, want none", page.NextAfterID)
+			}
+			break
+		}
+		if strconv.FormatInt(page.NextAfterID, 10) != page.NextCursor {
+			t.Fatalf("next_after_id = %d and next_cursor = %q, want the same position", page.NextAfterID, page.NextCursor)
+		}
+		after = page.NextAfterID
+	}
+
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("paging by after_id returned %v, want %v", got, want)
+	}
+}
+
+// Os dois nomes juntos e discordando não têm leitura certa: escolher um
+// em silêncio devolveria a página que o cliente não pediu.
+func TestIncidentsRefuseConflictingCursorAndAfterID(t *testing.T) {
 	s := newServer(t)
 	s.setup(t)
 
-	resp := s.do(t, http.MethodGet, "/api/v1/incidents?after_id=5", nil)
-
+	resp := s.do(t, http.MethodGet, "/api/v1/incidents?cursor=5&after_id=7", nil)
 	assertStatus(t, resp, http.StatusBadRequest)
-	got := decode[map[string]map[string]string](t, resp)
-	if got["error"]["field"] != "after_id" {
-		t.Errorf("error field = %q, want after_id", got["error"]["field"])
-	}
+
+	// Iguais não é conflito: é o cliente em transição mandando os dois.
+	resp = s.do(t, http.MethodGet, "/api/v1/incidents?cursor=5&after_id=5", nil)
+	assertStatus(t, resp, http.StatusOK)
 }

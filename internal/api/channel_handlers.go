@@ -249,22 +249,9 @@ type incidentResponse struct {
 // next_cursor da página anterior) traz os incidentes mais antigos que o
 // último visto. O cursor é opaco para quem consome; hoje é o id.
 func (a *API) handleListIncidents(w http.ResponseWriter, r *http.Request) {
-	// O after_id antigo, seguido como cursor, devolvia sempre a primeira
-	// página. Ignorá-lo em silêncio manteria o cliente antigo no mesmo
-	// laço; recusá-lo diz o que mudou.
-	if r.URL.Query().Has("after_id") {
-		writeFieldError(w, "after_id", "after_id não é mais aceito; use cursor com o next_cursor da página anterior")
+	antesDe, ok := incidentCursor(w, r)
+	if !ok {
 		return
-	}
-
-	var antesDe int64
-	if raw := r.URL.Query().Get("cursor"); raw != "" {
-		id, err := strconv.ParseInt(raw, 10, 64)
-		if err != nil || id <= 0 {
-			writeFieldError(w, "cursor", "cursor inválido; use o next_cursor da página anterior")
-			return
-		}
-		antesDe = id
 	}
 
 	filter := store.IncidentFilter{
@@ -296,9 +283,41 @@ func (a *API) handleListIncidents(w http.ResponseWriter, r *http.Request) {
 
 	body := map[string]any{"items": items, "has_more": page.HasMore}
 	if page.HasMore && len(page.Items) > 0 {
-		body["next_cursor"] = strconv.FormatInt(page.Items[len(page.Items)-1].ID, 10)
+		ultimo := page.Items[len(page.Items)-1].ID
+		body["next_cursor"] = strconv.FormatInt(ultimo, 10)
+		// Obsoleto, mantido enquanto after_id for aceito: o cliente antigo
+		// só conhece este nome.
+		body["next_after_id"] = ultimo
 	}
 	writeJSON(w, http.StatusOK, body)
+}
+
+// incidentCursor lê a posição da página de incidentes.
+//
+// after_id é o nome antigo, aceito como alias obsoleto de cursor para não
+// quebrar quem já integra, com o sentido corrigido: mais antigos que o
+// id. Antes ele cortava para o lado errado e devolvia sempre a primeira
+// página. Os dois juntos e diferentes são 400, porque escolher um em
+// silêncio devolveria a página que o cliente não pediu.
+func incidentCursor(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	var antesDe int64
+	for _, nome := range []string{"cursor", "after_id"} {
+		raw := r.URL.Query().Get(nome)
+		if raw == "" {
+			continue
+		}
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || id <= 0 {
+			writeFieldError(w, nome, "cursor inválido; use o next_cursor da página anterior")
+			return 0, false
+		}
+		if antesDe != 0 && antesDe != id {
+			writeFieldError(w, "after_id", "cursor e after_id apontam posições diferentes; use só cursor")
+			return 0, false
+		}
+		antesDe = id
+	}
+	return antesDe, true
 }
 
 // ---------- auxiliares ----------
