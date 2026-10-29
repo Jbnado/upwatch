@@ -268,6 +268,7 @@ var rotas = map[string]classe{
 	"GET /api/v1/monitors/{id}":                               porMonitor,
 	"PUT /api/v1/monitors/{id}":                               porMonitor,
 	"DELETE /api/v1/monitors/{id}":                            porMonitor,
+	"POST /api/v1/monitors/{id}/children":                     porMonitor,
 	"GET /api/v1/monitors/{id}/heartbeats":                    porMonitor,
 	"GET /api/v1/monitors/{id}/rollups":                       porMonitor,
 	"GET /api/v1/monitors/{id}/export":                        porMonitor,
