@@ -283,6 +283,7 @@ var rotas = map[string]classe{
 	"PUT /api/v1/monitors/{id}":                               porMonitor,
 	"DELETE /api/v1/monitors/{id}":                            porMonitor,
 	"POST /api/v1/monitors/{id}/children":                     porMonitor,
+	"POST /api/v1/monitors/{id}/incidents/{incidentID}/ack":   porMonitor,
 	"DELETE /api/v1/monitors/{id}/children/{childID}":         porMonitor,
 	"GET /api/v1/monitors/{id}/heartbeats":                    porMonitor,
 	"GET /api/v1/monitors/{id}/rollups":                       porMonitor,
@@ -372,6 +373,7 @@ func (c *cenarioEscopo) concreto(padrao string, monitor, grupo int64) string {
 	troca("{monitorID}", monitor)
 	troca("{childID}", monitor)
 	troca("{groupID}", 1)
+	troca("{incidentID}", 1)
 	return caminho
 }
 

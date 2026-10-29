@@ -22,6 +22,9 @@ type monitorGroupRequest struct {
 	// Slug vazio é derivado do nome.
 	Slug     string `json:"slug,omitempty"`
 	ParentID *int64 `json:"parent_id,omitempty"`
+	// ReminderMinutes nulo herda; zero desliga. Como o resto do corpo, o
+	// PUT sobrescreve.
+	ReminderMinutes *int `json:"reminder_minutes,omitempty"`
 }
 
 func (req monitorGroupRequest) toDomain() domain.Group {
@@ -29,7 +32,10 @@ func (req monitorGroupRequest) toDomain() domain.Group {
 	if slug == "" {
 		slug = domain.Slugify(req.Name)
 	}
-	return domain.Group{Name: strings.TrimSpace(req.Name), Slug: slug, ParentID: req.ParentID}
+	return domain.Group{
+		Name: strings.TrimSpace(req.Name), Slug: slug, ParentID: req.ParentID,
+		ReminderInterval: minutesToDuration(req.ReminderMinutes),
+	}
 }
 
 type groupResponse struct {
@@ -39,9 +45,10 @@ type groupResponse struct {
 	ParentID *int64 `json:"parent_id"`
 	// Path é o nome completo ("RPA / prod"). Vem pronto para nenhum
 	// cliente precisar remontar a árvore para escrever um título.
-	Path      string    `json:"path"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Path            string    `json:"path"`
+	ReminderMinutes *int      `json:"reminder_minutes"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 func toGroupResponse(g domain.Group, tree domain.GroupTree) groupResponse {
@@ -51,7 +58,8 @@ func toGroupResponse(g domain.Group, tree domain.GroupTree) groupResponse {
 	}
 	return groupResponse{
 		ID: g.ID, Name: g.Name, Slug: g.Slug, ParentID: g.ParentID, Path: path,
-		CreatedAt: g.CreatedAt, UpdatedAt: g.UpdatedAt,
+		ReminderMinutes: durationToMinutes(g.ReminderInterval),
+		CreatedAt:       g.CreatedAt, UpdatedAt: g.UpdatedAt,
 	}
 }
 

@@ -42,10 +42,30 @@ type Notification struct {
 	Group string
 	// Dependents é quantos monitores ficaram calados por esta queda.
 	Dependents int
+	// Reminder marca o lembrete de uma queda que segue aberta: o estado não
+	// mudou, e Event.Duration é há quanto tempo ela dura.
+	Reminder bool
 }
+
+// Tipos de aviso, como saem no corpo do webhook.
+const (
+	KindTransition = "transition"
+	KindReminder   = "reminder"
+)
 
 // Status é o estado que passou a valer, em texto.
 func (n Notification) Status() string { return n.Event.To.String() }
+
+// Kind diz se o aviso conta uma mudança de estado ou relembra uma queda
+// aberta. Quem integra precisa distinguir: o lembrete repete o mesmo
+// monitor_id e o mesmo "down", e tratá-lo como queda nova abriria um
+// segundo chamado para o mesmo problema.
+func (n Notification) Kind() string {
+	if n.Reminder {
+		return KindReminder
+	}
+	return KindTransition
+}
 
 // Notifier entrega uma notificação por um canal.
 type Notifier interface {
@@ -133,15 +153,22 @@ func Render(n Notification) string {
 		nome += " (" + n.Group + ")"
 	}
 
-	switch n.Event.Kind {
-	case domain.ChangeDown:
+	switch {
+	case n.Reminder:
+		texto := fmt.Sprintf("%s continua fora do ar há %s", nome, humanDuration(n.Event.Duration))
+		if n.Message != "" {
+			texto += ": " + n.Message
+		}
+		return texto + dependentsNote(n.Dependents)
+
+	case n.Event.Kind == domain.ChangeDown:
 		texto := fmt.Sprintf("%s está fora do ar", nome)
 		if n.Message != "" {
 			texto += ": " + n.Message
 		}
 		return texto + dependentsNote(n.Dependents)
 
-	case domain.ChangeDegraded:
+	case n.Event.Kind == domain.ChangeDegraded:
 		texto := fmt.Sprintf("%s está degradado", nome)
 		if n.Message != "" {
 			texto += ": " + n.Message
@@ -242,6 +269,8 @@ type templateData struct {
 	Duration string
 	At       time.Time
 	Text     string
+	// Event é "transition" ou "reminder", como no corpo do webhook.
+	Event string
 }
 
 func newTemplateData(n Notification, texto string) templateData {
@@ -253,6 +282,7 @@ func newTemplateData(n Notification, texto string) templateData {
 		Group:  n.Group,
 		Status: n.Status(), Message: n.Message,
 		Duration: humanDuration(n.Event.Duration), At: n.Event.At, Text: texto,
+		Event: n.Kind(),
 	}
 }
 
@@ -264,6 +294,7 @@ var exemploModelo = templateData{
 	Group:  "RPA / prod",
 	Status: "down", Message: "status 502", Duration: "5 min",
 	At: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Text: "api (RPA / prod) está fora do ar: status 502",
+	Event: KindTransition,
 }
 
 // compileTemplate prepara o modelo do canal, se houver.

@@ -50,6 +50,10 @@ type summaryResponse struct {
 	// viram lacuna e não avisam enquanto isso durar. A interface mostra
 	// "sem sinal — pai fora" no lugar do estado. Ausente quando nada cala.
 	AffectedBy *affectedRef `json:"affected_by,omitempty"`
+	// Acknowledgement é o "estou vendo" da queda aberta. O painel mostra
+	// quem está olhando, para a segunda pessoa a chegar não ir mexer no
+	// mesmo problema sem saber.
+	Acknowledgement *domain.Acknowledgement `json:"acknowledgement,omitempty"`
 }
 
 type point struct {
@@ -122,6 +126,12 @@ func (a *API) handleSummaries(w http.ResponseWriter, r *http.Request) {
 	}
 
 	v := viewerFrom(r)
+	vistos, err := a.acknowledged(r, v)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+
 	items := make([]summaryResponse, 0, len(monitores))
 	for _, m := range monitores {
 		s, serie, err := a.summarise(r, m.ID, rng, fonte, buckets)
@@ -138,6 +148,7 @@ func (a *API) handleSummaries(w http.ResponseWriter, r *http.Request) {
 		if pai, ok := calados[m.ID]; ok {
 			resp.AffectedBy = affectedFor(v, pai)
 		}
+		resp.Acknowledgement = vistos[m.ID]
 		items = append(items, resp)
 	}
 
@@ -146,6 +157,28 @@ func (a *API) handleSummaries(w http.ResponseWriter, r *http.Request) {
 		"from":  rng.From,
 		"to":    rng.To,
 	})
+}
+
+// acknowledged devolve o reconhecimento das quedas abertas do escopo, por
+// monitor. Uma consulta para a lista inteira, como as últimas batidas.
+func (a *API) acknowledged(r *http.Request, v viewer) (map[int64]*domain.Acknowledgement, error) {
+	out := map[int64]*domain.Acknowledgement{}
+	filtro := store.IncidentFilter{OnlyOpen: true, Limit: store.MaxPageSize, Groups: v.monitorSelection()}
+	for {
+		pagina, err := a.store.Incidents().List(r.Context(), filtro)
+		if err != nil {
+			return nil, err
+		}
+		for _, i := range pagina.Items {
+			if i.Acknowledgement != nil {
+				out[i.MonitorID] = i.Acknowledgement
+			}
+		}
+		if !pagina.HasMore || len(pagina.Items) == 0 {
+			return out, nil
+		}
+		filtro.BeforeID = pagina.Items[len(pagina.Items)-1].ID
+	}
 }
 
 // summarise lê a camada adequada e resume.

@@ -39,6 +39,7 @@ var marcadores = map[string]func(dados) any{
 	"at":               func(d dados) any { return d.n.Event.At.Format(time.RFC3339Nano) },
 	"duration_seconds": func(d dados) any { return int(d.n.Event.Duration.Seconds()) },
 	"group":            func(d dados) any { return d.n.Group },
+	"event":            func(d dados) any { return d.n.Kind() },
 }
 
 // dados é o que os marcadores enxergam.
