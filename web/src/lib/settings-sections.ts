@@ -8,7 +8,15 @@ import type { User } from "../api/types";
  * ou ofereceria o que ela recusa.
  */
 
-export type SectionId = "grupos" | "contas" | "canais" | "manutencao" | "paginas" | "tokens" | "senha";
+export type SectionId =
+  | "grupos"
+  | "contas"
+  | "canais"
+  | "manutencao"
+  | "paginas"
+  | "tokens"
+  | "senha"
+  | "seguranca";
 
 export const SECTION_IDS: SectionId[] = [
   "grupos",
@@ -18,6 +26,7 @@ export const SECTION_IDS: SectionId[] = [
   "paginas",
   "tokens",
   "senha",
+  "seguranca",
 ];
 
 /**
@@ -51,7 +60,13 @@ const MENU: { title: string; items: SectionDef[] }[] = [
   // Token é da própria conta e herda o escopo dela: o servidor o emite a
   // qualquer administrador, restrito ou não.
   { title: "Integrações", items: [{ id: "tokens", label: "Tokens de API", requires: "admin" }] },
-  { title: "Minha conta", items: [{ id: "senha", label: "Senha", requires: "conta" }] },
+  {
+    title: "Minha conta",
+    items: [
+      { id: "senha", label: "Senha", requires: "conta" },
+      { id: "seguranca", label: "Verificação em duas etapas", requires: "conta" },
+    ],
+  },
 ];
 
 export type MenuGroup = { title: string; items: { id: SectionId; label: string }[] };

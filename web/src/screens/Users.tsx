@@ -77,6 +77,28 @@ export function Users({ eu }: { eu: User }) {
     }
   }
 
+  // Para quem perdeu o celular e os códigos de recuperação. A própria
+  // conta não aparece aqui: desligar a sua pede senha e código, em
+  // Verificação em duas etapas.
+  async function desligarSegundoFator(u: User) {
+    if (
+      !confirm(
+        `Desligar a verificação em duas etapas de "${u.username}"? As sessões dela são encerradas, e ela volta a entrar só com a senha até cadastrar o aplicativo de novo.`,
+      )
+    )
+      return;
+
+    setErro(null);
+    try {
+      await api.resetUserTOTP(u.id);
+      await carregar();
+    } catch (e) {
+      setErro(
+        e instanceof ApiError ? e.message : "Não foi possível desligar a verificação em duas etapas.",
+      );
+    }
+  }
+
   async function remover(u: User) {
     const aviso =
       u.id === eu.id
@@ -117,6 +139,11 @@ export function Users({ eu }: { eu: User }) {
                   <span className="flex items-baseline gap-2">
                     <span className="truncate text-body font-medium">{u.username}</span>
                     {u.id === eu.id && <span className="eyebrow">você</span>}
+                    {u.totp_enabled && (
+                      <span className="eyebrow" title="Verificação em duas etapas ligada">
+                        2 etapas
+                      </span>
+                    )}
                   </span>
                   <span className="text-small text-ink-3">
                     vê <span className="text-ink-2">{scopeLabel(u.scope, grupos)}</span>
@@ -153,6 +180,15 @@ export function Users({ eu }: { eu: User }) {
                       ))}
                     </Select>
                   </span>
+                  {u.totp_enabled && u.id !== eu.id && (
+                    <Button
+                      size="sm"
+                      onClick={() => desligarSegundoFator(u)}
+                      aria-label={`desligar a verificação em duas etapas de ${u.username}`}
+                    >
+                      Desligar 2 etapas
+                    </Button>
+                  )}
                   <Button size="sm" variant="danger" onClick={() => remover(u)}>
                     Remover
                   </Button>

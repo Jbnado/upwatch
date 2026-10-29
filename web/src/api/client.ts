@@ -17,6 +17,7 @@ import {
   type Incident,
   type IncidentImpact,
   type IncidentPhase,
+  type LoginResult,
   type MaintenanceInput,
   type MaintenanceWindow,
   type Monitor,
@@ -24,6 +25,7 @@ import {
   type Page,
   type Problem,
   type PublicView,
+  type RecoveryCodes,
   type Role,
   type Rollup,
   type Scope,
@@ -32,10 +34,15 @@ import {
   type StatusPageGroup,
   type StatusPageInput,
   type Summary as SummaryDTO,
+  type TOTPSetup,
+  type TOTPStatus,
   type User,
 } from "./types";
 
 const BASE = "/api/v1";
+
+/** Código de erro, e nome do evento, da conta que deve cadastrar o segundo fator. */
+export const ENROLLMENT_REQUIRED = "two_factor_enrollment_required";
 
 /**
  * request faz a chamada e traduz o erro padronizado da API.
@@ -62,6 +69,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   if (!resp.ok) {
     const erro = (corpo as { error?: { code: string; message: string; field?: string } })?.error;
+    // A exigência do segundo fator pode ser ligada com a interface aberta.
+    // Quem estiver em volta (ver App) relê a conta e leva ao cadastro, em
+    // vez de cada tela mostrar o 403 por conta própria.
+    if (erro?.code === ENROLLMENT_REQUIRED) window.dispatchEvent(new Event(ENROLLMENT_REQUIRED));
     throw new ApiError(
       resp.status,
       erro?.code ?? "unknown",
@@ -93,9 +104,16 @@ export const api = {
     }),
 
   login: (username: string, password: string) =>
-    request<{ status: string }>("/auth/login", {
+    request<LoginResult>("/auth/login", {
       method: "POST",
       body: JSON.stringify({ username, password }),
+    }),
+
+  /** loginSecondFactor troca o desafio do login e o código pela sessão. */
+  loginSecondFactor: (challenge: string, code: string) =>
+    request<LoginResult>("/auth/login/2fa", {
+      method: "POST",
+      body: JSON.stringify({ challenge, code }),
     }),
 
   logout: () => request<void>("/auth/logout", { method: "POST" }),
@@ -107,6 +125,30 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ current_password, new_password }),
     }),
+
+  // ---------- verificação em duas etapas ----------
+
+  totpStatus: () => request<TOTPStatus>("/auth/2fa"),
+
+  totpSetup: () => request<TOTPSetup>("/auth/2fa/setup", { method: "POST" }),
+
+  totpEnable: (code: string) =>
+    request<RecoveryCodes>("/auth/2fa/enable", { method: "POST", body: JSON.stringify({ code }) }),
+
+  totpDisable: (password: string, code: string) =>
+    request<void>("/auth/2fa/disable", {
+      method: "POST",
+      body: JSON.stringify({ password, code }),
+    }),
+
+  totpRecoveryCodes: (password: string, code: string) =>
+    request<RecoveryCodes>("/auth/2fa/recovery-codes", {
+      method: "POST",
+      body: JSON.stringify({ password, code }),
+    }),
+
+  /** resetUserTOTP desliga o segundo fator de outra conta. */
+  resetUserTOTP: (id: number) => request<void>(`/users/${id}/2fa`, { method: "DELETE" }),
 
   // ---------- tokens ----------
 
