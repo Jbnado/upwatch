@@ -248,7 +248,7 @@ export type APIToken = {
 /** CreatedToken traz o segredo, que só aparece nesta resposta. */
 export type CreatedToken = APIToken & { token: string };
 
-export type ChannelType = "webhook" | "discord" | "slack" | "email" | "ntfy";
+export type ChannelType = "webhook" | "discord" | "slack" | "teams" | "email" | "ntfy";
 
 /**
  * A configuração não vem na listagem: ela contém a URL do webhook, a

@@ -47,6 +47,12 @@ const TIPOS: Record<ChannelType, { label: string; ajuda: string; exemplo: string
     ajuda: "Cole a URL do webhook de entrada do app do Slack.",
     exemplo: "https://hooks.slack.com/services/…",
   },
+  teams: {
+    label: "Microsoft Teams",
+    ajuda:
+      "No Teams, abra Workflows e crie o fluxo “Post to a channel when a webhook request is received” (ou “Post to a chat…”), escolha o canal ou chat e cole aqui a URL que ele gerar.",
+    exemplo: "https://….logic.azure.com/workflows/…",
+  },
   webhook: {
     label: "Webhook",
     ajuda: "Recebe um JSON com os campos crus do evento, para integrar com o que você quiser.",
@@ -65,7 +71,7 @@ const TIPOS: Record<ChannelType, { label: string; ajuda: string; exemplo: string
 };
 
 /** Tipos cujo destino é uma URL de webhook. */
-const POR_URL: ChannelType[] = ["discord", "slack", "webhook"];
+const POR_URL: ChannelType[] = ["discord", "slack", "teams", "webhook"];
 
 const EMAIL_VAZIO: EntradaEmail = {
   host: "",
