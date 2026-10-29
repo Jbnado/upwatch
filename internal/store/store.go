@@ -230,6 +230,60 @@ type SessionRepo interface {
 	// senha muda: uma sessão anterior sobrevivendo à troca de senha
 	// anularia o motivo de trocá-la.
 	DeleteByUser(ctx context.Context, userID int64) error
+	// DeleteOthers encerra as sessões da conta menos a de hash keep. É o
+	// que ligar ou desligar o segundo fator faz: quem está mexendo segue
+	// logado, e uma sessão aberta antes, talvez por quem roubou a senha,
+	// não sobrevive à mudança.
+	DeleteOthers(ctx context.Context, userID int64, keep string) error
+}
+
+// TwoFactorRepo guarda o segundo fator das contas: o segredo TOTP, os
+// códigos de recuperação e os desafios de login em andamento.
+//
+// As escritas que decidem algo — aceitar um passo, gastar um código,
+// contar uma tentativa — conferem a condição na própria escrita. Ler,
+// decidir e gravar deixaria dois pedidos simultâneos usarem o mesmo
+// código.
+type TwoFactorRepo interface {
+	// Get devolve o segundo fator da conta, pendente ou ligado, com o
+	// segredo decifrado. ErrNotFound se não houver.
+	Get(ctx context.Context, userID int64) (domain.TOTP, error)
+	// SetPending grava um segredo ainda não confirmado, substituindo o
+	// pendente anterior. ErrConflict se a conta já tiver o fator ligado:
+	// recomeçar o cadastro por cima trocaria o segredo sem a prova que o
+	// desligar exige.
+	SetPending(ctx context.Context, userID int64, secret string, at time.Time) error
+	// Enable liga o fator pendente, grava o passo usado na confirmação e
+	// troca os códigos de recuperação pelos dados, tudo junto.
+	// ErrNotFound se não houver cadastro pendente.
+	Enable(ctx context.Context, userID int64, step int64, recoveryHashes []string, at time.Time) error
+	// AdvanceStep grava step como último passo usado, só se ele for
+	// posterior ao gravado e o fator estiver ligado. Devolve se gravou;
+	// falso é código repetido.
+	AdvanceStep(ctx context.Context, userID int64, step int64) (bool, error)
+	// Disable apaga o fator e os códigos de recuperação. ErrNotFound se
+	// a conta não tiver nenhum, nem pendente.
+	Disable(ctx context.Context, userID int64) error
+
+	// ReplaceRecoveryCodes troca todos os códigos de recuperação.
+	ReplaceRecoveryCodes(ctx context.Context, userID int64, hashes []string) error
+	// UseRecoveryCode gasta o código, se ele for da conta e ainda não
+	// tiver sido usado. Devolve se gastou.
+	UseRecoveryCode(ctx context.Context, userID int64, hash string, at time.Time) (bool, error)
+	// RecoveryCodesLeft conta os códigos ainda não usados.
+	RecoveryCodesLeft(ctx context.Context, userID int64) (int, error)
+
+	// CreateChallenge grava um desafio de login.
+	CreateChallenge(ctx context.Context, c domain.LoginChallenge) error
+	// AttemptChallenge conta uma tentativa contra o desafio e o devolve
+	// já contado. ErrNotFound se ele não existir, tiver vencido em now ou
+	// já tiver gastado as max tentativas.
+	AttemptChallenge(ctx context.Context, hash string, now time.Time, max int) (domain.LoginChallenge, error)
+	// ConsumeChallenge apaga o desafio. ErrNotFound se ele já não
+	// existir: é o que garante que um desafio abre uma sessão só.
+	ConsumeChallenge(ctx context.Context, hash string) error
+	// DeleteExpiredChallenges é a limpeza periódica.
+	DeleteExpiredChallenges(ctx context.Context, before time.Time) (int64, error)
 }
 
 // TokenRepo guarda as credenciais de acesso programático.
@@ -503,6 +557,7 @@ type MetadataStore interface {
 	Users() UserRepo
 	Sessions() SessionRepo
 	Tokens() TokenRepo
+	TwoFactor() TwoFactorRepo
 	States() StateRepo
 	Incidents() IncidentRepo
 	Channels() ChannelRepo

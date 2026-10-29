@@ -48,6 +48,11 @@ type User struct {
 	// PasswordHash nunca sai pela API; MarshalJSON o omite.
 	PasswordHash string `json:"-"`
 
+	// TOTPEnabled informa se a conta tem a verificação em duas etapas
+	// ligada. Só leitura: quem grava é o fluxo de cadastro (ver
+	// store.TwoFactorRepo), nunca a gravação da conta.
+	TOTPEnabled bool `json:"totp_enabled"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -114,16 +119,17 @@ func (u User) CheckPassword(password string) bool {
 // MarshalJSON serializa a conta sem qualquer vestígio da senha.
 func (u User) MarshalJSON() ([]byte, error) {
 	type alias struct {
-		ID        int64     `json:"id"`
-		Username  string    `json:"username"`
-		Role      Role      `json:"role"`
-		Scope     Scope     `json:"scope"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
+		ID          int64     `json:"id"`
+		Username    string    `json:"username"`
+		Role        Role      `json:"role"`
+		Scope       Scope     `json:"scope"`
+		TOTPEnabled bool      `json:"totp_enabled"`
+		CreatedAt   time.Time `json:"created_at"`
+		UpdatedAt   time.Time `json:"updated_at"`
 	}
 	return json.Marshal(alias{
 		ID: u.ID, Username: u.Username, Role: u.Role, Scope: u.Scope,
-		CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt,
+		TOTPEnabled: u.TOTPEnabled, CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt,
 	})
 }
 
