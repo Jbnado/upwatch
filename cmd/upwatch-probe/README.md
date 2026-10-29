@@ -56,15 +56,19 @@ sonda tem mais um, só dela, para o sinal de vida:
 Crie-os pela interface do central (tipo **push**) e copie o endereço de
 push de cada um (`https://upwatch.exemplo.com/api/v1/push/TOKEN`).
 
-Use o mesmo intervalo da sonda (60s) e, nos monitores das verificações,
-uma folga maior que a do sinal de vida — por exemplo 60s no sinal de vida
-e 180s nas verificações. Assim, quando a sonda para, o primeiro aviso é
-"sonda vm-prod-1 sem sinal", e não uma dúzia de serviços "caídos".
+Use o mesmo intervalo da sonda (60s) e ligue as verificações ao sinal de
+vida: no formulário de cada uma, em **depende de** (o sinal de vida de um
+grupo de sondas aparece sugerido no topo), ou de uma vez pelo detalhe do
+sinal de vida, em **Mais ações → Ligar dependentes**.
 
-> O central ainda não suprime o aviso das verificações quando o sinal de
-> vida da sonda cai (o campo `parent_id` está reservado para isso). Com a
-> folga maior, o aviso da sonda chega antes, mas as verificações também
-> avisam depois, se a sonda continuar fora.
+Ligadas, quando a sonda para, o único aviso é "sonda vm-prod-1 está fora
+do ar", dizendo quantas verificações ficaram sem aviso. As verificações
+aparecem como "sem sinal — sonda vm-prod-1 fora", em cinza, e o intervalo
+vira lacuna no histórico delas, não queda. Quando a sonda volta, a
+verificação que continuar falhando avisa normalmente. Como cada monitor
+percebe o silêncio na própria janela, a falha de uma verificação espera
+o sinal de vida decidir — por até a janela dele mais um intervalo — antes
+de virar aviso.
 
 ## Instalação numa VM, um comando por linha
 

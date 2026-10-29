@@ -31,6 +31,7 @@ function cartao(over: Partial<GroupSummary>): GroupSummary {
     down: 0,
     unknown: 0,
     paused: 0,
+    affected: 0,
     problems: 0,
     ...over,
   };
@@ -111,6 +112,12 @@ describe("cardWord", () => {
     expect(cardWord(cartao({ status: "unknown", total: 7, up: 6, unknown: 1, problems: 1 }))).toBe(
       "sem medição",
     );
+  });
+
+  it("diz sem sinal quando só há monitores calados pelo pai", () => {
+    // Calado não é problema — o problema é o pai, que tem cartão próprio —,
+    // mas "ok" afirmaria que alguém conferiu um serviço que ninguém mede.
+    expect(cardWord(cartao({ status: "unknown", total: 4, up: 1, affected: 3 }))).toBe("sem sinal");
   });
 
   it("volta a contar quando lento e sem medição se misturam", () => {

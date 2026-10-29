@@ -50,6 +50,7 @@ function resumo(g: Group): GroupSummary {
     down: 0,
     unknown: 0,
     paused: 0,
+    affected: 0,
     problems: 0,
   };
 }

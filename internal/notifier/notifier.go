@@ -40,6 +40,8 @@ type Notification struct {
 	// grupo. Monitores costumam se chamar só "api" ou "front", e é o
 	// grupo que diz qual sistema caiu.
 	Group string
+	// Dependents é quantos monitores ficaram calados por esta queda.
+	Dependents int
 }
 
 // Status é o estado que passou a valer, em texto.
@@ -134,7 +136,7 @@ func Render(n Notification) string {
 		if n.Message != "" {
 			texto += ": " + n.Message
 		}
-		return texto
+		return texto + dependentsNote(n.Dependents)
 
 	case domain.ChangeDegraded:
 		texto := fmt.Sprintf("%s está degradado", nome)
@@ -151,6 +153,18 @@ func Render(n Notification) string {
 			return fmt.Sprintf("%s voltou depois de %s", nome, humanDuration(n.Event.Duration))
 		}
 		return fmt.Sprintf("%s voltou", nome)
+	}
+}
+
+// dependentsNote diz quantos monitores a queda deixou sem aviso próprio.
+func dependentsNote(n int) string {
+	switch {
+	case n <= 0:
+		return ""
+	case n == 1:
+		return " (1 monitor dependente sem aviso enquanto isso durar)"
+	default:
+		return fmt.Sprintf(" (%d monitores dependentes sem aviso enquanto isso durar)", n)
 	}
 }
 

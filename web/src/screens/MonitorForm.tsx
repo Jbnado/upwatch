@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client";
-import { ApiError, type Group, type MonitorInput, type MonitorType } from "../api/types";
+import { ApiError, type Group, type Monitor, type MonitorInput, type MonitorType } from "../api/types";
 import { Alert, Button, Field, Input, NumberInput, Select, TextLink } from "../components/ui";
 import { fusoLocal, lerPush, montarPushConfig, type AgendaPush } from "../lib/push-config";
 import {
@@ -13,6 +13,7 @@ import {
   type LinhaAssercao,
   type Operador,
 } from "../lib/json-assertions";
+import { opcoesDePai } from "../lib/dependencies";
 import { navigate } from "../lib/router";
 import { ehProtocolo, lerProtocolo, montarProtocolo, protocoloVazio } from "../lib/protocol-config";
 import { ProtocolFields } from "./ProtocolFields";
@@ -127,8 +128,15 @@ export function MonitorForm({ id }: { id?: number }) {
   const [tags, setTags] = useState("");
   const [assercoes, setAssercoes] = useState<LinhaAssercao[]>([linhaVazia()]);
   const [grupos, setGrupos] = useState<Group[]>([]);
+  const [monitores, setMonitores] = useState<Monitor[]>([]);
 
   const editando = id !== undefined;
+
+  // Os candidatos a pai. Uma página só, como o painel: a escolha do pai é
+  // entre os monitores que a pessoa enxerga, e o servidor confere de novo.
+  useEffect(() => {
+    void api.listMonitors({ limit: 500 }).then(({ items }) => setMonitores(items));
+  }, []);
 
   useEffect(() => {
     void api.listGroups().then(({ items }) => {
@@ -161,6 +169,8 @@ export function MonitorForm({ id }: { id?: number }) {
         degraded_latency_ms: m.degraded_latency_ms,
         config: m.config,
         group_id: m.group_id,
+        // O PUT sobrescreve: sem carregar o pai, toda edição o apagaria.
+        parent_id: m.parent_id ?? null,
       });
       const push = lerPush(m.config, fusoLocal());
       setPushToken(push.token);
@@ -288,6 +298,17 @@ export function MonitorForm({ id }: { id?: number }) {
                 ))}
             </Select>
           </Field>
+        )}
+
+        {monitores.length > 0 && (
+          <PaiField
+            valor={form.parent_id ?? null}
+            onChange={(v) => set("parent_id", v)}
+            monitores={monitores}
+            grupos={grupos}
+            proprio={id}
+            erro={erroDe("parent_id")}
+          />
         )}
 
         <Field label="o que verificar" hint={tipo.ajuda} error={erroDe("type")}>
@@ -461,6 +482,62 @@ export function MonitorForm({ id }: { id?: number }) {
         </div>
       </form>
     </div>
+  );
+}
+
+/**
+ * PaiField escolhe o monitor do qual este depende.
+ *
+ * O pai do caso comum é o sinal de vida da sonda que faz a verificação, e
+ * ele vem num bloco próprio no topo, para não ser caçado no meio de todos
+ * os monitores. O monitor que depende deste não aparece: escolhê-lo
+ * fecharia um ciclo.
+ */
+function PaiField({
+  valor,
+  onChange,
+  monitores,
+  grupos,
+  proprio,
+  erro,
+}: {
+  valor: number | null;
+  onChange: (v: number | null) => void;
+  monitores: Monitor[];
+  grupos: Group[];
+  proprio?: number;
+  erro?: string;
+}) {
+  const { sugeridos, outros } = opcoesDePai(monitores, grupos, proprio);
+  const caminho = new Map(grupos.map((g) => [g.id, g.path]));
+  const rotulo = (m: Monitor) =>
+    m.group_id != null && caminho.has(m.group_id) ? `${caminho.get(m.group_id)} / ${m.name}` : m.name;
+  const opcao = (m: Monitor) => (
+    <option key={m.id} value={m.id}>
+      {rotulo(m)}
+    </option>
+  );
+
+  return (
+    <Field
+      label="depende de"
+      hint="Com o pai fora do ar, este monitor não avisa e o intervalo vira lacuna no histórico."
+      error={erro}
+    >
+      <Select
+        value={valor ?? ""}
+        onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)}
+      >
+        <option value="">nenhum</option>
+        {sugeridos.length > 0 && <optgroup label="sondas (sinal de vida)">{sugeridos.map(opcao)}</optgroup>}
+        {outros.length > 0 &&
+          (sugeridos.length > 0 ? (
+            <optgroup label="outros monitores">{outros.map(opcao)}</optgroup>
+          ) : (
+            outros.map(opcao)
+          ))}
+      </Select>
+    </Field>
   );
 }
 

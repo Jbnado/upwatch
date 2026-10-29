@@ -46,6 +46,10 @@ type summaryResponse struct {
 	Down            int        `json:"down"`
 	Unknown         int        `json:"unknown"`
 	Series          []point    `json:"series"`
+	// AffectedBy é o ancestral em queda que cala o monitor: as falhas dele
+	// viram lacuna e não avisam enquanto isso durar. A interface mostra
+	// "sem sinal — pai fora" no lugar do estado. Ausente quando nada cala.
+	AffectedBy *affectedRef `json:"affected_by,omitempty"`
 }
 
 type point struct {
@@ -111,6 +115,13 @@ func (a *API) handleSummaries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	calados, err := a.silenced(r.Context(), estados)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+
+	v := viewerFrom(r)
 	items := make([]summaryResponse, 0, len(monitores))
 	for _, m := range monitores {
 		s, serie, err := a.summarise(r, m.ID, rng, fonte, buckets)
@@ -123,6 +134,9 @@ func (a *API) handleSummaries(w http.ResponseWriter, r *http.Request) {
 		if hb, ok := ultimas[m.ID]; ok {
 			quando, ultimo := hb.Timestamp, hb.Status.String()
 			resp.LastCheckAt, resp.LastCheckStatus = &quando, &ultimo
+		}
+		if pai, ok := calados[m.ID]; ok {
+			resp.AffectedBy = affectedFor(v, pai)
 		}
 		items = append(items, resp)
 	}

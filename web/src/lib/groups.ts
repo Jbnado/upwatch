@@ -51,7 +51,7 @@ export function byProblem<T>(
 export function cardWord(s: GroupSummary): string {
   if (s.status === "empty" || s.total === 0) return "vazio";
   if (s.total === s.paused) return "pausado";
-  if (s.problems === 0) return "ok";
+  if (s.problems === 0) return s.affected > 0 ? "sem sinal" : "ok";
   if (s.down === 0 && s.unknown === 0) return "lento";
   if (s.down === 0 && s.degraded === 0) return "sem medição";
   return s.problems === 1 ? "1 problema" : `${s.problems} problemas`;

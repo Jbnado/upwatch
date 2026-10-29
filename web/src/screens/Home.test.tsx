@@ -36,6 +36,7 @@ function cartao(over: Partial<GroupSummary>): GroupSummary {
     down: 0,
     unknown: 0,
     paused: 0,
+    affected: 0,
     problems: 0,
     ...over,
   };
@@ -64,6 +65,7 @@ const BFF: Problem = {
   since: new Date(Date.now() - 12 * 60_000).toISOString(),
   cause: "connection refused",
   last_check_at: "2026-10-28T11:43:00Z",
+  dependents: 0,
 };
 
 beforeEach(() => {
@@ -87,6 +89,18 @@ describe("Home", () => {
     // Resumo legível na frente, o texto técnico inteiro no title.
     expect(link).toHaveTextContent("conexão recusada");
     expect(within(link).getByTitle("connection refused")).toBeInTheDocument();
+  });
+
+  it("diz quantos dependentes a queda deixou sem sinal", async () => {
+    // Os filhos calados não aparecem na lista; sem a conta, quem vê só a
+    // sonda caída não sabe que as verificações dela também pararam.
+    vi.mocked(api.groupSummary).mockResolvedValue({ items: [RPA, RPA_HML, RPA_PROD] });
+    vi.mocked(api.problems).mockResolvedValue({ items: [{ ...BFF, dependents: 4 }] });
+
+    render(<Home podeEscrever={false} />);
+
+    const secao = await screen.findByRole("region", { name: /problemas agora/ });
+    expect(within(secao).getByRole("link")).toHaveTextContent("4 dependentes sem sinal");
   });
 
   it("dá um cartão por ambiente, cada um um link inteiro com a palavra do estado", async () => {

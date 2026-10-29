@@ -131,6 +131,17 @@ export const api = {
 
   deleteMonitor: (id: number) => request<void>(`/monitors/${id}`, { method: "DELETE" }),
 
+  /**
+   * setChildren põe vários monitores sob este de uma vez — "definir pai"
+   * em lote. Tudo ou nada: o servidor recusa o lote inteiro se algum
+   * fechar ciclo.
+   */
+  setChildren: (id: number, monitorIds: number[]) =>
+    request<{ items: Monitor[] }>(`/monitors/${id}/children`, {
+      method: "POST",
+      body: JSON.stringify({ monitor_ids: monitorIds }),
+    }),
+
   // ---------- dados ----------
 
   /**

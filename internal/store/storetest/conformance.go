@@ -79,6 +79,8 @@ func monitoringCases() []conformanceCase {
 		{"MonitorListTagFilterIsExact", testMonitorListTagFilterIsExact},
 		{"MonitorListTagFilterEscapesWildcards", testMonitorListTagFilterEscapesWildcards},
 		{"MonitorListCapsLimit", testMonitorListCapsLimit},
+		{"MonitorSetParentLinksMany", testMonitorSetParentLinksMany},
+		{"MonitorSetParentIsAllOrNothing", testMonitorSetParentIsAllOrNothing},
 
 		{"HeartbeatWriteAndQuery", testHeartbeatWriteAndQuery},
 		{"HeartbeatQueryIsHalfOpenRange", testHeartbeatQueryIsHalfOpenRange},
@@ -1766,5 +1768,76 @@ func testConcurrentHeartbeatWrites(t *testing.T, newStore Factory) {
 	}
 	if len(got) != writers*perWriter {
 		t.Errorf("stored %d heartbeats, want %d", len(got), writers*perWriter)
+	}
+}
+
+// Ligar as quatro verificações de uma sonda ao sinal de vida dela é o
+// caso comum, e fazê-lo um a um pela edição completa regravaria a
+// configuração de cada monitor — com o risco de recomeçar a espera do
+// push por uma mudança que não mexeu nela.
+func testMonitorSetParentLinksMany(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	pai := mustCreateMonitor(t, s, "sonda")
+	a := mustCreateMonitor(t, s, "redis")
+	b := mustCreateMonitor(t, s, "postgres")
+
+	antes, err := s.Monitors().Get(ctx, a)
+	if err != nil {
+		t.Fatalf("Get returned unexpected error: %v", err)
+	}
+
+	if err := s.Monitors().SetParent(ctx, &pai, []int64{a, b}); err != nil {
+		t.Fatalf("SetParent returned unexpected error: %v", err)
+	}
+	for _, id := range []int64{a, b} {
+		got, err := s.Monitors().Get(ctx, id)
+		if err != nil {
+			t.Fatalf("Get returned unexpected error: %v", err)
+		}
+		if got.ParentID == nil || *got.ParentID != pai {
+			t.Errorf("monitor %d ParentID = %v, want %d", id, got.ParentID, pai)
+		}
+		if id == a && !got.RearmedAt.Equal(antes.RearmedAt) {
+			t.Errorf("RearmedAt moved from %v to %v; linking a parent changes no wait", antes.RearmedAt, got.RearmedAt)
+		}
+	}
+
+	if err := s.Monitors().SetParent(ctx, nil, []int64{a}); err != nil {
+		t.Fatalf("SetParent(nil) returned unexpected error: %v", err)
+	}
+	got, err := s.Monitors().Get(ctx, a)
+	if err != nil {
+		t.Fatalf("Get returned unexpected error: %v", err)
+	}
+	if got.ParentID != nil {
+		t.Errorf("ParentID = %d after unlinking, want nil", *got.ParentID)
+	}
+}
+
+// Um id que não existe recusa o lote inteiro. Gravar metade deixaria a
+// sonda com parte das verificações ligadas, e quem pediu só saberia
+// lendo monitor por monitor.
+func testMonitorSetParentIsAllOrNothing(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	pai := mustCreateMonitor(t, s, "sonda")
+	a := mustCreateMonitor(t, s, "redis")
+
+	err := s.Monitors().SetParent(ctx, &pai, []int64{a, 9999})
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("SetParent with a missing child returned %v, want ErrNotFound", err)
+	}
+	got, err := s.Monitors().Get(ctx, a)
+	if err != nil {
+		t.Fatalf("Get returned unexpected error: %v", err)
+	}
+	if got.ParentID != nil {
+		t.Errorf("ParentID = %d, want the batch rolled back", *got.ParentID)
+	}
+
+	ausente := int64(9999)
+	if err := s.Monitors().SetParent(ctx, &ausente, []int64{a}); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("SetParent with a missing parent returned %v, want ErrNotFound", err)
 	}
 }

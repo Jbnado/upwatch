@@ -25,6 +25,8 @@ vi.mock("../api/client", () => ({
     listChannels: vi.fn(),
     linkChannel: vi.fn(),
     unlinkChannel: vi.fn(),
+    listMonitors: vi.fn(),
+    setChildren: vi.fn(),
     exportUrl: () => "/export",
   },
 }));
@@ -85,6 +87,7 @@ const QUEDA: Problem = {
   since: new Date(Date.now() - 12 * 60_000).toISOString(),
   cause: "connection refused",
   last_check_at: "2026-10-28T11:43:00Z",
+  dependents: 0,
 };
 
 const FALHA: MonitorEvent = {
@@ -121,6 +124,7 @@ function cenario({
 }
 
 beforeEach(() => {
+  vi.mocked(api.listMonitors).mockResolvedValue({ items: [BFF], has_more: false });
   vi.mocked(api.incidents).mockResolvedValue({ items: [], has_more: false });
   vi.mocked(api.monitorChannels).mockResolvedValue({ items: [] });
   vi.mocked(api.groupChannels).mockResolvedValue({ items: [] });
@@ -484,5 +488,66 @@ describe("MonitorDetail: push", () => {
     const sinal = await screen.findByRole("region", { name: "sinal do push" });
     expect(sinal).toHaveTextContent("/api/v1/push/AbCd…");
     expect(within(sinal).getByRole("button", { name: "Copiar endereço" })).toBeInTheDocument();
+  });
+});
+
+describe("MonitorDetail: dependências", () => {
+  const SONDA: Monitor = { ...BFF, id: 9, name: "sonda vm-01", type: "push", target: "", group_id: 1 };
+  const REDIS: Monitor = { ...BFF, id: 20, name: "redis", parent_id: 12 };
+  const SOLTO: Monitor = { ...BFF, id: 21, name: "postgres" };
+  const FILA: Monitor = { ...BFF, id: 22, name: "fila" };
+
+  it("mostra o calado pelo pai como sem sinal, e não como queda própria", async () => {
+    // Caso real: a VM da sonda perdeu a saída, e cada verificação dela
+    // aparecia fora do ar como se o serviço tivesse caído.
+    cenario({ status: "up", problema: null, eventos: [] });
+    vi.mocked(api.getMonitor).mockResolvedValue({ ...BFF, parent_id: 9 });
+    vi.mocked(api.summaries).mockResolvedValue({
+      items: [{ ...resumo("up"), affected_by: { id: 9, name: "sonda vm-01" } }],
+      from: "",
+      to: "",
+    });
+    vi.mocked(api.listMonitors).mockResolvedValue({ items: [SONDA, { ...BFF, parent_id: 9 }], has_more: false });
+
+    render(<MonitorDetail id={12} tab="eventos" eu={EU} />);
+
+    const quadro = await screen.findByRole("region", { name: "estado atual" });
+    expect(quadro).toHaveTextContent("sem sinal — sonda vm-01 fora");
+    expect(quadro).not.toHaveTextContent("fora do ar");
+    expect(within(quadro).getByRole("link", { name: "sonda vm-01" })).toHaveAttribute("href", "/monitors/9");
+  });
+
+  it("lista quem depende deste monitor", async () => {
+    cenario({ status: "up", problema: null, eventos: [] });
+    vi.mocked(api.listMonitors).mockResolvedValue({ items: [BFF, REDIS, SOLTO], has_more: false });
+
+    render(<MonitorDetail id={12} tab="eventos" eu={EU} />);
+
+    const secao = await screen.findByRole("region", { name: "dependentes" });
+    expect(within(secao).getByRole("link", { name: "redis" })).toHaveAttribute("href", "/monitors/20");
+    expect(secao).not.toHaveTextContent("postgres");
+  });
+
+  it("liga vários monitores a este de uma vez", async () => {
+    // O caso comum é ligar as quatro verificações de uma sonda ao sinal
+    // de vida dela; editar uma a uma é onde se esquece alguma.
+    cenario({ status: "up", problema: null, eventos: [] });
+    vi.mocked(api.listMonitors).mockResolvedValue({ items: [BFF, REDIS, SOLTO, FILA], has_more: false });
+    vi.mocked(api.setChildren).mockResolvedValue({ items: [] });
+
+    render(<MonitorDetail id={12} tab="eventos" eu={ADMIN_TOTAL} />);
+    await screen.findByRole("tablist");
+
+    fireEvent.click(screen.getByRole("button", { name: "Mais ações" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Ligar dependentes" }));
+    const secao = await screen.findByRole("region", { name: "dependentes" });
+    fireEvent.click(within(secao).getByRole("checkbox", { name: "postgres" }));
+    fireEvent.click(within(secao).getByRole("checkbox", { name: "fila" }));
+    // Quem já depende deste não é oferecido de novo.
+    expect(within(secao).queryByRole("checkbox", { name: "redis" })).not.toBeInTheDocument();
+    fireEvent.click(within(secao).getByRole("button", { name: "Ligar 2 monitores" }));
+
+    await vi.waitFor(() => expect(api.setChildren).toHaveBeenCalledWith(12, expect.arrayContaining([21, 22])));
+    expect(vi.mocked(api.setChildren).mock.lastCall?.[1]).toHaveLength(2);
   });
 });
