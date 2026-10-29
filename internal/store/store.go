@@ -167,6 +167,12 @@ type MonitorRepo interface {
 	Delete(ctx context.Context, id int64) error
 	List(ctx context.Context, f MonitorFilter) (Page[domain.Monitor], error)
 
+	// SetParent põe os monitores ids sob o pai (nil desliga), tudo ou
+	// nada: um id ou o pai inexistente devolvem ErrNotFound sem gravar
+	// nenhum. Não mexe no resto da linha, e por isso não recomeça a
+	// espera do push. Ciclos são decisão de quem chama (ParentCycle).
+	SetParent(ctx context.Context, parentID *int64, ids []int64) error
+
 	// FindByPushToken devolve o monitor dono do token de push, ou
 	// ErrNotFound. Token vazio não acha ninguém.
 	//

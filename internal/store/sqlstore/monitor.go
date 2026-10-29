@@ -445,3 +445,36 @@ func escapeLike(v string) string {
 	v = strings.ReplaceAll(v, "%", `\%`)
 	return strings.ReplaceAll(v, "_", `\_`)
 }
+
+// SetParent põe vários monitores sob o mesmo pai numa transação.
+//
+// Só parent_id e updated_at mudam: rearmed_at fica, porque ligar um pai
+// não recomeça a espera de ninguém. A existência do pai é conferida
+// antes, e não deixada à chave estrangeira, para a recusa ser a mesma
+// nos dois bancos e não depender de a checagem estar ligada.
+func (r *monitorRepo) SetParent(ctx context.Context, parentID *int64, ids []int64) error {
+	now := toMillis(time.Now().UTC().Truncate(time.Millisecond))
+	return r.db.inTx(ctx, func(t *tx) error {
+		if parentID != nil {
+			var existe int
+			err := t.QueryRowContext(ctx, `SELECT 1 FROM monitor WHERE id = ?`, *parentID).Scan(&existe)
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("monitor pai %d: %w", *parentID, store.ErrNotFound)
+			}
+			if err != nil {
+				return fmt.Errorf("sqlstore: conferindo o monitor pai: %w", err)
+			}
+		}
+		for _, id := range ids {
+			res, err := t.ExecContext(ctx,
+				`UPDATE monitor SET parent_id = ?, updated_at = ? WHERE id = ?`, parentID, now, id)
+			if err != nil {
+				return translateWriteErr(err)
+			}
+			if err := requireAffected(res, fmt.Sprintf("monitor %d", id)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
