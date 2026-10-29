@@ -21,6 +21,7 @@ import (
 	"github.com/Jbnado/upwatch/internal/domain"
 	"github.com/Jbnado/upwatch/internal/secretbox"
 	"github.com/Jbnado/upwatch/internal/store/sqlstore"
+	"github.com/Jbnado/upwatch/internal/testdir"
 )
 
 var epoch = time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
@@ -59,7 +60,7 @@ func newServer(t *testing.T) *server {
 func newServerWith(t *testing.T, ajuste func(*api.Options)) *server {
 	t.Helper()
 
-	st, err := sqlstore.OpenSQLite(filepath.Join(t.TempDir(), "upwatch.db"), secretbox.Ephemeral())
+	st, err := sqlstore.OpenSQLite(filepath.Join(testdir.New(t), "upwatch.db"), secretbox.Ephemeral())
 	if err != nil {
 		t.Fatalf("OpenSQLite returned unexpected error: %v", err)
 	}

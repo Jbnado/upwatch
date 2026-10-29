@@ -9,6 +9,7 @@ import (
 
 	"github.com/Jbnado/upwatch/internal/store"
 	"github.com/Jbnado/upwatch/internal/store/sqlstore"
+	"github.com/Jbnado/upwatch/internal/testdir"
 )
 
 // Uma instalação anterior aos grupos migra sem perder nada.
@@ -105,7 +106,7 @@ func checkLegacyKept(t *testing.T, s store.Store) {
 }
 
 func TestSQLiteMigrationKeepsLegacyInstallation(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "legado.db")
+	path := filepath.Join(testdir.New(t), "legado.db")
 
 	s, err := sqlstore.OpenSQLite(path, testKeys)
 	if err != nil {

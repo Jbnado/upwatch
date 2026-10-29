@@ -12,6 +12,7 @@ import (
 	"github.com/Jbnado/upwatch/internal/domain"
 	"github.com/Jbnado/upwatch/internal/store"
 	"github.com/Jbnado/upwatch/internal/store/sqlstore"
+	"github.com/Jbnado/upwatch/internal/testdir"
 )
 
 // Atualizar uma instalação que já tem monitores push.
@@ -132,7 +133,7 @@ func checkPushSignalUpgrade(t *testing.T, s *sqlstore.Store, first, second int64
 }
 
 func TestPushSignalMigrationUpgradesExistingRows(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "upgrade.db")
+	path := filepath.Join(testdir.New(t), "upgrade.db")
 	before, err := sqlstore.OpenSQLite(path, testKeys)
 	if err != nil {
 		t.Fatalf("OpenSQLite returned unexpected error: %v", err)

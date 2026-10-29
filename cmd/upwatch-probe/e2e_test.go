@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Jbnado/upwatch/internal/testdir"
 )
 
 // A ponta a ponta sobe tudo em contêineres: um Redis, o UpWatch central
@@ -175,7 +177,7 @@ func TestE2EProbeReportsThroughTheCentral(t *testing.T) {
 
 	// O central, compilado deste repositório para o Linux do Docker.
 	arch := e.docker("version", "--format", "{{.Server.Arch}}")
-	central := filepath.Join(t.TempDir(), "upwatch")
+	central := filepath.Join(testdir.New(t), "upwatch")
 	build := exec.Command("go", "build", "-trimpath", "-o", central, "./cmd/upwatch")
 	build.Dir = root
 	build.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH="+arch)

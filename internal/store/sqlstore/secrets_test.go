@@ -17,6 +17,7 @@ import (
 	"github.com/Jbnado/upwatch/internal/secretbox"
 	"github.com/Jbnado/upwatch/internal/store"
 	"github.com/Jbnado/upwatch/internal/store/sqlstore"
+	"github.com/Jbnado/upwatch/internal/testdir"
 )
 
 // testKey é a chave da suíte. Fixa no pacote, para um teste que fecha e
@@ -77,7 +78,7 @@ func (b backend) mustOpen(t *testing.T, keys secretbox.Source) *sqlstore.Store {
 // prová-la.
 func eachBackend(t *testing.T, run func(t *testing.T, b backend)) {
 	t.Run("sqlite", func(t *testing.T) {
-		run(t, backend{driver: "sqlite", dsn: filepath.Join(t.TempDir(), "upwatch.db")})
+		run(t, backend{driver: "sqlite", dsn: filepath.Join(testdir.New(t), "upwatch.db")})
 	})
 	t.Run("postgres", func(t *testing.T) {
 		dsn := os.Getenv(postgresDSNEnv)
@@ -190,7 +191,7 @@ func TestMissingKeyRefusesToStart(t *testing.T) {
 	eachBackend(t, func(t *testing.T, b backend) {
 		_ = b.mustOpen(t, testKeys).Close()
 
-		auto := filepath.Join(t.TempDir(), "secret.key")
+		auto := filepath.Join(testdir.New(t), "secret.key")
 		_, err := b.open(t, secretbox.Resolver{AutoPath: auto}.Box)
 		if !errors.Is(err, secretbox.ErrKeyMissing) {
 			t.Fatalf("opening without a key error = %v, want ErrKeyMissing", err)

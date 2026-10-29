@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Jbnado/upwatch/internal/probe"
+	"github.com/Jbnado/upwatch/internal/testdir"
 )
 
 const uiToken = "token-fixo-de-teste-da-interface-0123456789"
@@ -37,7 +38,7 @@ func (f *fakeBackend) Reload() { f.reloads.Add(1) }
 
 func uiServer(t *testing.T, token string) (*httptest.Server, *fakeBackend) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "probe.yaml")
+	path := filepath.Join(testdir.New(t), "probe.yaml")
 	cfg := probe.Config{Name: "vm-1", UIToken: token, Checks: []probe.Check{redisCheck("rq-workers")}}
 	if err := probe.Save(path, cfg); err != nil {
 		t.Fatal(err)
