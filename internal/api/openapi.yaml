@@ -1238,6 +1238,11 @@ paths:
         Uma queda só entra aqui depois de confirmada pelo número de falhas
         seguidas configurado no monitor; oscilação passageira não vira
         incidente.
+
+        Do mais recente para o mais antigo. Paginação para trás, como a da
+        linha do tempo do monitor&#58; passe o `next_cursor` da página
+        anterior em `cursor`. O `after_id` antigo é recusado com 400&#58;
+        seguido como cursor, ele devolvia sempre a mesma página.
       parameters:
         - name: monitor_id
           in: query
@@ -1249,9 +1254,10 @@ paths:
         - name: limit
           in: query
           schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
-        - name: after_id
+        - name: cursor
           in: query
-          schema: { type: integer, format: int64 }
+          schema: { type: string }
+          description: O `next_cursor` da página anterior. Opaco.
       responses:
         "200":
           description: Incidentes, do mais recente para o mais antigo
@@ -1264,7 +1270,10 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/Incident" }
                   has_more: { type: boolean }
-                  next_after_id: { type: integer, format: int64 }
+                  next_cursor:
+                    type: string
+                    description: Só quando `has_more`; passe em `cursor`.
+        "400": { $ref: "#/components/responses/BadRequest" }
 
   /api/v1/public:
     get:

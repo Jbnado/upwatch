@@ -265,6 +265,14 @@ export type Page<T> = {
   next_after_id?: number;
 };
 
+/** Página que anda para trás, do mais recente para o mais antigo. */
+export type CursorPage<T> = {
+  items: T[];
+  has_more: boolean;
+  /** Só com has_more; volta em `cursor` para a página seguinte. Opaco. */
+  next_cursor?: string;
+};
+
 // ---------- páginas públicas de estado ----------
 
 export type IncidentImpact = "none" | "minor" | "major" | "critical";

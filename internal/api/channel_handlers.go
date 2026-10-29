@@ -244,12 +244,32 @@ type incidentResponse struct {
 // A duração vem calculada: é a primeira pergunta sobre qualquer
 // incidente, e obrigar o cliente a subtrair dois horários faria cada
 // integração repetir a mesma conta.
+//
+// Pagina para trás, como a linha do tempo do monitor: cursor (o
+// next_cursor da página anterior) traz os incidentes mais antigos que o
+// último visto. O cursor é opaco para quem consome; hoje é o id.
 func (a *API) handleListIncidents(w http.ResponseWriter, r *http.Request) {
+	// O after_id antigo, seguido como cursor, devolvia sempre a primeira
+	// página. Ignorá-lo em silêncio manteria o cliente antigo no mesmo
+	// laço; recusá-lo diz o que mudou.
+	if r.URL.Query().Has("after_id") {
+		writeFieldError(w, "after_id", "after_id não é mais aceito; use cursor com o next_cursor da página anterior")
+		return
+	}
+
+	var antesDe int64
+	if raw := r.URL.Query().Get("cursor"); raw != "" {
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || id <= 0 {
+			writeFieldError(w, "cursor", "cursor inválido; use o next_cursor da página anterior")
+			return
+		}
+		antesDe = id
+	}
+
 	filter := store.IncidentFilter{
-		Page: store.PageFilter{
-			AfterID: queryInt64(r, "after_id", 0),
-			Limit:   int(queryInt64(r, "limit", 0)),
-		},
+		BeforeID:  antesDe,
+		Limit:     int(queryInt64(r, "limit", 0)),
 		MonitorID: queryInt64(r, "monitor_id", 0),
 		OnlyOpen:  r.URL.Query().Get("open") == "true",
 		// Pedir o monitor de fora pelo parâmetro devolve lista vazia, como
@@ -276,7 +296,7 @@ func (a *API) handleListIncidents(w http.ResponseWriter, r *http.Request) {
 
 	body := map[string]any{"items": items, "has_more": page.HasMore}
 	if page.HasMore && len(page.Items) > 0 {
-		body["next_after_id"] = page.Items[len(page.Items)-1].ID
+		body["next_cursor"] = strconv.FormatInt(page.Items[len(page.Items)-1].ID, 10)
 	}
 	writeJSON(w, http.StatusOK, body)
 }

@@ -254,7 +254,12 @@ type StateRepo interface {
 
 // IncidentFilter seleciona incidentes numa listagem.
 type IncidentFilter struct {
-	Page PageFilter
+	// Limit é o tamanho da página, normalizado como em PageFilter.
+	Limit int
+	// BeforeID pagina para trás: só incidentes com id menor. A lista sai
+	// do mais recente para o mais antigo, e o cursor da página seguinte é
+	// o id do último item desta. Zero começa do mais recente.
+	BeforeID int64
 	// MonitorID zero traz de todos os monitores.
 	MonitorID int64
 	// OnlyOpen restringe aos que ainda não terminaram.

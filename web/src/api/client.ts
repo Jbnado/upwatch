@@ -7,6 +7,7 @@ import {
   type ChannelInput,
   type ChannelType,
   type CreatedToken,
+  type CursorPage,
   type EventPage,
   type Group,
   type GroupSummary,
@@ -203,8 +204,9 @@ export const api = {
 
   // ---------- incidentes ----------
 
-  incidents: (params: { monitor_id?: number; open?: string; limit?: number } = {}) =>
-    request<Page<Incident>>(`/incidents${query(params)}`),
+  incidents: (
+    params: { monitor_id?: number; open?: string; limit?: number; cursor?: string } = {},
+  ) => request<CursorPage<Incident>>(`/incidents${query(params)}`),
 
   // ---------- contas ----------
 
