@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { api } from "../api/client";
 import type { AffectedBy, Monitor, Status, Summary as SummaryDTO } from "../api/types";
 import { Pulse } from "../components/Pulse";
@@ -15,7 +15,7 @@ import {
   StatusDot,
   TextLink,
 } from "../components/ui";
-import { rotuloCalado } from "../lib/dependencies";
+import { aninharDependentes, rotuloCalado } from "../lib/dependencies";
 import { ago, latency, uptime } from "../lib/format";
 import { byProblem, crumb, matches, shortName, type StateFilter } from "../lib/groups";
 import { DEFAULT_RANGE, windowFor, type Range } from "../lib/ranges";
@@ -246,14 +246,7 @@ export function Board({
                       <span className="eyebrow">{bloco.leituras.length}</span>
                     </div>
                   )}
-                  {bloco.leituras.map((reading) => (
-                    <Row
-                      key={reading.monitor.id}
-                      reading={reading}
-                      range={range}
-                      groupPath={group?.path}
-                    />
-                  ))}
+                  <Rows readings={bloco.leituras} range={range} groupPath={group?.path} />
                 </div>
               ))}
             </div>
@@ -369,10 +362,16 @@ function Row({
   reading,
   range,
   groupPath,
+  level = 0,
+  silencedAbove = false,
 }: {
   reading: Reading;
   range: Range;
   groupPath?: string;
+  /** Profundidade sob o pai; recua o nome, não as medidas. */
+  level?: number;
+  /** A linha dos dependentes já disse que estão sem sinal. */
+  silencedAbove?: boolean;
 }) {
   const { monitor, samples, status, uptimePercent, p95 } = reading;
 
@@ -387,7 +386,10 @@ function Row({
       to={{ name: "monitor", id: monitor.id }}
       className={`flex items-center gap-4 border-b border-line px-1 py-2 ${monitor.enabled ? "" : "opacity-60"}`}
     >
-      <span className="flex min-w-0 flex-1 items-baseline gap-2">
+      <span
+        className="flex min-w-0 flex-1 items-baseline gap-2"
+        style={level > 0 ? { paddingLeft: `${level * RECUO}rem` } : undefined}
+      >
         <StatusDot status={status} />
         <span className="truncate text-body font-medium text-ink" title={monitor.name}>
           {nome}
@@ -396,7 +398,7 @@ function Row({
           {monitor.target}
         </span>
         {!monitor.enabled && <span className="eyebrow shrink-0">pausado</span>}
-        {reading.affectedBy && (
+        {reading.affectedBy && !silencedAbove && (
           // A falha não é dele: o pai caiu. Cinza e dizendo quem, para não
           // parecer mais um vermelho a investigar.
           <span className="shrink-0 truncate text-micro text-unknown">
@@ -427,6 +429,109 @@ function Row({
       </span>
     </RowLink>
   );
+}
+
+/** RECUO é quanto cada nível de dependente entra, em rem. */
+const RECUO = 1.25;
+
+/**
+ * Rows desenha a lista com cada dependente recuado sob o pai, e o pai
+ * recolhível.
+ *
+ * O pai entra na ordem pelo pior de si e dos dependentes: um dependente
+ * fora do ar sob um pai no ar desceria para o fim da lista, onde os
+ * problemas não deveriam estar. Com todos os dependentes calados, eles
+ * começam recolhidos sob uma linha só — "sem sinal (sonda X calada)" —,
+ * porque vinte linhas cinza para uma causa só é o ruído que a dependência
+ * existe para tirar.
+ */
+function Rows({
+  readings,
+  range,
+  groupPath,
+}: {
+  readings: Reading[];
+  range: Range;
+  groupPath?: string;
+}) {
+  // Pais com o aberto ou fechado trocado pela pessoa, em relação ao padrão.
+  const [trocados, setTrocados] = useState<Set<number>>(new Set());
+  const { raiz, filhos } = useMemo(() => aninharDependentes(readings, (r) => r.monitor), [readings]);
+
+  const posicao = new Map(readings.map((r, i) => [r.monitor.id, i]));
+  const pior = (r: Reading): number =>
+    Math.min(posicao.get(r.monitor.id)!, ...(filhos.get(r.monitor.id) ?? []).map(pior));
+  const emOrdem = (lista: Reading[]) => [...lista].sort((a, b) => pior(a) - pior(b));
+
+  const trocar = (id: number) =>
+    setTrocados((t) => {
+      const proximo = new Set(t);
+      if (proximo.has(id)) proximo.delete(id);
+      else proximo.add(id);
+      return proximo;
+    });
+
+  const linha = (r: Reading, nivel: number, caladoAcima: boolean): ReactNode => {
+    const id = r.monitor.id;
+    const deps = filhos.get(id) ?? [];
+    const calados = deps.length > 0 && deps.every((d) => d.affectedBy);
+    const aberto = calados === trocados.has(id);
+    const rotulo = deps.length > 0 ? rotuloDosDependentes(r.monitor, deps, calados) : "";
+
+    return (
+      <Fragment key={id}>
+        <Row reading={r} range={range} groupPath={groupPath} level={nivel} silencedAbove={caladoAcima} />
+        {deps.length > 0 && (
+          <button
+            type="button"
+            aria-expanded={aberto}
+            // O nome do pai entra para o leitor de tela: "2 dependentes"
+            // repetido na lista não diz de quem.
+            aria-label={`${rotulo} de ${r.monitor.name}`}
+            onClick={() => trocar(id)}
+            className={`pressable flex w-full items-center gap-1.5 border-b border-line px-1 py-1 text-left text-small hover:bg-sunken active:bg-pressed ${calados ? "text-unknown" : "text-ink-3"}`}
+            style={{ paddingLeft: `calc(${(nivel + 1) * RECUO}rem + 0.25rem)` }}
+          >
+            <svg
+              aria-hidden
+              viewBox="0 0 10 10"
+              className={`h-2.5 w-2.5 shrink-0 transition-transform ${aberto ? "rotate-90" : ""}`}
+            >
+              <path d="M3 1.5 7 5l-4 3.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
+            </svg>
+            <span className="truncate">{rotulo}</span>
+          </button>
+        )}
+        {aberto && emOrdem(deps).map((d) => linha(d, nivel + 1, calados))}
+      </Fragment>
+    );
+  };
+
+  return <>{emOrdem(raiz).map((r) => linha(r, 0, false))}</>;
+}
+
+/**
+ * rotuloDosDependentes é a linha que abre e fecha os dependentes do pai.
+ *
+ * Calados, ela diz quem os calou: a sonda pelo nome quando é o sinal de
+ * vida deste pai que parou, ou o ancestral mais acima que caiu.
+ */
+export function rotuloDosDependentes(
+  pai: Monitor,
+  deps: { affectedBy?: AffectedBy }[],
+  calados: boolean,
+): string {
+  const n = deps.length;
+  if (!calados) return n === 1 ? "1 dependente" : `${n} dependentes`;
+
+  const por = deps[0]!.affectedBy!;
+  const causa =
+    por.id === pai.id
+      ? pai.type === "push"
+        ? `${/sonda/i.test(pai.name) ? "" : "sonda "}${pai.name} calada`
+        : `${pai.name} fora`
+      : `${por.name ?? "dependência"} fora`;
+  return `${n} sem sinal (${causa})`;
 }
 
 /**
