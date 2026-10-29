@@ -139,13 +139,17 @@ func (s *Service) CreateInitialAdmin(ctx context.Context, username, password str
 
 // ---------- login ----------
 
-// Login confere as credenciais e abre uma sessão, devolvendo o segredo que
-// vai no cookie.
-func (s *Service) Login(ctx context.Context, username, password string) (string, error) {
+// Login confere as credenciais. Sem segundo fator, abre a sessão e
+// devolve o segredo que vai no cookie; com ele, devolve só o desafio que
+// CompleteLogin troca pela sessão.
+//
+// A senha errada responde igual com ou sem segundo fator: só quem acerta
+// a senha descobre que a conta tem um.
+func (s *Service) Login(ctx context.Context, username, password string) (LoginResult, error) {
 	username = strings.TrimSpace(username)
 
 	if s.locked(username) {
-		return "", ErrTooManyAttempts
+		return LoginResult{}, ErrTooManyAttempts
 	}
 
 	u, err := s.store.Users().GetByUsername(ctx, username)
@@ -157,18 +161,29 @@ func (s *Service) Login(ctx context.Context, username, password string) (string,
 			decoy.CheckPassword(password)
 
 			s.recordFailure(username)
-			return "", ErrInvalidCredentials
+			return LoginResult{}, ErrInvalidCredentials
 		}
-		return "", err
+		return LoginResult{}, err
 	}
 
 	if !u.CheckPassword(password) {
 		s.recordFailure(username)
-		return "", ErrInvalidCredentials
+		return LoginResult{}, ErrInvalidCredentials
+	}
+
+	// As falhas só zeram quando o login termina. Zerar já na senha certa
+	// deixaria quem a tem errar códigos sem nunca chegar ao bloqueio,
+	// bastando digitar a senha de novo a cada quatro palpites.
+	if u.TOTPEnabled {
+		return s.openChallenge(ctx, u.ID)
 	}
 	s.clearFailures(username)
 
-	return s.openSession(ctx, u.ID)
+	secret, err := s.openSession(ctx, u.ID)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	return LoginResult{Session: secret}, nil
 }
 
 // openSession grava uma sessão nova e devolve seu segredo.

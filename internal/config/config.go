@@ -87,6 +87,12 @@ type Config struct {
 	// ganharia uma sonda na rede de dentro dele.
 	RestrictPrivateTargets bool `yaml:"restrict_private_targets"`
 
+	// Require2FAAdmin obriga todo administrador a ter a verificação em
+	// duas etapas: quem entra sem ela só consegue cadastrá-la. Desligado
+	// por padrão, para uma atualização não prender ninguém no cadastro sem
+	// aviso; quem liga decide quando.
+	Require2FAAdmin bool `yaml:"require_2fa_admin"`
+
 	// SecretKey é a chave, em base64 de 32 bytes, que cifra as
 	// credenciais dos monitores e canais no banco. Vazia, a instalação
 	// SQLite usa a gerada ao lado do banco (ver secretbox.Resolver).
@@ -224,6 +230,9 @@ func applyEnv(cfg *Config) error {
 		return err
 	}
 	if err := boolean(&cfg.RestrictPrivateTargets, "RESTRICT_PRIVATE_TARGETS"); err != nil {
+		return err
+	}
+	if err := boolean(&cfg.Require2FAAdmin, "REQUIRE_2FA_ADMIN"); err != nil {
 		return err
 	}
 
