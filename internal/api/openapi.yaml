@@ -653,6 +653,48 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/v1/monitors/{id}/incidents/{incidentID}/ack:
+    post:
+      tags: [alerts]
+      summary: Reconhece a queda aberta ("estou vendo")
+      description: |
+        Registra quem está olhando a queda, quando e com que nota. O
+        incidente reconhecido para de gerar lembretes; o aviso de volta
+        continua saindo. Só administrador&#58; reconhecer cala o lembrete de
+        todo mundo.
+
+        O corpo é opcional. O primeiro reconhecimento é o que vale&#58; um
+        segundo, ou sobre incidente já encerrado, responde 409 dizendo o
+        motivo. Incidente de outro monitor responde 404.
+      parameters:
+        - { $ref: "#/components/parameters/PathID" }
+        - name: incidentID
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: { type: string, maxLength: 500 }
+      responses:
+        "200":
+          description: O incidente, já reconhecido
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Incident" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Incidente já reconhecido (a mensagem diz por quem) ou já encerrado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/v1/summaries:
     get:
       tags: [data]
@@ -2073,6 +2115,16 @@ components:
             Grupo folha do monitor; nulo é "Sem grupo", que só quem
             alcança todos os grupos usa. O PUT sobrescreve&#58; omitir move
             para "Sem grupo".
+        reminder_minutes:
+          type: integer
+          nullable: true
+          minimum: 0
+          description: |
+            De quanto em quanto tempo uma queda aberta e não reconhecida é
+            relembrada pelos canais, entre 5 e 10080 minutos. Nulo herda
+            (do ambiente, do sistema e por fim de UPWATCH_REMINDER_INTERVAL,
+            desligado por padrão); 0 desliga. O PUT sobrescreve&#58; omitir
+            volta a herdar.
         enabled: { type: boolean, default: true }
         tags:
           type: array
@@ -2327,6 +2379,16 @@ components:
           type: integer
           format: int64
           description: Sistema do ambiente; ausente é grupo de topo.
+        reminder_minutes:
+          type: integer
+          nullable: true
+          minimum: 0
+          description: |
+            Intervalo de lembrete para os monitores do grupo que não
+            escolheram o próprio, entre 5 e 10080 minutos. Nulo herda (o
+            ambiente herda do sistema, e o sistema de
+            UPWATCH_REMINDER_INTERVAL, desligado por padrão); 0 desliga.
+            O PUT sobrescreve&#58; omitir volta a herdar.
 
     MonitorGroup:
       type: object
@@ -2338,6 +2400,7 @@ components:
         path:
           type: string
           description: Nome completo, como "RPA / prod".
+        reminder_minutes: { type: integer, nullable: true }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
@@ -2484,7 +2547,7 @@ components:
             Qualquer objeto ou lista JSON. Em qualquer texto dentro
             dele, os marcadores são substituídos - $monitor,
             $monitor_id, $target, $status, $previous_status, $message,
-            $at, $duration_seconds, $group e $text. Também vale ${nome}, e $$
+            $at, $duration_seconds, $group, $event e $text. Também vale ${nome}, e $$
             escreve um cifrão literal.
 
             Sozinho, o marcador entrega o valor com o tipo dele, de
@@ -2590,6 +2653,21 @@ components:
           type: string
           description: A falha observada quando a queda foi confirmada
         open: { type: boolean }
+        acknowledgement:
+          nullable: true
+          allOf: [{ $ref: "#/components/schemas/Acknowledgement" }]
+          description: Quem disse estar olhando a queda; nulo quando ninguém disse.
+        reminded_at:
+          type: string
+          format: date-time
+          description: Último lembrete enviado; ausente enquanto nenhum saiu.
+
+    Acknowledgement:
+      type: object
+      properties:
+        by: { type: string, description: Nome da conta que reconheceu }
+        at: { type: string, format: date-time }
+        note: { type: string, maxLength: 500 }
 
     Summary:
       type: object
@@ -2641,6 +2719,11 @@ components:
           properties:
             id: { type: integer, format: int64, nullable: true }
             name: { type: string }
+        acknowledgement:
+          allOf: [{ $ref: "#/components/schemas/Acknowledgement" }]
+          description: |
+            O reconhecimento da queda aberta do monitor; ausente sem queda
+            aberta ou sem reconhecimento.
         series:
           type: array
           description: |
