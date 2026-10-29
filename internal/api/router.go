@@ -135,6 +135,9 @@ type API struct {
 
 	// policies é a política de escopo de cada rota, declarada ao registrá-la.
 	policies map[string]scopePolicy
+
+	// originCheck recusa escrita vinda de outra origem (ver sameOrigin).
+	originCheck *http.CrossOriginProtection
 }
 
 // New monta o roteador da API.
@@ -174,13 +177,16 @@ func New(opts Options) http.Handler {
 		pushLimit:                 newRateLimiter(opts.Clock, pushBurst, pushPerSecond),
 		setupLimit:                newRateLimiter(opts.Clock, setupBurst, setupPerSecond),
 		policies:                  map[string]scopePolicy{},
+		originCheck:               newOriginCheck(opts.PublicURL),
 	}
 	return a.routes()
 }
 
 func (a *API) routes() http.Handler {
 	r := chi.NewRouter()
-	r.Use(recoverPanic, securityHeaders)
+	// A conferência de origem vem antes de qualquer rota: uma rota de
+	// escrita nova nasce protegida, sem depender de alguém lembrar.
+	r.Use(recoverPanic, securityHeaders, a.sameOrigin)
 	// Toda rota entra pela tabela, que exige a política de escopo junto.
 	t := routeTable{r: r, policies: a.policies}
 
