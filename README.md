@@ -59,6 +59,13 @@ próprios e deixa você escolher a forma do corpo — veja
 [Webhook](#webhook). Canal vinculado a um grupo avisa sobre todos os
 monitores dele, inclusive os criados depois; o vínculo direto com um
 monitor continua existindo, e cada canal recebe o aviso uma vez só.
+Os vínculos se escolhem no próprio canal, ao criar ou editar, numa árvore
+Sistema › Ambiente › serviço: grupo inteiro marcado liga o grupo (sistema
+inteiro liga o sistema, que cobre também os ambientes novos), e o resto
+marcado liga cada monitor. Grupo ainda vazio também pode ser marcado. Na
+API, `targets` em `POST`/`PUT /api/v1/channels` ou
+`PUT /api/v1/channels/{id}/targets` troca o conjunto inteiro numa
+transação só.
 
 Uma entrega que falha é repetida até quatro vezes, com espera crescente,
 quando a falha pode passar: erro de rede, timeout, HTTP 429 ou 5xx, SMTP
