@@ -28,6 +28,9 @@ func TestChannelSecretsNeverComeBack(t *testing.T) {
 			"server": "https://ntfy.exemplo.com", "topic": "infra",
 			"token": "tk_token-do-ntfy-secreto",
 		}, "tk_token-do-ntfy-secreto"},
+		{"teams", map[string]any{
+			"url": "https://prod-1.westus.logic.azure.com/workflows/w1/triggers/manual/paths/invoke?sig=sig-do-teams-secreta",
+		}, "sig-do-teams-secreta"},
 	}
 
 	for _, c := range casos {

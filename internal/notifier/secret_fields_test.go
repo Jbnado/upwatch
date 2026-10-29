@@ -28,6 +28,10 @@ var channelSamples = map[string]struct {
 		`{"url":"https://hooks.slack.com/services/T0/B0/tok-slack","template":"alerta"}`,
 		[]string{"tok-slack"}, []string{"alerta"},
 	},
+	"teams": {
+		`{"url":"https://prod-1.westus.logic.azure.com/workflows/w1/triggers/manual/paths/invoke?sig=tok-teams"}`,
+		[]string{"tok-teams"}, nil,
+	},
 	"email": {
 		`{"host":"smtp.exemplo.com","username":"alertas","password":"senha-smtp","from":"a@exemplo.com","to":["b@exemplo.com"]}`,
 		[]string{"senha-smtp"}, []string{"smtp.exemplo.com", "alertas", "b@exemplo.com"},

@@ -36,6 +36,7 @@ func TestRedactConfigHidesEveryCredential(t *testing.T) {
 func TestRedactConfigMarksWhereTheSecretWas(t *testing.T) {
 	casos := []struct{ typ, raw, quer string }{
 		{"discord", `{"url":"https://discord.com/api/webhooks/1/tok"}`, `"url_set":true`},
+		{"teams", `{"url":"https://prod-1.westus.logic.azure.com/workflows/w1?sig=tok"}`, `"url_set":true`},
 		{"webhook", `{"url":"https://h.exemplo.com","headers":{"Authorization":"Bearer x","X-Vazio":""}}`,
 			`"headers":{"Authorization":"***","X-Vazio":""}`},
 		{"email", `{"host":"smtp.exemplo.com","password":"p","from":"a@exemplo.com","to":["b@exemplo.com"]}`, `"password_set":true`},

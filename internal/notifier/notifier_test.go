@@ -344,7 +344,7 @@ func TestBuildResolvesEmailAndNtfy(t *testing.T) {
 // inalcançável pela interface. Os dois saem da mesma lista.
 func TestTypesAndBuildAgree(t *testing.T) {
 	tipos := notifier.Types()
-	for _, esperado := range []string{"webhook", "discord", "slack", "email", "ntfy"} {
+	for _, esperado := range []string{"webhook", "discord", "slack", "teams", "email", "ntfy"} {
 		if !contem(tipos, esperado) {
 			t.Errorf("Types() = %v, missing %q", tipos, esperado)
 		}
@@ -600,6 +600,7 @@ func TestDeliveryErrorsDoNotCarryTheSecretPartOfTheURL(t *testing.T) {
 		"discord": `{"url":"` + base + `/api/webhooks/123/` + segredo + `"}`,
 		"slack":   `{"url":"` + base + `/services/T000/B000/` + segredo + `"}`,
 		"ntfy":    `{"server":"` + base + `","topic":"` + segredo + `"}`,
+		"teams":   `{"url":"` + strings.Replace(base, "http://", "https://", 1) + `/workflows/abc/invoke?sig=` + segredo + `"}`,
 	}
 	for tipo, cfg := range casos {
 		t.Run(tipo, func(t *testing.T) {

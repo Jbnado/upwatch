@@ -90,12 +90,14 @@ var canais = []struct {
 	{"webhook", NewWebhook, webhookSecrets, edicaoWebhook},
 	{"discord", NewDiscord, webhookSecrets, edicaoWebhook},
 	{"slack", NewSlack, webhookSecrets, edicaoWebhook},
+	{"teams", NewTeams, webhookSecrets, edicaoWebhook},
 	{"email", NewEmail, secretbox.Fields{Names: []string{"password"}}, edicaoEmail},
 	{"ntfy", NewNtfy, secretbox.Fields{Names: []string{"token"}}, edicaoNtfy},
 }
 
-// webhookSecrets vale para os três canais de webhook. A URL do Discord e a
-// do Slack levam o token no caminho: quem a tem publica no canal. Os
+// webhookSecrets vale para os canais de webhook. A URL do Discord e a do
+// Slack levam o token no caminho, e a do Teams leva a assinatura na query:
+// quem a tem publica no canal. Os
 // cabeçalhos existem para autenticar contra o destino, então todos são
 // credencial — ao contrário do monitor HTTP, aqui nenhum volta pela API
 // para a interface mostrar.
@@ -419,6 +421,12 @@ func (e *statusError) Permanent() bool {
 // faria a notificação sumir em silêncio, que é o pior desfecho possível
 // num sistema de alerta.
 func postRaw(ctx context.Context, url string, headers map[string]string, contentType string, corpo []byte) error {
+	return postRawVia(ctx, http.DefaultClient, url, headers, contentType, corpo)
+}
+
+// postRawVia é o postRaw com o cliente escolhido; o do Teams o troca nos
+// testes, porque o canal só aceita https.
+func postRawVia(ctx context.Context, cliente *http.Client, url string, headers map[string]string, contentType string, corpo []byte) error {
 	ctx, cancel := context.WithTimeout(ctx, sendTimeout)
 	defer cancel()
 
@@ -431,7 +439,7 @@ func postRaw(ctx context.Context, url string, headers map[string]string, content
 		req.Header.Set(k, v)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := cliente.Do(req)
 	if err != nil {
 		return fmt.Errorf("notifier: entregando aviso: %w", maskURL(err))
 	}

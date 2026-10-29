@@ -952,7 +952,7 @@ paths:
                 properties:
                   items:
                     type: array
-                    items: { type: string, enum: [webhook, discord, slack, email, ntfy] }
+                    items: { type: string, enum: [webhook, discord, slack, teams, email, ntfy] }
 
   /api/v1/channels:
     get:
@@ -2695,7 +2695,7 @@ components:
       properties:
         id: { type: integer, format: int64 }
         name: { type: string }
-        type: { type: string, enum: [webhook, discord, slack, email, ntfy] }
+        type: { type: string, enum: [webhook, discord, slack, teams, email, ntfy] }
         enabled: { type: boolean }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
@@ -2738,7 +2738,7 @@ components:
       required: [name, type, config]
       properties:
         name: { type: string, maxLength: 80 }
-        type: { type: string, enum: [webhook, discord, slack, email, ntfy] }
+        type: { type: string, enum: [webhook, discord, slack, teams, email, ntfy] }
         enabled: { type: boolean, default: true }
         targets:
           $ref: "#/components/schemas/ChannelTargets"
@@ -2747,7 +2747,7 @@ components:
             ausente na edição mantém os atuais.
         config:
           description: |
-            A forma depende de type. webhook, discord e slack usam
+            A forma depende de type. webhook, discord, slack e teams usam
             WebhookChannelConfig; email usa EmailChannelConfig; ntfy usa
             NtfyChannelConfig.
 
@@ -2760,7 +2760,10 @@ components:
 
     WebhookChannelConfig:
       type: object
-      description: Canais webhook, discord e slack.
+      description: |
+        Canais webhook, discord, slack e teams. No teams a url é a do
+        gatilho "When a Teams webhook request is received" do app
+        Workflows (Power Automate), e precisa ser https.
       required: [url]
       properties:
         url:
@@ -2784,7 +2787,7 @@ components:
         body_template:
           description: |
             Forma do corpo inteiro, e não só da frase. Só no canal
-            webhook - discord e slack têm corpo ditado pelo destino e
+            webhook - discord, slack e teams têm corpo ditado pelo destino e
             recusam este campo no cadastro.
 
             Qualquer objeto ou lista JSON. Em qualquer texto dentro

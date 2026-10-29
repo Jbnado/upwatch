@@ -192,6 +192,9 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 	// Contadores acumulados no processo, lidos pela exposição de métricas.
 	counters := metrics.New()
 
+	// O cartão do Teams leva um botão para a página do monitor, e o
+	// endereço externo só a configuração conhece.
+	notifier.SetPublicURL(cfg.PublicURL)
 	alerts := notifier.NewDispatcher(notifier.DispatcherOptions{Clock: real, Counters: counters})
 
 	// O motor fica entre o agendador e o escritor: observa cada batida a
