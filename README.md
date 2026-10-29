@@ -115,7 +115,13 @@ maior que o dele e não mexe em canal (nem no vínculo de canal com
 monitor ou grupo), página pública ou relato, que afetam todos os
 grupos. Ele também só enxerga os canais ligados ao que é dele, e não
 aponta monitor para a rede interna do servidor (ver
-`UPWATCH_RESTRICT_PRIVATE_TARGETS`).
+`UPWATCH_RESTRICT_PRIVATE_TARGETS`). Relato que só fala de monitores de
+fora não aparece para ele, e o pai de fora do escopo não sai no
+`parent_id` — e a dependência continua gravada quando ele salva o
+monitor. O monitor do qual dependem monitores de outros grupos (a sonda
+que um administrador de escopo total ligou como pai deles) só é
+alterado ou excluído por quem alcança todos os grupos: a queda dele
+calaria os alertas dos outros.
 
 **Verificação em duas etapas, opcional por conta.** Em Ajustes ›
 Verificação em duas etapas, a conta cadastra um aplicativo autenticador
@@ -228,12 +234,18 @@ usaria o servidor como sonda na rede de dentro dele — varrendo portas
 pela causa de cada falha e, no metadado da nuvem, saindo com
 credencial. Com a regra ligada, criar ou editar monitor com conta
 restrita recusa destino que resolva para loopback, rede privada (RFC
-1918 e ULA), enlace local ou espaço compartilhado de provedor, e também
-nome que não resolve — em todo tipo que conecta, inclusive Redis,
-PostgreSQL e MySQL. Contas que alcançam todos os grupos não são
-afetadas, e editar sem mudar o destino escolhido por outra pessoa
-continua permitido. Desligue se a instalação existe justamente para os
-times monitorarem a rede interna.
+1918 e ULA), enlace local, espaço compartilhado de provedor, faixas
+reservadas (`192.0.0.0/24`, `198.18.0.0/15`, `240.0.0.0/4`) ou endereço
+IPv6 que embute IPv4 (NAT64, 6to4, IPv4-compatível, SIIT) ou
+site-local, e também nome que não resolve — em todo tipo que conecta,
+inclusive Redis, PostgreSQL e MySQL. Contas que alcançam todos os grupos
+não são afetadas, e editar sem mudar o destino escolhido por outra
+pessoa continua permitido: renomear, pausar, mudar intervalo, tempo
+limite, limiares, grupo e etiquetas. Mudar a configuração — método,
+corpo, cabeçalhos, autenticação, asserções, consulta ou usuário do
+banco — é escolher o destino de novo, e passa pela mesma conferência.
+Desligue se a instalação existe justamente para os times monitorarem a
+rede interna.
 
 A conferência do cadastro resolve o nome naquela hora, e por isso o
 checker confere de novo ao conectar, com o endereço efetivamente
@@ -242,8 +254,11 @@ um nome que passa a apontar para dentro depois (DNS rebinding) e um
 redirecionamento HTTP para dentro derrubam a verificação com a causa "o
 destino aponta para a rede interna do servidor", sem dizer o endereço.
 Vale para cada salto do redirecionamento e para todos os tipos; no ping,
-o pacote vai ao endereço conferido, e o DNS sem resolvedor configurado
-continua usando o do sistema. Esses monitores ignoram `HTTPS_PROXY`:
+o pacote vai ao endereço conferido. O DNS sem resolvedor configurado
+continua usando o do sistema, mas a resposta que aponta para a rede
+interna não conta e não aparece, e os registros que não são endereço
+(CNAME, MX, NS, TXT) não são mostrados — só comparados com os valores
+esperados. Esses monitores ignoram `HTTPS_PROXY`:
 atrás de um proxy é ele quem conecta, e o servidor não saberia para
 onde. O monitor salvo antes desta conferência existir só a recebe quando
 uma conta restrita mudar o destino de novo. Desligar a regra desliga as
