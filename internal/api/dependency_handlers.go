@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -114,7 +115,7 @@ func (a *API) handleSetChildren(w http.ResponseWriter, r *http.Request) {
 		// O motor precisa do pai novo para decidir a próxima falha.
 		a.notifyScheduler(m)
 		anterior := anteriores[i]
-		a.events.publish(event{Type: "monitor.updated", Data: toMonitorResponse(m, checker.Readers), monitor: &m, previous: &anterior})
+		a.publishMonitor(ctx, "monitor.updated", m, &anterior)
 		items = append(items, toMonitorResponse(m, to))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
@@ -155,7 +156,7 @@ func (a *API) handleUnlinkChild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.notifyScheduler(m)
-	a.events.publish(event{Type: "monitor.updated", Data: toMonitorResponse(m, checker.Readers), monitor: &m, previous: &anterior})
+	a.publishMonitor(ctx, "monitor.updated", m, &anterior)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -209,4 +210,135 @@ func (a *API) silenced(ctx context.Context, estados map[int64]domain.MonitorStat
 		}
 	}
 	return calados, nil
+}
+
+// ---------- pai fora do escopo ----------
+
+// parentVisibility diz se a conta enxerga o pai de um monitor.
+//
+// O pai pode estar fora do escopo: quem alcança tudo liga o monitor de um
+// grupo ao sinal de vida de uma sonda de outro. O resto do código já
+// esconde o ancestral de fora (affectedFor); o parent_id da resposta tem
+// de fazer o mesmo, ou confirmaria o id de um monitor que a conta não
+// alcança.
+type parentVisibility func(parentID int64) bool
+
+// parentVisibility monta a pergunta para a requisição, lendo cada pai uma
+// vez só. Erro de leitura esconde: na dúvida, o id não sai.
+func (a *API) parentVisibility(ctx context.Context, v viewer) parentVisibility {
+	if v.access.All() {
+		return func(int64) bool { return true }
+	}
+	vistos := map[int64]bool{}
+	return func(id int64) bool {
+		if visivel, ok := vistos[id]; ok {
+			return visivel
+		}
+		pai, err := a.store.Monitors().Get(ctx, id)
+		visivel := err == nil && v.sees(pai)
+		vistos[id] = visivel
+		return visivel
+	}
+}
+
+// apply tira da resposta o parent_id que a conta não enxerga.
+func (pv parentVisibility) apply(resp *monitorResponse) {
+	if resp.ParentID != nil && !pv(*resp.ParentID) {
+		resp.ParentID = nil
+	}
+}
+
+// keepHiddenParent mantém, na edição, o pai gravado que a conta não
+// enxerga.
+//
+// A resposta não traz esse parent_id, e o formulário volta sem ele.
+// Tratar a ausência como "sem pai" desligaria a dependência que alguém de
+// escopo total criou, e devolver o id que a conta não deveria conhecer
+// responderia 404 na conferência do pai. Ausente, nulo ou o mesmo id
+// mantêm o pai; trocar por um pai visível continua sendo conferido como
+// sempre. Devolve se manteve, para a conferência do pai não recusar o
+// que a conta não escolheu.
+func (a *API) keepHiddenParent(r *http.Request, m *domain.Monitor) bool {
+	gravado := monitorFrom(r).ParentID
+	if gravado == nil || a.parentVisibility(r.Context(), viewerFrom(r))(*gravado) {
+		return false
+	}
+	if m.ParentID != nil && *m.ParentID != *gravado {
+		return false
+	}
+	pai := *gravado
+	m.ParentID = &pai
+	return true
+}
+
+// publishMonitor avisa a interface da mudança do monitor, levando junto o
+// pai, para o fluxo de cada conta decidir se o parent_id pode ir.
+func (a *API) publishMonitor(ctx context.Context, tipo string, m domain.Monitor, anterior *domain.Monitor) {
+	e := event{Type: tipo, Data: toMonitorResponse(m, checker.Readers), monitor: &m, previous: anterior}
+	if m.ParentID != nil {
+		if pai, err := a.store.Monitors().Get(ctx, *m.ParentID); err == nil {
+			e.parent = &pai
+		}
+	}
+	a.events.publish(e)
+}
+
+// ---------- dependentes fora do escopo ----------
+
+// errDependentsOutOfScope recusa a mudança no monitor de que dependem
+// monitores fora do escopo de quem edita.
+var errDependentsOutOfScope = errors.New("api: monitor com dependentes fora do escopo")
+
+// checkDependentsInScope exige escopo total para alterar ou apagar o
+// monitor que tem dependentes, diretos ou não, fora do escopo de quem
+// pede.
+//
+// O pai em queda cala os alertas dos dependentes (domain.DownAncestor).
+// Quem alcança tudo pode ligar um monitor de outro grupo como dependente
+// de um daqui — o caso comum é a sonda como pai —, e a conta restrita a
+// este grupo não pode, mexendo no pai (trocar o alvo, pausar, apagar),
+// decidir se os alertas do outro grupo chegam. Os netos contam: a queda
+// do pai cala a cadeia inteira.
+func (a *API) checkDependentsInScope(ctx context.Context, v viewer, id int64) error {
+	if v.access.All() {
+		return nil
+	}
+	todos, err := a.listAllMonitors(ctx, store.MonitorFilter{})
+	if err != nil {
+		return err
+	}
+	filhos := map[int64][]domain.Monitor{}
+	for _, m := range todos {
+		if m.ParentID != nil {
+			filhos[*m.ParentID] = append(filhos[*m.ParentID], m)
+		}
+	}
+	vistos := map[int64]bool{id: true}
+	fila := []int64{id}
+	for len(fila) > 0 {
+		atual := fila[0]
+		fila = fila[1:]
+		for _, f := range filhos[atual] {
+			if !v.sees(f) {
+				return errDependentsOutOfScope
+			}
+			if !vistos[f.ID] {
+				vistos[f.ID] = true
+				fila = append(fila, f.ID)
+			}
+		}
+	}
+	return nil
+}
+
+// writeDependentsError traduz a recusa por dependentes de fora. 403, e
+// não 404: o monitor está no escopo e a conta o vê; o que ela não pode é
+// alterá-lo. A mensagem não diz quais nem quantos são os dependentes.
+func writeDependentsError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errDependentsOutOfScope) {
+		writeError(w, http.StatusForbidden, codeForbidden,
+			"monitores de outros grupos dependem deste; só quem alcança todos os grupos pode alterá-lo ou excluí-lo")
+		return
+	}
+	writeStoreError(w, err)
 }
