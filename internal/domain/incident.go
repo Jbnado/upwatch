@@ -84,6 +84,33 @@ type Incident struct {
 	ResolvedAt *time.Time `json:"resolved_at,omitempty"`
 	// Cause é a falha observada no momento da confirmação.
 	Cause string `json:"cause,omitempty"`
+
+	// RemindedAt é o último lembrete enviado; nulo enquanto nenhum saiu.
+	RemindedAt *time.Time `json:"reminded_at,omitempty"`
+	// Acknowledgement nulo é queda que ninguém disse estar olhando.
+	Acknowledgement *Acknowledgement `json:"acknowledgement,omitempty"`
+}
+
+// maxAckNoteLength limita a nota do reconhecimento. É recado para quem
+// abre o incidente, não relatório.
+const maxAckNoteLength = 500
+
+// Acknowledgement é o "estou vendo" de alguém sobre uma queda aberta. Cala
+// os lembretes daquele incidente; o aviso de volta continua saindo.
+type Acknowledgement struct {
+	// By é o nome da conta, e não o id: o histórico precisa dizer quem
+	// estava olhando mesmo depois de a conta ser apagada.
+	By   string    `json:"by"`
+	At   time.Time `json:"at"`
+	Note string    `json:"note,omitempty"`
+}
+
+// Validate confere a nota.
+func (a Acknowledgement) Validate() error {
+	if len([]rune(a.Note)) > maxAckNoteLength {
+		return invalid("note", fmt.Sprintf("não pode passar de %d caracteres", maxAckNoteLength))
+	}
+	return nil
 }
 
 // Open informa se o incidente ainda não terminou.

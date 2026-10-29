@@ -284,7 +284,23 @@ type IncidentRepo interface {
 	Resolve(ctx context.Context, monitorID int64, at time.Time) error
 	// Current devolve a queda em curso, ou ErrNotFound.
 	Current(ctx context.Context, monitorID int64) (domain.Incident, error)
+	// Get devolve o incidente pelo id, ou ErrNotFound.
+	Get(ctx context.Context, id int64) (domain.Incident, error)
 	List(ctx context.Context, f IncidentFilter) (Page[domain.Incident], error)
+
+	// Acknowledge registra o "estou vendo" e devolve o incidente como
+	// ficou. ErrNotFound se ele não existir; ErrConflict se já estiver
+	// encerrado ou reconhecido — o primeiro reconhecimento é o que conta,
+	// e trocá-lo calado apagaria quem chegou antes.
+	Acknowledge(ctx context.Context, id int64, ack domain.Acknowledgement) (domain.Incident, error)
+	// MarkReminded registra o lembrete enviado em at, e só se o incidente
+	// seguir aberto, sem reconhecimento e com o último lembrete ainda em
+	// previous (nulo: nenhum). Devolve se registrou.
+	//
+	// A condição é conferida na própria escrita, e quem chama só envia o
+	// lembrete se ela passou: um reconhecimento que chega entre a leitura
+	// e o envio cala o lembrete em vez de perder para ele.
+	MarkReminded(ctx context.Context, id int64, previous *time.Time, at time.Time) (bool, error)
 }
 
 // ChannelRepo guarda os destinos de aviso e seus vínculos.
