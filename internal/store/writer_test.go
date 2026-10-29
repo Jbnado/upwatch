@@ -79,6 +79,23 @@ func awaitWrite(t *testing.T, f *fakeTS) int {
 	}
 }
 
+// awaitPending espera o laço do writer ter n batidas no buffer.
+//
+// Submit só entrega à fila; mexer no relógio antes de o laço tirar a
+// batida dela deixa o select com o tique e a batida prontos ao mesmo
+// tempo, e ele escolhe ao acaso. Escolhido o tique, o flush encontra o
+// buffer vazio e o teste passa a depender de escalonamento.
+func awaitPending(t *testing.T, w *store.BatchWriter, n int64) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for w.Pending() != n {
+		if time.Now().After(deadline) {
+			t.Fatalf("Pending() = %d, want %d", w.Pending(), n)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func beatAt(offset time.Duration) domain.Heartbeat {
 	return domain.Heartbeat{
 		MonitorID: 1,
@@ -146,6 +163,7 @@ func TestBatchWriterFlushesOnInterval(t *testing.T) {
 	if err := w.Submit(context.Background(), beatAt(0)); err != nil {
 		t.Fatalf("Submit returned unexpected error: %v", err)
 	}
+	awaitPending(t, w, 1)
 
 	// Espera o laço registrar o timer antes de mexer no relógio, senão o
 	// teste passaria a depender de escalonamento.
@@ -238,12 +256,14 @@ func TestBatchWriterRetainsBatchAfterWriteFailure(t *testing.T) {
 	if err := w.Submit(context.Background(), beatAt(0)); err != nil {
 		t.Fatalf("Submit returned unexpected error: %v", err)
 	}
+	awaitPending(t, w, 1)
 	fake.BlockUntil(1)
 	fake.Advance(time.Second) // este flush falha
 
 	if err := w.Submit(context.Background(), beatAt(time.Second)); err != nil {
 		t.Fatalf("Submit returned unexpected error: %v", err)
 	}
+	awaitPending(t, w, 2)
 	fake.BlockUntil(1)
 	fake.Advance(time.Second) // este deve levar as duas
 

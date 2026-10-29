@@ -228,3 +228,62 @@ describe("serviceOrigin", () => {
     expect(serviceOrigin(MONITORES[8]!, GRUPOS)).toBe("Sem grupo");
   });
 });
+
+describe("dependentes na árvore", () => {
+  // A sonda da VM de RPA/prod e as verificações que ela faz. O redis de
+  // Retaguarda depende da mesma sonda, mas mora noutro grupo.
+  const sonda = { ...monitor(40, "sonda vm-01", 2), type: "push" as const };
+  const fila = { ...monitor(41, "fila", 2), parent_id: 40 };
+  const worker = { ...monitor(42, "worker", 2), parent_id: 41 };
+  const redis = { ...monitor(43, "redis", 5), parent_id: 40 };
+  const MAIS = [...MONITORES, sonda, fila, worker, redis];
+  const comSonda = () => buildServiceTree(GRUPOS, MAIS);
+  const rpaProd = () => comSonda().find((n) => n.name === "RPA")!.children[1]!;
+
+  it("põe o dependente sob o pai do mesmo grupo, em qualquer profundidade", () => {
+    expect(forma(rpaProd().children)).toEqual([
+      "api#10",
+      "banco#11",
+      "sonda vm-01#40",
+      "  fila#41",
+      "    worker#42",
+    ]);
+  });
+
+  it("deixa no próprio grupo o dependente de um pai de outro grupo", () => {
+    // Marcar "Retaguarda › prod" tem de levar o redis, que está lá.
+    const retaguardaProd = comSonda()[0]!.children[1]!;
+    expect(leafIds(retaguardaProd).sort()).toEqual([20, 21, 22, 43]);
+  });
+
+  it("marcar o ambiente marca também os dependentes aninhados", () => {
+    expect([...toggleNode(rpaProd(), new Set())].sort()).toEqual([10, 11, 40, 41, 42]);
+  });
+
+  it("marcar o pai marca só ele", () => {
+    // Avisar sobre a sonda não é o mesmo que avisar sobre o que ela vigia.
+    const no = rpaProd().children[2]!;
+    expect([...toggleNode(no, new Set())]).toEqual([40]);
+    expect(nodeState(no, new Set([41, 42]))).toBe("unchecked");
+  });
+
+  it("o travado não entra no grupo, nem na marca nem no estado", () => {
+    const travados = new Set([40, 41]);
+    expect([...toggleNode(rpaProd(), new Set(), travados)].sort()).toEqual([10, 11, 42]);
+    expect(nodeState(rpaProd(), new Set([10, 11, 42]), travados)).toBe("checked");
+  });
+
+  it("na busca, o dependente achado aparece sob o pai", () => {
+    expect(forma(filterServiceTree(comSonda(), "worker"))).toEqual([
+      "RPA",
+      "  prod",
+      "    sonda vm-01#40",
+      "      fila#41",
+      "        worker#42",
+    ]);
+  });
+
+  it("abre o pai com dependente marcado", () => {
+    expect([...openByDefault(comSonda(), new Set([42]))].sort()).toEqual(["g2", "m40", "m41"]);
+  });
+});

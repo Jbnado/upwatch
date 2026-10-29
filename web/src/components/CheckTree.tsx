@@ -4,11 +4,14 @@ import type { CheckState } from "../lib/service-tree";
 /**
  * CheckTree é uma árvore de caixas de marcar.
  *
- * Uma só para o acesso por conta (Sistema › Ambiente) e para o que se
- * publica (Sistema › Ambiente › serviço): as duas escolhas são a mesma
- * conversa — "quais destes?" sobre a mesma hierarquia —, e duas árvores
+ * Uma só para o acesso por conta (Sistema › Ambiente) e para escolher
+ * monitores (Sistema › Ambiente › serviço › dependentes): as escolhas são
+ * a mesma conversa — "quais destes?" sobre a mesma hierarquia —, e duas árvores
  * parecidas com detalhes diferentes ensinariam duas maneiras de ler a
  * mesma coisa.
+ *
+ * Sem estado, o item não tem caixa: a mesma árvore serve para só mostrar
+ * a hierarquia, como a lista de quem depende de quem.
  *
  * A árvore só desenha. Quem a usa decide o estado de cada caixa e o que
  * um clique faz, porque é aí que as duas diferem: no acesso, marcar o
@@ -18,6 +21,8 @@ import type { CheckState } from "../lib/service-tree";
 export type TreeItem = {
   key: string;
   label: ReactNode;
+  /** Nome do item quando o rótulo não é texto, como um link. */
+  name?: string;
   /**
    * Completa o nome da caixa para quem não vê a árvore: "erp" sozinho
    * não diz de qual ambiente é. Fica só para o leitor de tela; quem vê
@@ -26,7 +31,8 @@ export type TreeItem = {
   context?: string;
   /** Texto discreto ao lado do rótulo: contagem, "pelo sistema". */
   meta?: ReactNode;
-  state: CheckState;
+  /** Ausente é linha sem caixa, só para ler. */
+  state?: CheckState;
   disabled?: boolean;
   /** Recolhível: ganha o botão de abrir e fechar. */
   collapsible?: boolean;
@@ -43,7 +49,7 @@ export function CheckTree({
   onOpenChange,
 }: {
   items: TreeItem[];
-  onToggle: (key: string) => void;
+  onToggle?: (key: string) => void;
   /** Chaves dos itens recolhíveis abertos. */
   open?: Set<string>;
   onOpenChange?: (key: string, open: boolean) => void;
@@ -85,13 +91,14 @@ function Linha({
   nivel: number;
   recolhe: boolean;
   open: Set<string>;
-  onToggle: (key: string) => void;
+  onToggle?: (key: string) => void;
   onOpenChange?: (key: string, open: boolean) => void;
 }) {
   const id = useId();
+  const marcavel = item.state !== undefined;
   const aberto = !item.collapsible || open.has(item.key);
   const filhos = item.children ?? [];
-  const nome = typeof item.label === "string" ? item.label : "";
+  const nome = typeof item.label === "string" ? item.label : (item.name ?? "");
 
   return (
     <li>
@@ -118,32 +125,34 @@ function Linha({
             <span className="w-6 shrink-0" aria-hidden />
           ))}
 
-        <label
-          className={[
-            "pressable flex min-h-7 min-w-0 flex-1 items-center gap-2 rounded-sm px-1 py-1 text-body",
-            item.disabled
-              ? "cursor-not-allowed text-ink-3"
-              : "cursor-pointer hover:bg-sunken active:bg-pressed",
-          ].join(" ")}
-        >
-          <input
-            type="checkbox"
-            className="shrink-0 accent-ink"
-            checked={item.state === "checked"}
-            // A caixa parcial é o que mostra, sem abrir o ambiente, que só
-            // parte dele foi escolhida.
-            ref={(el) => {
-              if (el) el.indeterminate = item.state === "mixed";
-            }}
-            disabled={item.disabled}
-            onChange={() => onToggle(item.key)}
-          />
-          <span className={`min-w-0 truncate ${item.strong ? "font-medium" : ""}`}>
-            {item.label}
-          </span>
-          {item.context && <span className="sr-only">, {item.context}</span>}
-          {item.meta && <span className="shrink-0 text-small text-ink-3">{item.meta}</span>}
-        </label>
+        {marcavel ? (
+          <label
+            className={[
+              "pressable flex min-h-7 min-w-0 flex-1 items-center gap-2 rounded-sm px-1 py-1 text-body",
+              item.disabled
+                ? "cursor-not-allowed text-ink-3"
+                : "cursor-pointer hover:bg-sunken active:bg-pressed",
+            ].join(" ")}
+          >
+            <input
+              type="checkbox"
+              className="shrink-0 accent-ink"
+              checked={item.state === "checked"}
+              // A caixa parcial é o que mostra, sem abrir o ambiente, que só
+              // parte dele foi escolhida.
+              ref={(el) => {
+                if (el) el.indeterminate = item.state === "mixed";
+              }}
+              disabled={item.disabled}
+              onChange={() => onToggle?.(item.key)}
+            />
+            <Rotulo item={item} />
+          </label>
+        ) : (
+          <div className="flex min-h-7 min-w-0 flex-1 items-center gap-2 px-1 py-1 text-body">
+            <Rotulo item={item} />
+          </div>
+        )}
       </div>
 
       {item.detail && (
@@ -174,5 +183,15 @@ function Linha({
         </ul>
       )}
     </li>
+  );
+}
+
+function Rotulo({ item }: { item: TreeItem }) {
+  return (
+    <>
+      <span className={`min-w-0 truncate ${item.strong ? "font-medium" : ""}`}>{item.label}</span>
+      {item.context && <span className="sr-only">, {item.context}</span>}
+      {item.meta && <span className="shrink-0 text-small text-ink-3">{item.meta}</span>}
+    </>
   );
 }

@@ -660,6 +660,21 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/v1/monitors/{id}/children/{childID}:
+    delete:
+      tags: [monitors]
+      summary: Desliga um dependente deste monitor
+      description: |
+        O monitor `childID` deixa de depender do monitor do caminho e
+        volta a avisar por conta própria. Responde 404 se ele não existe,
+        está fora do escopo ou depende de outro pai.
+      parameters:
+        - { $ref: "#/components/parameters/PathID" }
+        - { $ref: "#/components/parameters/PathChildID" }
+      responses:
+        "204": { description: Dependente desligado }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/v1/summaries:
     get:
       tags: [data]
@@ -952,18 +967,33 @@ paths:
     get:
       tags: [alerts]
       summary: Devolve um canal
-      description: Canal que não avisa sobre nada do escopo da conta responde 404.
+      description: |
+        Canal que não avisa sobre nada do escopo da conta responde 404.
+
+        Para quem pode editar canais (papel com escrita e acesso a todos
+        os grupos), a resposta traz também config, sem credencial, para o
+        formulário de edição. Os demais recebem só o Channel.
       parameters: [{ $ref: "#/components/parameters/PathID" }]
       responses:
         "200":
           description: O canal
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Channel" }
+              schema: { $ref: "#/components/schemas/ChannelDetail" }
         "404": { $ref: "#/components/responses/NotFound" }
     put:
       tags: [alerts]
       summary: Atualiza um canal
+      description: |
+        Os vínculos com monitores e grupos continuam. A credencial que
+        não volta no GET é mantida quando não vem: url ausente mantém a
+        URL do webhook, password ausente a senha do SMTP, token ausente o
+        token do ntfy, e um cabeçalho com o valor "***" o valor guardado.
+        Campo presente, mesmo vazio, é o novo valor.
+
+        A credencial guardada só acompanha o mesmo destino: ao trocar a
+        URL, o servidor SMTP ou o servidor do ntfy, ela precisa vir de
+        novo, ou a edição responde 400. Trocar o tipo não mantém nada.
       parameters: [{ $ref: "#/components/parameters/PathID" }]
       requestBody:
         required: true
@@ -2013,6 +2043,11 @@ components:
       in: path
       required: true
       schema: { type: integer, format: int64, minimum: 1 }
+    PathChildID:
+      name: childID
+      in: path
+      required: true
+      schema: { type: integer, format: int64, minimum: 1 }
     PathGroupID:
       name: groupID
       in: path
@@ -2556,6 +2591,19 @@ components:
         enabled: { type: boolean }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+
+    ChannelDetail:
+      allOf:
+        - $ref: "#/components/schemas/Channel"
+        - type: object
+          properties:
+            config:
+              type: object
+              description: |
+                Só para quem pode editar canais. A configuração sem
+                credencial - url_set, password_set e token_set dizem se
+                há URL, senha ou token guardados, e os cabeçalhos vêm com
+                o nome e o valor "***".
 
     ChannelInput:
       type: object

@@ -14,18 +14,19 @@ import (
 	"github.com/Jbnado/upwatch/internal/domain"
 	"github.com/Jbnado/upwatch/internal/secretbox"
 	"github.com/Jbnado/upwatch/internal/store/sqlstore"
+	"github.com/Jbnado/upwatch/internal/testdir"
 )
 
 func sqliteConfig(t *testing.T) config.Config {
 	t.Helper()
 	cfg := config.Default()
-	cfg.Database.DSN = filepath.Join(t.TempDir(), "upwatch.db")
+	cfg.Database.DSN = filepath.Join(testdir.New(t), "upwatch.db")
 	return cfg
 }
 
 func keyFile(t *testing.T, k secretbox.Key) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "chave")
+	path := filepath.Join(testdir.New(t), "chave")
 	if err := os.WriteFile(path, []byte(k.Encode()+"\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile returned unexpected error: %v", err)
 	}

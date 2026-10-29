@@ -4,6 +4,7 @@ import {
   type AnnouncementUpdate,
   type APIToken,
   type Channel,
+  type ChannelDetail,
   type ChannelInput,
   type ChannelType,
   type CreatedToken,
@@ -144,6 +145,10 @@ export const api = {
       body: JSON.stringify({ monitor_ids: monitorIds }),
     }),
 
+  /** unlinkChild solta um dependente deste monitor; o de outro pai é 404. */
+  unlinkChild: (id: number, childId: number) =>
+    request<void>(`/monitors/${id}/children/${childId}`, { method: "DELETE" }),
+
   // ---------- dados ----------
 
   /**
@@ -192,6 +197,8 @@ export const api = {
   channelTypes: () => request<{ items: ChannelType[] }>("/channel-types"),
 
   listChannels: () => request<{ items: Channel[] }>("/channels"),
+
+  getChannel: (id: number) => request<ChannelDetail>(`/channels/${id}`),
 
   createChannel: (input: ChannelInput) =>
     request<Channel>("/channels", { method: "POST", body: JSON.stringify(input) }),

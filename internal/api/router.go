@@ -309,6 +309,7 @@ func (a *API) routes() http.Handler {
 			// "Definir pai" para vários monitores de uma vez: o {id} é o
 			// pai, e cada filho é conferido contra o escopo no handler.
 			t.handle(http.MethodPost, "/monitors/{id}/children", policyMonitor, a.handleSetChildren)
+			t.handle(http.MethodDelete, "/monitors/{id}/children/{childID}", policyMonitor, a.handleUnlinkChild)
 
 			t.handle(http.MethodPut, "/monitors/{id}/channels/{channelID}", policyFullScope|policyMonitor, a.handleLinkChannel)
 			t.handle(http.MethodDelete, "/monitors/{id}/channels/{channelID}", policyFullScope|policyMonitor, a.handleUnlinkChannel)
