@@ -329,6 +329,9 @@ func (a *API) routes() http.Handler {
 
 			t.handle(http.MethodPost, "/channels", policyFullScope, a.handleCreateChannel)
 			t.handle(http.MethodPut, "/channels/{id}", policyFullScope, a.handleUpdateChannel)
+			// Todos os vínculos do canal de uma vez, como o formulário dele
+			// salva. Mesma exigência dos vínculos avulsos.
+			t.handle(http.MethodPut, "/channels/{id}/targets", policyFullScope, a.handleSetChannelTargets)
 			t.handle(http.MethodDelete, "/channels/{id}", policyFullScope, a.handleDeleteChannel)
 			// Entrega um aviso de exemplo. Sem isto, a única forma de saber
 			// que o canal funciona seria esperar uma queda de verdade.

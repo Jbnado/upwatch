@@ -305,6 +305,7 @@ var rotas = map[string]classe{
 	"PUT /api/v1/groups/{id}/channels/{channelID}":            escopoTotal,
 	"DELETE /api/v1/groups/{id}/channels/{channelID}":         escopoTotal,
 	"PUT /api/v1/channels/{id}":                               escopoTotal,
+	"PUT /api/v1/channels/{id}/targets":                       escopoTotal,
 	"DELETE /api/v1/channels/{id}":                            escopoTotal,
 	"POST /api/v1/channels/{id}/test":                         escopoTotal,
 	"POST /api/v1/status-pages":                               escopoTotal,

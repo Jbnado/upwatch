@@ -336,6 +336,125 @@ func (r *channelRepo) Destinations(ctx context.Context, monitorID int64) ([]doma
 	return r.db.collectChannels(rows)
 }
 
+// ---------- vínculos do canal em lote ----------
+
+func (r *channelRepo) CreateWithTargets(ctx context.Context, c *domain.Channel, alvos store.ChannelTargets) error {
+	return r.db.inTx(ctx, func(t *tx) error {
+		if err := r.insert(ctx, t, c); err != nil {
+			return err
+		}
+		return replaceTargets(ctx, t, c.ID, alvos)
+	})
+}
+
+func (r *channelRepo) UpdateWithTargets(ctx context.Context, c domain.Channel, alvos store.ChannelTargets) error {
+	return r.db.inTx(ctx, func(t *tx) error {
+		if err := r.update(ctx, t, c); err != nil {
+			return err
+		}
+		return replaceTargets(ctx, t, c.ID, alvos)
+	})
+}
+
+func (r *channelRepo) SetTargets(ctx context.Context, channelID int64, alvos store.ChannelTargets) error {
+	return r.db.inTx(ctx, func(t *tx) error {
+		// Sem esta conferência, trocar os vínculos de um canal que não
+		// existe por nenhum vínculo responderia "feito" sobre nada.
+		var existe int
+		err := t.QueryRowContext(ctx, `SELECT 1 FROM notification_channel WHERE id = ?`, channelID).Scan(&existe)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("canal %d: %w", channelID, store.ErrNotFound)
+		}
+		if err != nil {
+			return fmt.Errorf("sqlstore: conferindo canal %d: %w", channelID, err)
+		}
+		return replaceTargets(ctx, t, channelID, alvos)
+	})
+}
+
+// replaceTargets apaga os vínculos do canal e grava os dados. A chave
+// estrangeira recusa grupo ou monitor que não existe, e a transação de
+// quem chama desfaz o resto.
+func replaceTargets(ctx context.Context, t *tx, channelID int64, alvos store.ChannelTargets) error {
+	for _, q := range []string{
+		`DELETE FROM group_channel WHERE channel_id = ?`,
+		`DELETE FROM monitor_channel WHERE channel_id = ?`,
+	} {
+		if _, err := t.ExecContext(ctx, q, channelID); err != nil {
+			return fmt.Errorf("sqlstore: limpando vínculos do canal %d: %w", channelID, err)
+		}
+	}
+
+	for _, id := range alvos.GroupIDs {
+		_, err := t.ExecContext(ctx, `
+			INSERT INTO group_channel (group_id, channel_id) VALUES (?, ?)
+			ON CONFLICT (group_id, channel_id) DO NOTHING`, id, channelID)
+		if isForeignKeyViolation(err) {
+			return fmt.Errorf("grupo %d: %w", id, store.ErrNotFound)
+		}
+		if err != nil {
+			return fmt.Errorf("sqlstore: vinculando canal %d ao grupo %d: %w", channelID, id, err)
+		}
+	}
+	for _, id := range alvos.MonitorIDs {
+		_, err := t.ExecContext(ctx, `
+			INSERT INTO monitor_channel (monitor_id, channel_id) VALUES (?, ?)
+			ON CONFLICT (monitor_id, channel_id) DO NOTHING`, id, channelID)
+		if isForeignKeyViolation(err) {
+			return fmt.Errorf("monitor %d: %w", id, store.ErrNotFound)
+		}
+		if err != nil {
+			return fmt.Errorf("sqlstore: vinculando canal %d ao monitor %d: %w", channelID, id, err)
+		}
+	}
+	return nil
+}
+
+// Targets lê os vínculos diretos de todos os canais numa consulta, para a
+// lista de canais não fazer uma por canal.
+func (r *channelRepo) Targets(ctx context.Context, sel *store.GroupSelection) (map[int64]store.ChannelTargets, error) {
+	doGrupo, argsGrupo := groupCondition("gc.group_id", sel)
+	doMonitor, argsMonitor := groupCondition("m.group_id", sel)
+	if doGrupo == "" {
+		doGrupo, doMonitor = "1 = 1", "1 = 1"
+	}
+
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT gc.channel_id, 'g', gc.group_id FROM group_channel gc
+		WHERE `+doGrupo+`
+		UNION ALL
+		SELECT mc.channel_id, 'm', mc.monitor_id FROM monitor_channel mc
+		JOIN monitor m ON m.id = mc.monitor_id
+		WHERE `+doMonitor+`
+		ORDER BY 1, 2, 3`, append(argsGrupo, argsMonitor...)...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlstore: listando vínculos dos canais: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[int64]store.ChannelTargets{}
+	for rows.Next() {
+		var (
+			canal, alvo int64
+			tipo        string
+		)
+		if err := rows.Scan(&canal, &tipo, &alvo); err != nil {
+			return nil, fmt.Errorf("sqlstore: lendo vínculo de canal: %w", err)
+		}
+		v := out[canal]
+		if tipo == "g" {
+			v.GroupIDs = append(v.GroupIDs, alvo)
+		} else {
+			v.MonitorIDs = append(v.MonitorIDs, alvo)
+		}
+		out[canal] = v
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlstore: lendo vínculos dos canais: %w", err)
+	}
+	return out, nil
+}
+
 // ---------- mudanças de estado ----------
 
 type transitionRepo struct{ db *db }

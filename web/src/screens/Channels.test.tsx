@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Channel, ChannelDetail } from "../api/types";
+import type { Channel, ChannelDetail, Group, Monitor } from "../api/types";
 import { ChannelForm, Channels } from "./Channels";
 
 /**
@@ -21,6 +21,8 @@ vi.mock("../api/client", () => ({
     testChannel: vi.fn(),
     unlinkChannel: vi.fn(),
     unlinkGroupChannel: vi.fn(),
+    listGroups: vi.fn(),
+    listMonitors: vi.fn(),
   },
 }));
 
@@ -29,7 +31,36 @@ const { api } = await import("../api/client");
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(api.updateChannel).mockResolvedValue({} as never);
+  vi.mocked(api.createChannel).mockResolvedValue({} as never);
+  vi.mocked(api.listGroups).mockResolvedValue({ items: GRUPOS });
+  vi.mocked(api.listMonitors).mockResolvedValue({ items: MONITORES } as never);
 });
+
+function grupo(id: number, name: string, parent_id: number | null = null, pai = ""): Group {
+  return { id, name, slug: name, parent_id, path: pai ? `${pai} / ${name}` : name, created_at: "", updated_at: "" };
+}
+
+function monitor(id: number, name: string, group_id: number | null): Monitor {
+  return {
+    id,
+    name,
+    type: "http",
+    target: "",
+    interval_seconds: 60,
+    timeout_seconds: 5,
+    confirmation_threshold: 2,
+    degraded_latency_ms: 0,
+    group_id,
+    enabled: true,
+    tags: [],
+    created_at: "",
+    updated_at: "",
+  };
+}
+
+// RPA com prod e hml; hml e o sistema Vazio ainda sem monitor.
+const GRUPOS = [grupo(1, "RPA"), grupo(2, "prod", 1, "RPA"), grupo(3, "hml", 1, "RPA"), grupo(4, "Vazio")];
+const MONITORES = [monitor(10, "api", 2), monitor(11, "erp", 2), monitor(20, "solto", null)];
 
 const base = { enabled: true, created_at: "", updated_at: "" };
 
@@ -207,5 +238,95 @@ describe("Channels", () => {
     expect(api.deleteChannel).not.toHaveBeenCalled();
     expect(api.unlinkChannel).not.toHaveBeenCalled();
     expect(api.unlinkGroupChannel).not.toHaveBeenCalled();
+  });
+});
+
+const caixa = async (nome: RegExp) => screen.findByRole("checkbox", { name: nome });
+
+describe("ChannelForm, onde avisar", () => {
+  function criar() {
+    const onSaved = vi.fn().mockResolvedValue(undefined);
+    render(<ChannelForm onSaved={onSaved} onError={() => {}} onCancel={() => {}} />);
+    fireEvent.change(screen.getByLabelText(/^nome/), { target: { value: "plantão" } });
+    fireEvent.change(screen.getByLabelText(/endereço do webhook/), {
+      target: { value: "https://exemplo.com/hook" },
+    });
+    return onSaved;
+  }
+
+  it("cria o canal já ligado ao grupo marcado e ao grupo vazio", async () => {
+    const onSaved = criar();
+
+    fireEvent.click(await caixa(/^RPA/));
+    fireEvent.click(await caixa(/^Vazio/));
+    fireEvent.click(screen.getByRole("button", { name: /^Abrir Sem grupo/ }));
+    fireEvent.click(await caixa(/^solto/));
+    fireEvent.click(screen.getByRole("button", { name: "Adicionar canal" }));
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(vi.mocked(api.createChannel).mock.calls[0]![0].targets).toEqual({
+      group_ids: [1, 4],
+      monitor_ids: [20],
+    });
+  });
+
+  it("parte do ambiente vira vínculo com cada monitor, e o pai fica parcial", async () => {
+    const onSaved = criar();
+
+    fireEvent.click(await caixa(/^RPA/));
+    fireEvent.click(screen.getByRole("button", { name: /^Abrir prod/ }));
+    fireEvent.click(await caixa(/^erp/));
+    expect(await caixa(/^RPA/)).toBePartiallyChecked();
+    expect(await caixa(/^prod/)).toBePartiallyChecked();
+    fireEvent.click(screen.getByRole("button", { name: "Adicionar canal" }));
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(vi.mocked(api.createChannel).mock.calls[0]![0].targets).toEqual({
+      group_ids: [3],
+      monitor_ids: [10],
+    });
+  });
+
+  it("na edição, abre com os vínculos atuais e não os manda sem mexer", async () => {
+    const onSaved = editar({ ...WEBHOOK, targets: { group_ids: [2], monitor_ids: [20] } });
+
+    expect(await caixa(/^api/)).toBeChecked();
+    expect(await caixa(/^solto/)).toBeChecked();
+    expect(await caixa(/^RPA/)).toBePartiallyChecked();
+    salvar();
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(vi.mocked(api.updateChannel).mock.calls[0]![1]).not.toHaveProperty("targets");
+  });
+
+  it("na edição, desmarcar troca o conjunto inteiro", async () => {
+    const onSaved = editar({ ...WEBHOOK, targets: { group_ids: [2], monitor_ids: [20, 99] } });
+
+    fireEvent.click(await caixa(/^solto/));
+    salvar();
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    // O 99 não está na árvore: volta junto, porque ninguém o desmarcou.
+    expect(vi.mocked(api.updateChannel).mock.calls[0]![1].targets).toEqual({
+      group_ids: [2],
+      monitor_ids: [99],
+    });
+  });
+});
+
+describe("Channels, resumo de onde avisa", () => {
+  it("diz em quantos grupos e monitores cada canal está ligado", async () => {
+    vi.mocked(api.listChannels).mockResolvedValue({
+      items: [
+        { ...base, id: 1, name: "plantão", type: "webhook", targets: { group_ids: [1, 2, 3, 4, 5], monitor_ids: [7, 8] } },
+        { ...base, id: 2, name: "solto", type: "slack", targets: { group_ids: [], monitor_ids: [9] } },
+        { ...base, id: 3, name: "novo", type: "discord", targets: { group_ids: [], monitor_ids: [] } },
+      ],
+    });
+    render(<Channels />);
+
+    expect(await screen.findByText("5 grupos, 2 monitores")).toBeInTheDocument();
+    expect(screen.getByText("1 monitor")).toBeInTheDocument();
+    expect(screen.getByText("não está ligado a nada")).toBeInTheDocument();
   });
 });

@@ -47,6 +47,7 @@ func RunConformance(t *testing.T, newStore Factory) {
 	}...)
 	cases = append(cases, statusPageCases()...)
 	cases = append(cases, groupCases()...)
+	cases = append(cases, channelTargetCases()...)
 	cases = append(cases, secretCases()...)
 	cases = append(cases, reminderCases()...)
 	cases = append(cases, maintenanceCases()...)

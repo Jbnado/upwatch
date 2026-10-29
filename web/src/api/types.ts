@@ -288,7 +288,15 @@ export type Channel = {
   enabled: boolean;
   created_at: string;
   updated_at: string;
+  /** Onde o canal está ligado direto; para conta com escopo, só o dela. */
+  targets?: ChannelTargets;
 };
+
+/**
+ * Grupos e monitores ligados ao canal. Grupo vale para os monitores dele
+ * e, no sistema, para os ambientes, inclusive os criados depois.
+ */
+export type ChannelTargets = { group_ids: number[]; monitor_ids: number[] };
 
 /** O canal com a configuração para editar, que só volta a quem pode salvá-la. */
 export type ChannelDetail = Channel & { config?: ConfigEditavel };
@@ -298,6 +306,8 @@ export type ChannelInput = {
   type: ChannelType;
   enabled?: boolean;
   config: ConfigCanal | ConfigEmail | ConfigNtfy;
+  /** Troca todos os vínculos junto; ausente na edição, mantém os atuais. */
+  targets?: ChannelTargets;
 };
 
 export type Incident = {

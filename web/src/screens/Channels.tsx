@@ -1,6 +1,12 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client";
-import { ApiError, type Channel, type ChannelDetail, type ChannelType } from "../api/types";
+import {
+  ApiError,
+  type Channel,
+  type ChannelDetail,
+  type ChannelTargets as Vinculos,
+  type ChannelType,
+} from "../api/types";
 import {
   Alert,
   Button,
@@ -27,6 +33,8 @@ import {
   type LinhaCabecalho,
   type SegurancaSmtp,
 } from "../lib/channel-config";
+import { resumoDosAlvos } from "../lib/channel-targets";
+import { ChannelTargets } from "./ChannelTargets";
 
 /**
  * Canais de aviso.
@@ -150,8 +158,8 @@ export function Channels() {
       <div className="flex flex-col gap-1.5">
         <h2 className="text-lead font-medium">Canais de aviso</h2>
         <p className="text-body text-ink-2">
-          Para onde o UpWatch manda o alerta quando um alvo cai. Vincule cada canal a um grupo,
-          em Grupos, ou a um monitor, na aba Avisos dele.
+          Para onde o UpWatch manda o alerta quando um alvo cai. Escolha no próprio canal os
+          grupos e monitores sobre os quais ele avisa.
         </p>
       </div>
 
@@ -174,6 +182,7 @@ export function Channels() {
                   {!canal.enabled && (
                     <span className="text-small text-ink-3">desligado</span>
                   )}
+                  <span className="truncate text-small text-ink-3">{resumoDosAlvos(canal.targets)}</span>
                 </span>
 
                 {/* Ação em linha usa o tamanho menor: o botão de altura
@@ -277,6 +286,9 @@ export function ChannelForm({
   );
   const [email, setEmail] = useState<EntradaEmail>(editando ? guardado.email : EMAIL_VAZIO);
   const [ntfy, setNtfy] = useState<EntradaNtfy>(editando ? guardado.ntfy : NTFY_VAZIO);
+  // Só preenchido depois de um clique na árvore: sem ele, a edição não
+  // manda vínculos e o servidor mantém os atuais.
+  const [alvos, setAlvos] = useState<Vinculos | undefined>(undefined);
   const [enviando, setEnviando] = useState(false);
   const [campoErro, setCampoErro] = useState<{ campo: string; msg: string } | null>(null);
 
@@ -315,11 +327,12 @@ export function ChannelForm({
           type: tipo,
           enabled: canal.enabled,
           config: config!,
+          ...(alvos && { targets: alvos }),
         });
         await onSaved();
         return;
       }
-      await api.createChannel({ name: nome, type: tipo, config: config! });
+      await api.createChannel({ name: nome, type: tipo, config: config!, ...(alvos && { targets: alvos }) });
       setNome("");
       setUrl("");
       setCabecalhos([{ nome: "", valor: "" }]);
@@ -418,6 +431,8 @@ export function ChannelForm({
           erroMapeamento={erroDe("mapeamento")}
         />
       )}
+
+      <ChannelTargets inicial={canal?.targets} onChange={setAlvos} />
 
       <FormActions
         submit={enviando ? "Salvando" : editando ? "Salvar canal" : "Adicionar canal"}
