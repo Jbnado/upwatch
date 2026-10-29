@@ -88,6 +88,45 @@ export function opcoesDePai(
 }
 
 /**
+ * aninharDependentes põe cada item sob o pai, quando o pai está na mesma
+ * lista. É a forma de toda lista de monitores: o painel, a lista do grupo
+ * e os seletores.
+ *
+ * Quem tem o pai fora da lista fica na raiz: o pai noutro grupo, ou
+ * escondido pela busca, não pode levar o filho junto para fora da tela.
+ * Um ciclo antigo no banco também fica na raiz, senão os dois sumiriam
+ * um dentro do outro. A ordem de entrada é mantida em cada nível.
+ */
+export function aninharDependentes<T>(
+  itens: T[],
+  monitorDe: (item: T) => Monitor,
+): { raiz: T[]; filhos: Map<number, T[]> } {
+  const presentes = new Map(itens.map((i) => [monitorDe(i).id, monitorDe(i)]));
+  const emCiclo = (m: Monitor) => {
+    const vistos = new Set<number>();
+    for (let p = m.parent_id; p != null && presentes.has(p); p = presentes.get(p)!.parent_id) {
+      if (p === m.id) return true;
+      // Ciclo acima dele, entre os ancestrais: ele mesmo pode aninhar.
+      if (vistos.has(p)) return false;
+      vistos.add(p);
+    }
+    return false;
+  };
+
+  const raiz: T[] = [];
+  const filhos = new Map<number, T[]>();
+  for (const item of itens) {
+    const m = monitorDe(item);
+    if (m.parent_id == null || !presentes.has(m.parent_id) || emCiclo(m)) {
+      raiz.push(item);
+      continue;
+    }
+    filhos.set(m.parent_id, [...(filhos.get(m.parent_id) ?? []), item]);
+  }
+  return { raiz, filhos };
+}
+
+/**
  * candidatosAFilho são os monitores que podem passar a depender do pai:
  * nem ele, nem os ancestrais dele (fecharia ciclo), nem quem já depende.
  */

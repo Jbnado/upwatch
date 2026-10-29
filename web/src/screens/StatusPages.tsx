@@ -25,7 +25,7 @@ import {
   Select,
   TextLink,
 } from "../components/ui";
-import { ServicePicker } from "../components/ServicePicker";
+import { MonitorTree } from "../components/MonitorTree";
 import { stamp } from "../lib/format";
 import { navigate } from "../lib/router";
 import { serviceOrigin } from "../lib/service-tree";
@@ -495,7 +495,7 @@ function Servicos({
 
       <div className="flex flex-col gap-2">
         <span className="eyebrow">escolher serviços</span>
-        <ServicePicker
+        <MonitorTree
           groups={grupos}
           monitors={monitors}
           selected={publicados}
@@ -1010,7 +1010,7 @@ function NovoRelato({
         </div>
 
         {!global && (
-          <ServicePicker
+          <MonitorTree
             groups={grupos}
             monitors={monitors}
             selected={afetados}

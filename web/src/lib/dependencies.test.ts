@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Group, Monitor } from "../api/types";
-import { candidatosAFilho, filhosDe, opcoesDePai, rotuloCalado } from "./dependencies";
+import { aninharDependentes, candidatosAFilho, filhosDe, opcoesDePai, rotuloCalado } from "./dependencies";
 
 /**
  * Monitores dependentes: a sonda (pai) e as verificações dela (filhos).
@@ -82,5 +82,31 @@ describe("filhos", () => {
 
   it("oferece para ligar só quem não fecha ciclo nem já está ligado", () => {
     expect(candidatosAFilho(1, [avo, pai, filho, solto]).map((m) => m.id)).toEqual([3]);
+  });
+});
+
+describe("aninharDependentes", () => {
+  const ids = (ms: Monitor[]) => ms.map((m) => m.id);
+
+  it("põe o filho sob o pai, mantendo a ordem de entrada", () => {
+    const lista = [monitor(3, { parent_id: 1 }), monitor(1), monitor(2, { parent_id: 1 })];
+    const { raiz, filhos } = aninharDependentes(lista, (m) => m);
+
+    expect(ids(raiz)).toEqual([1]);
+    expect(ids(filhos.get(1)!)).toEqual([3, 2]);
+  });
+
+  it("deixa na raiz quem tem o pai fora da lista", () => {
+    // O pai noutro grupo, ou escondido pela busca, não leva o filho junto.
+    const { raiz } = aninharDependentes([monitor(2, { parent_id: 99 })], (m) => m);
+    expect(ids(raiz)).toEqual([2]);
+  });
+
+  it("deixa um ciclo antigo na raiz em vez de sumir com ele", () => {
+    const lista = [monitor(1, { parent_id: 2 }), monitor(2, { parent_id: 1 }), monitor(3, { parent_id: 2 })];
+    const { raiz, filhos } = aninharDependentes(lista, (m) => m);
+
+    expect(ids(raiz)).toEqual([1, 2]);
+    expect(ids(filhos.get(2)!)).toEqual([3]);
   });
 });
