@@ -15,6 +15,7 @@ package statuspage
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sort"
 	"time"
 
@@ -31,6 +32,11 @@ const WindowDays = 90
 
 // dateLayout é o formato do dia de calendário nas barras.
 const dateLayout = "2006-01-02"
+
+// MaintenanceNotice é com quanta antecedência a página anuncia uma janela
+// de manutenção. Uma semana avisa quem planeja em torno dela sem encher a
+// página com a recorrência diária de daqui a um mês.
+const MaintenanceNotice = 7 * 24 * time.Hour
 
 // Builder monta a visão pública a partir do store.
 type Builder struct {
@@ -93,6 +99,7 @@ func (b *Builder) build(ctx context.Context, page domain.StatusPage) (domain.Pub
 	// componentes de um relato em nomes públicos.
 	rotulos := map[int64]string{}
 	publicos := map[int64]domain.PublicMonitor{}
+	monitores := map[int64]domain.Monitor{}
 
 	for _, c := range componentes {
 		m, err := b.store.Monitors().Get(ctx, c.MonitorID)
@@ -107,12 +114,23 @@ func (b *Builder) build(ctx context.Context, page domain.StatusPage) (domain.Pub
 			nome = m.Name
 		}
 		rotulos[c.MonitorID] = nome
+		monitores[c.MonitorID] = m
 
 		pm, err := b.monitor(ctx, c.MonitorID, nome, page.ShowLatency, desde, agora)
 		if err != nil {
 			return domain.PublicView{}, err
 		}
 		publicos[c.MonitorID] = pm
+	}
+
+	manutencoes, emCurso, err := b.maintenances(ctx, componentes, monitores, rotulos, agora)
+	if err != nil {
+		return domain.PublicView{}, err
+	}
+	for id := range emCurso {
+		pm := publicos[id]
+		pm.Maintenance = true
+		publicos[id] = pm
 	}
 
 	view := domain.PublicView{
@@ -123,6 +141,8 @@ func (b *Builder) build(ctx context.Context, page domain.StatusPage) (domain.Pub
 		WindowDays:  WindowDays,
 		GeneratedAt: agora,
 		Groups:      assemble(componentes, grupos, publicos),
+
+		Maintenances: manutencoes,
 	}
 
 	estados := make([]domain.Status, 0, len(publicos))
@@ -341,4 +361,87 @@ func publicLabels(ids []int64, rotulos map[int64]string) []string {
 		}
 	}
 	return out
+}
+
+// maintenances traz as janelas que esta página anuncia, e os componentes
+// em manutenção agora.
+//
+// A regra de alcance é a do motor (MaintenanceWindow.Covers): a página
+// não pode dizer "manutenção" para um alvo cujo aviso tocou, nem calar a
+// manutenção de um que o motor silenciou. Como nos relatos, a janela só
+// aparece onde afeta um componente publicado, e os afetados saem pelo
+// rótulo público — a janela que também cobre um banco interno não conta a
+// esta página que ele existe.
+func (b *Builder) maintenances(
+	ctx context.Context,
+	componentes []domain.StatusPageComponent,
+	monitores map[int64]domain.Monitor,
+	rotulos map[int64]string,
+	agora time.Time,
+) ([]domain.PublicMaintenance, map[int64]bool, error) {
+	janelas, err := b.store.Maintenance().List(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	out := []domain.PublicMaintenance{}
+	emCurso := map[int64]bool{}
+	if len(janelas) == 0 {
+		return out, emCurso, nil
+	}
+
+	grupos, err := b.store.Groups().List(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	tree := domain.NewGroupTree(grupos)
+
+	// Os ancestrais de dependência não estão na página; vêm do banco sob
+	// demanda, uma vez cada.
+	conhecidos := maps.Clone(monitores)
+	lookup := func(id int64) (domain.Monitor, bool) {
+		if m, ok := conhecidos[id]; ok {
+			return m, true
+		}
+		m, err := b.store.Monitors().Get(ctx, id)
+		if err != nil {
+			return domain.Monitor{}, false
+		}
+		conhecidos[id] = m
+		return m, true
+	}
+
+	for _, w := range janelas {
+		o, ok := w.NextOccurrence(agora)
+		if !ok || o.Start.After(agora.Add(MaintenanceNotice)) {
+			continue
+		}
+		ativa := !o.Start.After(agora)
+
+		afetados := []string{}
+		for _, c := range componentes {
+			if !w.Covers(monitores[c.MonitorID], lookup, tree) {
+				continue
+			}
+			afetados = append(afetados, rotulos[c.MonitorID])
+			if ativa {
+				emCurso[c.MonitorID] = true
+			}
+		}
+		if len(afetados) == 0 {
+			continue
+		}
+
+		out = append(out, domain.PublicMaintenance{
+			Title:      w.Title,
+			Message:    w.Message,
+			StartsAt:   o.Start,
+			EndsAt:     o.End,
+			Recurrence: w.Recurrence,
+			Active:     ativa,
+			Components: afetados,
+		})
+	}
+
+	sort.SliceStable(out, func(i, j int) bool { return out[i].StartsAt.Before(out[j].StartsAt) })
+	return out, emCurso, nil
 }

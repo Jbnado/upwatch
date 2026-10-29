@@ -49,6 +49,10 @@
   --color-down-dim: #f7d9d5;
   --color-unknown: #93a0a8;
   --color-unknown-dim: #e4e9eb;
+  /* Manutenção: fora do ar de propósito. Azul, e não a cor de queda nem
+     o cinza de sem medição — quem lê precisa saber que era esperado. */
+  --color-maint: #3b6fa3;
+  --color-maint-dim: #dce7f2;
 
   /* ─── Tipografia ───────────────────────────────────────────────────
      Archivo na interface — mais encorpada que a Inter, que virou o
@@ -153,6 +157,8 @@
       --color-down-dim: #381915;
       --color-unknown: #6b7a85;
       --color-unknown-dim: #1a2228;
+      --color-maint: #5f93c9;
+      --color-maint-dim: #17253a;
     }
   }
 
@@ -177,6 +183,8 @@
     --color-down-dim: #381915;
     --color-unknown: #6b7a85;
     --color-unknown-dim: #1a2228;
+    --color-maint: #5f93c9;
+    --color-maint-dim: #17253a;
   }
 
   html {
