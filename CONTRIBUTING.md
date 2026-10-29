@@ -66,6 +66,12 @@ foi introduzido de propósito para vê-lo falhar.
 **Um backend novo de armazenamento passa em `storetest.RunConformance`
 inteiro, ou não entra.** É o que impede "plugável" de virar fachada.
 
+**Diretório temporário vem de `testdir.New(t)`, nunca de `t.TempDir()`.**
+No Windows, o antivírus segura por um instante o arquivo recém-gravado e
+o `t.TempDir()` falha ao apagar a pasta, sem defeito nenhum no teste. A
+CI no Linux não vê isso, então um teste em `internal/testdir` recusa o
+`t.TempDir()` em qualquer lugar do repositório.
+
 ## O que a revisão vai olhar
 
 - O teste falha antes da correção?
