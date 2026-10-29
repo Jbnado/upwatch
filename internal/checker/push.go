@@ -398,6 +398,23 @@ func reported(res Result, sig domain.PushSignal) Result {
 	return res
 }
 
+// DetectionWindow é quanto o monitor pode levar para perceber a própria
+// queda: o intervalo, e no push também a folga, porque o silêncio só vira
+// falha depois da janela inteira.
+//
+// É o que o motor de incidentes espera do pai antes de culpar o filho.
+// Mora aqui porque só o checker interpreta a configuração do push.
+func DetectionWindow(m domain.Monitor) time.Duration {
+	if m.Type != domain.MonitorPush {
+		return m.Interval
+	}
+	cfg, err := parsePushConfig(m.Config)
+	if err != nil {
+		return m.Interval
+	}
+	return m.Interval + cfg.grace(m.Interval)
+}
+
 // PushTokenOf devolve o token do monitor push, ou vazio para os demais
 // tipos e para a configuração que não se lê.
 //
