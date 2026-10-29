@@ -24,6 +24,7 @@ import {
 } from "../lib/settings-sections";
 import { Channels } from "./Channels";
 import { Groups } from "./Groups";
+import { Maintenance } from "./Maintenance";
 import { StatusPageAdmin, StatusPages } from "./StatusPages";
 import { Users } from "./Users";
 
@@ -177,6 +178,8 @@ function Secao({
       return <Users eu={eu} />;
     case "canais":
       return <Channels />;
+    case "manutencao":
+      return <Maintenance />;
     case "paginas":
       return pageId ? <StatusPageAdmin id={pageId} /> : <StatusPages />;
     case "tokens":
