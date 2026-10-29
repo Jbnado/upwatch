@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
 import type {
+  AffectedBy,
   Channel,
   Group,
   Incident,
@@ -20,6 +21,7 @@ import { TabPanel, Tabs } from "../components/Tabs";
 import {
   Alert,
   Button,
+  Checkbox,
   InlineLink,
   Loading,
   Nothing,
@@ -36,6 +38,7 @@ import {
   type TimelineLine,
 } from "../lib/events";
 import { explainCause } from "../lib/cause";
+import { candidatosAFilho, filhosDe, rotuloCalado } from "../lib/dependencies";
 import { crumb } from "../lib/groups";
 import { maskedPushAddress, pushAddress, pushSignal, pushTokenVisible } from "../lib/push";
 import { DEFAULT_RANGE, windowFor, type Range } from "../lib/ranges";
@@ -87,6 +90,8 @@ export function MonitorDetail({
   const [erro, setErro] = useState<string | null>(null);
   const [rodada, setRodada] = useState(0);
   const [mostrarToken, setMostrarToken] = useState(false);
+  const [monitores, setMonitores] = useState<Monitor[]>([]);
+  const [ligando, setLigando] = useState(false);
 
   const administra = eu.role === "admin";
 
@@ -111,6 +116,13 @@ export function MonitorDetail({
       setProblema(p);
       setErro(null);
       setRodada((r) => r + 1);
+
+      // Pai e dependentes saem da lista de monitores. À parte do resto:
+      // sem ela a tela continua servindo, só sem a seção de dependências.
+      void api
+        .listMonitors({ limit: 500 })
+        .then((r) => setMonitores(r.items))
+        .catch(() => setMonitores([]));
 
       if (p && p.status !== "unknown") {
         // A sequência pode ter começado antes de o estado ser confirmado:
@@ -154,9 +166,12 @@ export function MonitorDetail({
   const samples: PulseSample[] =
     resumo?.series.map((p) => ({ at: p.at, status: p.status, latencyMs: p.latency_ms })) ?? [];
 
+  // Calado pelo pai, o monitor não está sendo medido: a falha não é dele,
+  // e o estado dele é "sem medição", como no painel.
+  const calado = monitor.enabled ? resumo?.affected_by : undefined;
   // O estado de agora vem do problema quando há um: é a mesma fonte da
   // tela inicial. Sem problema, o resumo diz o estado confirmado.
-  const atual: Status = problema?.status ?? resumo?.status ?? "unknown";
+  const atual: Status = calado ? "unknown" : (problema?.status ?? resumo?.status ?? "unknown");
   // A falha que ainda não virou queda só aparece na última batida: o
   // estado confirmado continua "no ar" até o limiar. Sem medição não
   // entra — é a rede do próprio servidor, não o alvo.
@@ -191,8 +206,11 @@ export function MonitorDetail({
     });
   }
   if (administra) {
+    menu.push({ kind: "action", label: "Ligar dependentes", onSelect: () => setLigando(true) });
     menu.push({ kind: "action", label: "Remover monitor", onSelect: remover, danger: true });
   }
+  const pai = monitor.parent_id != null ? monitores.find((m) => m.id === monitor.parent_id) : undefined;
+  const filhos = filhosDe(monitor.id, monitores);
 
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-6 px-5 py-6">
@@ -215,6 +233,14 @@ export function MonitorDetail({
             {monitor.type} · <span className="break-all">{monitor.target || "recebe sinal do próprio serviço"}</span>
             {" · "}
             <span className="whitespace-nowrap">a cada {duration(monitor.interval_seconds)}</span>
+            {pai && (
+              <>
+                {" · "}
+                <span className="whitespace-nowrap">
+                  depende de <InlineLink to={{ name: "monitor", id: pai.id }}>{pai.name}</InlineLink>
+                </span>
+              </>
+            )}
           </p>
         </div>
 
@@ -240,10 +266,11 @@ export function MonitorDetail({
         />
       )}
 
-      {monitor.enabled && atual !== "up" && (
+      {calado && <SilencedBox por={calado} />}
+      {monitor.enabled && !calado && atual !== "up" && (
         <StateBox status={atual} problem={problema} streak={sequencia} type={monitor.type} />
       )}
-      {monitor.enabled && pendente && (
+      {monitor.enabled && !calado && pendente && (
         <StateBox status={pendente} problem={null} streak={null} type={monitor.type} pending />
       )}
 
@@ -261,6 +288,20 @@ export function MonitorDetail({
           baseline
         />
       </section>
+
+      {(filhos.length > 0 || ligando) && (
+        <Dependents
+          monitor={monitor}
+          filhos={filhos}
+          candidatos={candidatosAFilho(monitor.id, monitores)}
+          ligando={administra && ligando}
+          onFechar={() => setLigando(false)}
+          onLigado={() => {
+            setLigando(false);
+            void carregar();
+          }}
+        />
+      )}
 
       <div>
         <Tabs<MonitorTab>
@@ -357,6 +398,131 @@ function StateBox({
       </p>
       {problem?.cause && <BoxCause raw={problem.cause} />}
       {rodape.length > 0 && <p className="tabular text-small text-ink-2">{rodape.join(" · ")}</p>}
+    </section>
+  );
+}
+
+/**
+ * SilencedBox é o quadro do monitor calado pelo pai.
+ *
+ * Cinza, e não vermelho: a falha não é dele. Caso real: a VM de uma sonda
+ * perdeu a saída, e cada verificação dela aparecia fora do ar como se o
+ * serviço tivesse caído junto.
+ */
+function SilencedBox({ por }: { por: AffectedBy }) {
+  return (
+    <section
+      aria-label="estado atual"
+      className="flex flex-col gap-1 rounded-md border border-line-strong bg-sunken px-4 py-3"
+    >
+      <p className="text-small font-semibold uppercase tracking-wide text-ink-2">{rotuloCalado(por)}</p>
+      <p className="text-small text-ink-2">
+        {por.id != null && por.name ? (
+          <>
+            Enquanto <InlineLink to={{ name: "monitor", id: por.id }}>{por.name}</InlineLink> estiver
+            sem responder,
+          </>
+        ) : (
+          "Enquanto a dependência estiver sem responder,"
+        )}{" "}
+        as falhas deste monitor não avisam e ficam como lacuna no histórico. Quando ela voltar, uma
+        falha que continuar avisa normalmente.
+      </p>
+    </section>
+  );
+}
+
+/**
+ * Dependents lista quem depende deste monitor e, para quem administra,
+ * liga vários de uma vez.
+ *
+ * Em lote porque o caso comum é ligar as verificações de uma sonda ao
+ * sinal de vida dela, e editar uma a uma é onde se esquece alguma.
+ */
+function Dependents({
+  monitor,
+  filhos,
+  candidatos,
+  ligando,
+  onFechar,
+  onLigado,
+}: {
+  monitor: Monitor;
+  filhos: Monitor[];
+  candidatos: Monitor[];
+  ligando: boolean;
+  onFechar: () => void;
+  onLigado: () => void;
+}) {
+  const [escolhidos, setEscolhidos] = useState<number[]>([]);
+  const [enviando, setEnviando] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+
+  function alternar(id: number) {
+    setEscolhidos((e) => (e.includes(id) ? e.filter((x) => x !== id) : [...e, id]));
+  }
+
+  async function ligar() {
+    setEnviando(true);
+    setErro(null);
+    try {
+      // Na ordem da lista, e não na dos cliques: o pedido fica previsível.
+      await api.setChildren(
+        monitor.id,
+        candidatos.filter((c) => escolhidos.includes(c.id)).map((c) => c.id),
+      );
+      setEscolhidos([]);
+      onLigado();
+    } catch (e) {
+      setErro(e instanceof Error ? e.message : "Não foi possível ligar os monitores.");
+    } finally {
+      setEnviando(false);
+    }
+  }
+
+  return (
+    <section aria-label="dependentes" className="flex flex-col gap-2">
+      <h2 className="eyebrow">dependem deste monitor</h2>
+      {filhos.length > 0 ? (
+        <p className="text-body text-ink-2">
+          {filhos.map((f, i) => (
+            <span key={f.id}>
+              {i > 0 && ", "}
+              <InlineLink to={{ name: "monitor", id: f.id }}>{f.name}</InlineLink>
+            </span>
+          ))}
+          <span className="text-ink-3"> — com este fora do ar, não avisam.</span>
+        </p>
+      ) : (
+        <p className="text-small text-ink-3">Nenhum monitor depende deste ainda.</p>
+      )}
+
+      {ligando && (
+        <div className="flex flex-col gap-2 rounded-md border border-line-strong px-3 py-3">
+          {erro && <Alert>{erro}</Alert>}
+          {candidatos.length === 0 ? (
+            <p className="text-small text-ink-3">Não há outro monitor para ligar a este.</p>
+          ) : (
+            <div className="flex max-h-64 flex-col overflow-y-auto">
+              {candidatos.map((c) => (
+                <Checkbox key={c.id} checked={escolhidos.includes(c.id)} onChange={() => alternar(c.id)}>
+                  {c.name}
+                </Checkbox>
+              ))}
+            </div>
+          )}
+          <div className="flex gap-2">
+            <Button
+              variant="primary"
+              disabled={escolhidos.length === 0 || enviando}
+              onClick={() => void ligar()}
+            >
+              {escolhidos.length === 1 ? "Ligar 1 monitor" : `Ligar ${escolhidos.length} monitores`}
+            </Button>
+            <Button onClick={onFechar}>Cancelar</Button>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
