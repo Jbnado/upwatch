@@ -45,6 +45,8 @@ type cenarioEscopo struct {
 
 	contaTotal, contaRestrita int64
 	pagina, relato            int64
+	// manutencao cobre o que está dentro e o que está fora.
+	manutencao int64
 	// canal só avisa sobre o que está fora do escopo; canalDentro avisa
 	// sobre o grupo da Retaguarda.
 	canal, canalDentro int64
@@ -170,6 +172,18 @@ func novoCenarioEscopo(t *testing.T) *cenarioEscopo {
 	})
 	assertStatus(t, resp, http.StatusCreated)
 	c.relato = decode[idResp](t, resp).ID
+
+	janela := func(titulo string, monitores, grupos []int64) int64 {
+		resp := s.do(t, http.MethodPost, "/api/v1/maintenance-windows", map[string]any{
+			"title": titulo, "starts_at": epoch, "ends_at": epoch.Add(time.Hour),
+			"monitor_ids": monitores, "group_ids": grupos,
+		})
+		assertStatus(t, resp, http.StatusCreated)
+		return decode[idResp](t, resp).ID
+	}
+	c.manutencao = janela("deploy", []int64{c.foraAgrupado, c.dentro}, []int64{c.rpa, c.retProd})
+	// Só de fora: nem o título pode aparecer para quem tem escopo.
+	janela("mensagem-secreta", []int64{c.foraSolto}, []int64{c.rpaProd})
 
 	escopoRet := map[string]any{"all_groups": false, "group_ids": []int64{c.ret}}
 	for _, conta := range []struct{ nome, papel string }{{"ret-viewer", "viewer"}, {"ret-admin", "admin"}} {
@@ -304,6 +318,12 @@ var rotas = map[string]classe{
 	"PUT /api/v1/announcements/{id}":                          escopoTotal,
 	"DELETE /api/v1/announcements/{id}":                       escopoTotal,
 	"POST /api/v1/announcements/{id}/updates":                 escopoTotal,
+	"GET /api/v1/maintenance-windows":                         listagem,
+	"GET /api/v1/maintenance-windows/{id}":                    listagem,
+	"POST /api/v1/maintenance-windows":                        escopoTotal,
+	"PUT /api/v1/maintenance-windows/{id}":                    escopoTotal,
+	"DELETE /api/v1/maintenance-windows/{id}":                 escopoTotal,
+	"POST /api/v1/maintenance-windows/{id}/end":               escopoTotal,
 }
 
 // TestEveryRouteHasAScopeClass reprova rota sem classificação.
@@ -340,6 +360,8 @@ func (c *cenarioEscopo) concreto(padrao string, monitor, grupo int64) string {
 		troca("{id}", c.pagina)
 	case strings.HasPrefix(padrao, "/api/v1/announcements/{id}"):
 		troca("{id}", c.relato)
+	case strings.HasPrefix(padrao, "/api/v1/maintenance-windows/{id}"):
+		troca("{id}", c.manutencao)
 	case strings.HasPrefix(padrao, "/api/v1/channels/{id}"):
 		troca("{id}", c.canal)
 	case strings.HasPrefix(padrao, "/api/v1/users/{id}"):
@@ -446,6 +468,7 @@ func (c *cenarioEscopo) vazou(t *testing.T, corpo string) string {
 		return ""
 	}
 	fora := map[float64]bool{float64(c.foraAgrupado): true, float64(c.foraSolto): true}
+	gruposFora := map[float64]bool{float64(c.rpa): true, float64(c.rpaProd): true}
 	var achado string
 	var andar func(chave string, v any)
 	andar = func(chave string, v any) {
@@ -456,8 +479,11 @@ func (c *cenarioEscopo) vazou(t *testing.T, corpo string) string {
 			}
 		case []any:
 			for _, filho := range x {
-				if n, ok := filho.(float64); ok && chave == "components" && fora[n] {
-					achado = "components contém monitor de fora"
+				if n, ok := filho.(float64); ok && (chave == "components" || chave == "monitor_ids") && fora[n] {
+					achado = chave + " contém monitor de fora"
+				}
+				if n, ok := filho.(float64); ok && chave == "group_ids" && gruposFora[n] {
+					achado = "group_ids contém grupo de fora"
 				}
 				andar(chave, filho)
 			}
