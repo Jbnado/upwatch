@@ -59,7 +59,11 @@ push de cada um (`https://upwatch.exemplo.com/api/v1/push/TOKEN`).
 Use o mesmo intervalo da sonda (60s) e ligue as verificações ao sinal de
 vida: no formulário de cada uma, em **depende de** (o sinal de vida de um
 grupo de sondas aparece sugerido no topo), ou de uma vez pelo detalhe do
-sinal de vida, em **Mais ações → Ligar dependentes**.
+sinal de vida, em **Mais ações → Ligar dependentes**: a árvore de grupos
+marca um ambiente inteiro num clique. Marcar um grupo liga as
+verificações que estão nele agora; uma criada depois não vira dependente
+sozinha. Depois do primeiro, a seção **Dependentes** fica à vista no
+detalhe, com ligar e desligar.
 
 Ligadas, quando a sonda para, o único aviso é "sonda vm-prod-1 está fora
 do ar", dizendo quantas verificações ficaram sem aviso. As verificações

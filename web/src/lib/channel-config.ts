@@ -11,16 +11,25 @@
  * no mapeamento e não na URL.
  */
 
-export type LinhaCabecalho = { nome: string; valor: string };
+/**
+ * Uma linha de cabeçalho do formulário. mantido marca o cabeçalho que já
+ * está guardado no canal: o valor não volta do servidor, e a linha em
+ * branco quer dizer "mantenha o que está lá".
+ */
+export type LinhaCabecalho = { nome: string; valor: string; mantido?: boolean };
 
 export type EntradaConfig = {
   url: string;
   cabecalhos: LinhaCabecalho[];
   mapeamento: string;
+  /** Há URL guardada: em branco, ela é mantida. */
+  urlGuardada?: boolean;
+  /** Modelo de mensagem gravado pela API, que a tela não edita mas não pode perder. */
+  template?: string;
 };
 
 export type ConfigCanal = {
-  url: string;
+  url?: string;
   headers?: Record<string, string>;
   template?: string;
   body_template?: unknown;
@@ -31,8 +40,16 @@ export type ResultadoConfig = {
   erro?: { campo: string; msg: string };
 };
 
-export function montarConfig({ url, cabecalhos, mapeamento }: EntradaConfig): ResultadoConfig {
-  const config: ConfigCanal = { url };
+export function montarConfig({
+  url,
+  cabecalhos,
+  mapeamento,
+  urlGuardada = false,
+  template,
+}: EntradaConfig): ResultadoConfig {
+  // Sem a url, o servidor mantém a guardada; mandá-la vazia a apagaria.
+  const config: ConfigCanal = urlGuardada && url.trim() === "" ? {} : { url };
+  if (template) config.template = template;
 
   const headers = montarCabecalhos(cabecalhos);
   if (headers) config.headers = headers;
@@ -75,14 +92,17 @@ export function montarConfig({ url, cabecalhos, mapeamento }: EntradaConfig): Re
 function montarCabecalhos(linhas: LinhaCabecalho[]): Record<string, string> | undefined {
   const headers: Record<string, string> = {};
 
-  for (const { nome, valor } of linhas) {
+  for (const { nome, valor, mantido } of linhas) {
     const chave = nome.trim();
     if (chave === "") continue;
-    headers[chave] = valor.trim();
+    headers[chave] = mantido && valor.trim() === "" ? MASCARA : valor.trim();
   }
 
   return Object.keys(headers).length > 0 ? headers : undefined;
 }
+
+/** O valor que, na edição, pede ao servidor o valor guardado do cabeçalho. */
+const MASCARA = "***";
 
 function mensagemDeSintaxe(e: unknown): string {
   const detalhe = e instanceof Error ? e.message : "";
@@ -195,4 +215,75 @@ export function montarConfigNtfy(e: EntradaNtfy): {
   const token = e.token.trim();
   if (token !== "") config.token = token;
   return { config };
+}
+
+// ---------- edição ----------
+
+/**
+ * A configuração como a edição a recebe do servidor: o que não é
+ * credencial, e a marca de onde havia uma.
+ */
+export type ConfigEditavel = {
+  url_set?: boolean;
+  headers?: Record<string, string>;
+  template?: string;
+  body_template?: unknown;
+  host?: string;
+  port?: number;
+  security?: SegurancaSmtp;
+  username?: string;
+  password_set?: boolean;
+  from?: string;
+  to?: string[];
+  server?: string;
+  topic?: string;
+  token_set?: boolean;
+};
+
+/** O formulário preenchido com um canal guardado. */
+export type EntradaGuardada = {
+  cabecalhos: LinhaCabecalho[];
+  mapeamento: string;
+  template?: string;
+  email: EntradaEmail;
+  ntfy: EntradaNtfy;
+  /** Onde há credencial guardada, para o campo dizer que fica a atual. */
+  guardados: { url: boolean; senha: boolean; token: boolean };
+};
+
+/**
+ * lerConfig preenche o formulário com a configuração de um canal.
+ *
+ * Os segredos vêm em branco: o servidor não os devolve, e em branco é
+ * justamente "manter". Os cabeçalhos voltam com o nome e marcados como
+ * mantidos, para a pessoa ver o que existe sem ver o valor.
+ */
+export function lerConfig(c: ConfigEditavel = {}): EntradaGuardada {
+  const cabecalhos: LinhaCabecalho[] = Object.keys(c.headers ?? {}).map((nome) => ({
+    nome,
+    valor: "",
+    mantido: true,
+  }));
+  cabecalhos.push({ nome: "", valor: "" });
+
+  return {
+    cabecalhos,
+    mapeamento: c.body_template === undefined ? "" : JSON.stringify(c.body_template, null, 2),
+    template: c.template,
+    email: {
+      host: c.host ?? "",
+      porta: c.port ? String(c.port) : "",
+      seguranca: c.security ?? "starttls",
+      usuario: c.username ?? "",
+      senha: "",
+      remetente: c.from ?? "",
+      destinatarios: (c.to ?? []).join(", "),
+    },
+    ntfy: { servidor: c.server ?? "", topico: c.topic ?? "", token: "" },
+    guardados: {
+      url: c.url_set === true,
+      senha: c.password_set === true,
+      token: c.token_set === true,
+    },
+  };
 }

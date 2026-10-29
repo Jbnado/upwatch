@@ -135,8 +135,10 @@ type Channel struct {
 	Type string `json:"type"`
 	// Config é a configuração específica do tipo, opaca para o domínio.
 	//
-	// Nunca sai pela API: costuma conter a URL secreta do webhook, que é
-	// a própria credencial de quem pode publicar no canal.
+	// Nunca sai crua pela API: costuma conter a URL secreta do webhook,
+	// que é a própria credencial de quem pode publicar no canal. O
+	// formulário de edição recebe a versão sem credencial
+	// (notifier.RedactConfig).
 	Config json.RawMessage `json:"-"`
 
 	Enabled   bool      `json:"enabled"`

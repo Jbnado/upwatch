@@ -54,6 +54,13 @@ tags:
     description: Recebimento de sinal de monitores push
   - name: alerts
     description: Canais de aviso e histórico de incidentes
+  - name: maintenance
+    description: |
+      Janelas de manutenção. Dentro da janela as verificações continuam e
+      são gravadas, mas a falha vira "sem medição" com o motivo na
+      mensagem&#58; não abre incidente, não avisa, e a disponibilidade não
+      conta o intervalo como queda. A página pública mostra a janela em
+      curso e as que começam nos próximos sete dias.
   - name: public
     description: |
       Página pública de estado. É a única superfície de leitura sem
@@ -695,6 +702,21 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/v1/monitors/{id}/children/{childID}:
+    delete:
+      tags: [monitors]
+      summary: Desliga um dependente deste monitor
+      description: |
+        O monitor `childID` deixa de depender do monitor do caminho e
+        volta a avisar por conta própria. Responde 404 se ele não existe,
+        está fora do escopo ou depende de outro pai.
+      parameters:
+        - { $ref: "#/components/parameters/PathID" }
+        - { $ref: "#/components/parameters/PathChildID" }
+      responses:
+        "204": { description: Dependente desligado }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/v1/summaries:
     get:
       tags: [data]
@@ -987,18 +1009,33 @@ paths:
     get:
       tags: [alerts]
       summary: Devolve um canal
-      description: Canal que não avisa sobre nada do escopo da conta responde 404.
+      description: |
+        Canal que não avisa sobre nada do escopo da conta responde 404.
+
+        Para quem pode editar canais (papel com escrita e acesso a todos
+        os grupos), a resposta traz também config, sem credencial, para o
+        formulário de edição. Os demais recebem só o Channel.
       parameters: [{ $ref: "#/components/parameters/PathID" }]
       responses:
         "200":
           description: O canal
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Channel" }
+              schema: { $ref: "#/components/schemas/ChannelDetail" }
         "404": { $ref: "#/components/responses/NotFound" }
     put:
       tags: [alerts]
       summary: Atualiza um canal
+      description: |
+        Os vínculos com monitores e grupos continuam. A credencial que
+        não volta no GET é mantida quando não vem: url ausente mantém a
+        URL do webhook, password ausente a senha do SMTP, token ausente o
+        token do ntfy, e um cabeçalho com o valor "***" o valor guardado.
+        Campo presente, mesmo vazio, é o novo valor.
+
+        A credencial guardada só acompanha o mesmo destino: ao trocar a
+        URL, o servidor SMTP ou o servidor do ntfy, ela precisa vir de
+        novo, ou a edição responde 400. Trocar o tipo não mantém nada.
       parameters: [{ $ref: "#/components/parameters/PathID" }]
       requestBody:
         required: true
@@ -1861,6 +1898,124 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/v1/maintenance-windows:
+    get:
+      tags: [maintenance]
+      summary: Lista as janelas de manutenção
+      description: |
+        Todas, da que começa mais tarde para a mais antiga. Para conta com
+        escopo, só as que tocam algo do escopo, e sem os alvos de fora.
+      responses:
+        "200":
+          description: Janelas
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/MaintenanceWindow" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [maintenance]
+      summary: Declara uma janela de manutenção
+      description: |
+        Exige escopo total&#58; a janela cala avisos, e declará-la no grupo
+        vizinho calaria o pager de outro time.
+
+        O alvo é um conjunto de monitores e de grupos. Grupo vale em
+        cascata (a janela no sistema cobre os ambientes dele), e a janela
+        vale para os dependentes de um monitor coberto.
+
+        O alvo que continuar fora quando a janela acabar avisa depois das
+        confirmações de sempre, uma vez, como uma queda nova.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MaintenanceWindowInput" }
+      responses:
+        "201":
+          description: Janela criada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MaintenanceWindow" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/maintenance-windows/{id}:
+    get:
+      tags: [maintenance]
+      summary: Uma janela de manutenção
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+      responses:
+        "200":
+          description: Janela
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MaintenanceWindow" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [maintenance]
+      summary: Altera uma janela de manutenção
+      description: |
+        Regrava a definição e os alvos. Não reabre a janela encerrada&#58;
+        o encerramento tem rota própria.
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MaintenanceWindowInput" }
+      responses:
+        "200":
+          description: Janela atualizada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MaintenanceWindow" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [maintenance]
+      summary: Apaga uma janela de manutenção
+      description: |
+        As batidas gravadas durante a janela continuam dizendo que houve
+        manutenção. Para parar de silenciar sem apagar, use `/end`.
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+      responses:
+        "204": { description: Janela apagada }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/maintenance-windows/{id}/end:
+    post:
+      tags: [maintenance]
+      summary: Encerra a janela antes do previsto
+      description: |
+        Daqui em diante a janela não cobre mais nada, nem as próximas
+        ocorrências da recorrente. Na que ainda não começou, é cancelar.
+        Encerrar duas vezes mantém o primeiro encerramento.
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+      responses:
+        "200":
+          description: Janela encerrada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MaintenanceWindow" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/v1/events:
     get:
       tags: [data]
@@ -1927,6 +2082,11 @@ components:
       schema: { type: integer, format: int64, minimum: 1 }
     PathChannelID:
       name: channelID
+      in: path
+      required: true
+      schema: { type: integer, format: int64, minimum: 1 }
+    PathChildID:
+      name: childID
       in: path
       required: true
       schema: { type: integer, format: int64, minimum: 1 }
@@ -2495,6 +2655,19 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
+    ChannelDetail:
+      allOf:
+        - $ref: "#/components/schemas/Channel"
+        - type: object
+          properties:
+            config:
+              type: object
+              description: |
+                Só para quem pode editar canais. A configuração sem
+                credencial - url_set, password_set e token_set dizem se
+                há URL, senha ou token guardados, e os cabeçalhos vêm com
+                o nome e o valor "***".
+
     ChannelInput:
       type: object
       required: [name, type, config]
@@ -2917,6 +3090,79 @@ components:
           enum: [investigating, identified, monitoring, resolved]
         body: { type: string, maxLength: 4000 }
 
+    MaintenanceWindowInput:
+      type: object
+      required: [title, starts_at, ends_at]
+      properties:
+        title: { type: string, maxLength: 160 }
+        message:
+          type: string
+          maxLength: 2000
+          description: Texto que a página pública mostra junto do título
+        starts_at:
+          type: string
+          format: date-time
+          description: Início da primeira ocorrência
+        ends_at:
+          type: string
+          format: date-time
+          description: |
+            Fim da primeira ocorrência. A avulsa dura no máximo 31 dias; a
+            recorrente precisa ser mais curta que o intervalo da repetição.
+        recurrence:
+          type: string
+          enum: [none, daily, weekly]
+          default: none
+        time_zone:
+          type: string
+          default: UTC
+          example: America/Sao_Paulo
+          description: |
+            Fuso em que a recorrente repete o horário de parede&#58; "todo
+            domingo às 2h" continua às 2h depois da troca de horário de
+            verão.
+        monitor_ids:
+          type: array
+          items: { type: integer, format: int64 }
+        group_ids:
+          type: array
+          items: { type: integer, format: int64 }
+          description: Grupo vale em cascata; o sistema cobre os ambientes dele
+
+    MaintenanceWindow:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        title: { type: string }
+        message: { type: string }
+        starts_at: { type: string, format: date-time }
+        ends_at: { type: string, format: date-time }
+        recurrence: { type: string, enum: [none, daily, weekly] }
+        time_zone: { type: string }
+        monitor_ids:
+          type: array
+          items: { type: integer, format: int64 }
+        group_ids:
+          type: array
+          items: { type: integer, format: int64 }
+        ended_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Encerramento antes do previsto
+        state:
+          type: string
+          enum: [scheduled, active, finished]
+        next:
+          type: object
+          nullable: true
+          description: Ocorrência em curso ou a próxima; ausente na encerrada
+          properties:
+            start: { type: string, format: date-time }
+            end: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
     PublicView:
       type: object
       description: |
@@ -2944,6 +3190,10 @@ components:
         announcements:
           type: array
           items: { $ref: "#/components/schemas/PublicAnnouncement" }
+        maintenances:
+          type: array
+          description: Janelas em curso e as que começam nos próximos sete dias
+          items: { $ref: "#/components/schemas/PublicMaintenance" }
 
     PublicGroup:
       type: object
@@ -2974,6 +3224,9 @@ components:
         history:
           type: array
           items: { $ref: "#/components/schemas/PublicDay" }
+        maintenance:
+          type: boolean
+          description: Numa janela de manutenção agora
 
     PublicDay:
       type: object
@@ -3005,6 +3258,23 @@ components:
         updates:
           type: array
           items: { $ref: "#/components/schemas/PublicAnnouncementUpdate" }
+
+    PublicMaintenance:
+      type: object
+      properties:
+        title: { type: string }
+        message: { type: string }
+        starts_at:
+          type: string
+          format: date-time
+          description: Ocorrência em curso ou a próxima
+        ends_at: { type: string, format: date-time }
+        recurrence: { type: string, enum: [none, daily, weekly] }
+        active: { type: boolean }
+        components:
+          type: array
+          items: { type: string }
+          description: Rótulos públicos dos componentes desta página afetados
 
     PublicAnnouncementUpdate:
       type: object

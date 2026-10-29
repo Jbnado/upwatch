@@ -83,12 +83,15 @@ var canais = []struct {
 	tipo     string
 	novo     func(json.RawMessage) (Notifier, error)
 	segredos secretbox.Fields
+	// edicao é como a configuração sai para o formulário e como a edição
+	// recupera o que não voltou (ver RedactConfig e CarrySecrets).
+	edicao edicao
 }{
-	{"webhook", NewWebhook, webhookSecrets},
-	{"discord", NewDiscord, webhookSecrets},
-	{"slack", NewSlack, webhookSecrets},
-	{"email", NewEmail, secretbox.Fields{Names: []string{"password"}}},
-	{"ntfy", NewNtfy, secretbox.Fields{Names: []string{"token"}}},
+	{"webhook", NewWebhook, webhookSecrets, edicaoWebhook},
+	{"discord", NewDiscord, webhookSecrets, edicaoWebhook},
+	{"slack", NewSlack, webhookSecrets, edicaoWebhook},
+	{"email", NewEmail, secretbox.Fields{Names: []string{"password"}}, edicaoEmail},
+	{"ntfy", NewNtfy, secretbox.Fields{Names: []string{"token"}}, edicaoNtfy},
 }
 
 // webhookSecrets vale para os três canais de webhook. A URL do Discord e a

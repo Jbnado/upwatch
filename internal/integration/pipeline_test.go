@@ -22,6 +22,7 @@ import (
 	"github.com/Jbnado/upwatch/internal/secretbox"
 	"github.com/Jbnado/upwatch/internal/store"
 	"github.com/Jbnado/upwatch/internal/store/sqlstore"
+	"github.com/Jbnado/upwatch/internal/testdir"
 )
 
 // pipeline é a cadeia montada, com os componentes já em execução.
@@ -36,7 +37,7 @@ type pipeline struct {
 func newPipeline(t *testing.T) *pipeline {
 	t.Helper()
 
-	st, err := sqlstore.OpenSQLite(filepath.Join(t.TempDir(), "upwatch.db"), secretbox.Ephemeral())
+	st, err := sqlstore.OpenSQLite(filepath.Join(testdir.New(t), "upwatch.db"), secretbox.Ephemeral())
 	if err != nil {
 		t.Fatalf("OpenSQLite returned unexpected error: %v", err)
 	}
@@ -281,7 +282,7 @@ func TestPipelinePersistsPendingWorkOnShutdown(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	st, err := sqlstore.OpenSQLite(filepath.Join(t.TempDir(), "upwatch.db"), secretbox.Ephemeral())
+	st, err := sqlstore.OpenSQLite(filepath.Join(testdir.New(t), "upwatch.db"), secretbox.Ephemeral())
 	if err != nil {
 		t.Fatalf("OpenSQLite returned unexpected error: %v", err)
 	}

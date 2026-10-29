@@ -14,6 +14,7 @@ import (
 	"github.com/Jbnado/upwatch/internal/secretbox"
 	"github.com/Jbnado/upwatch/internal/store"
 	"github.com/Jbnado/upwatch/internal/store/sqlstore"
+	"github.com/Jbnado/upwatch/internal/testdir"
 )
 
 // retentionStart é o começo da simulação; o relógio falso avança a partir
@@ -54,7 +55,7 @@ func TestRetentionKeepsDatabaseFromGrowingWithTime(t *testing.T) {
 		days          = 30
 	)
 
-	path := filepath.Join(t.TempDir(), "upwatch.db")
+	path := filepath.Join(testdir.New(t), "upwatch.db")
 	st, err := sqlstore.OpenSQLite(path, secretbox.Ephemeral())
 	if err != nil {
 		t.Fatalf("OpenSQLite returned unexpected error: %v", err)
@@ -175,7 +176,7 @@ func TestRetentionKeepsDatabaseFromGrowingWithTime(t *testing.T) {
 // Com a janela de três meses que o operador tende a pedir, o gráfico longo
 // precisa continuar existindo mesmo depois de o dado cru ser descartado.
 func TestRetentionKeepsThreeMonthHistoryWithoutRawData(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "upwatch.db")
+	path := filepath.Join(testdir.New(t), "upwatch.db")
 	st, err := sqlstore.OpenSQLite(path, secretbox.Ephemeral())
 	if err != nil {
 		t.Fatalf("OpenSQLite returned unexpected error: %v", err)

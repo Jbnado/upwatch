@@ -4,6 +4,7 @@ import {
   type AnnouncementUpdate,
   type APIToken,
   type Channel,
+  type ChannelDetail,
   type ChannelInput,
   type ChannelType,
   type CreatedToken,
@@ -16,6 +17,8 @@ import {
   type Incident,
   type IncidentImpact,
   type IncidentPhase,
+  type MaintenanceInput,
+  type MaintenanceWindow,
   type Monitor,
   type MonitorInput,
   type Page,
@@ -143,6 +146,10 @@ export const api = {
       body: JSON.stringify({ monitor_ids: monitorIds }),
     }),
 
+  /** unlinkChild solta um dependente deste monitor; o de outro pai é 404. */
+  unlinkChild: (id: number, childId: number) =>
+    request<void>(`/monitors/${id}/children/${childId}`, { method: "DELETE" }),
+
   // ---------- dados ----------
 
   /**
@@ -191,6 +198,8 @@ export const api = {
   channelTypes: () => request<{ items: ChannelType[] }>("/channel-types"),
 
   listChannels: () => request<{ items: Channel[] }>("/channels"),
+
+  getChannel: (id: number) => request<ChannelDetail>(`/channels/${id}`),
 
   createChannel: (input: ChannelInput) =>
     request<Channel>("/channels", { method: "POST", body: JSON.stringify(input) }),
@@ -349,6 +358,24 @@ export const api = {
       `/announcements/${id}/updates`,
       { method: "POST", body: JSON.stringify(input) },
     ),
+
+  // ---------- janelas de manutenção ----------
+
+  maintenanceWindows: () => request<{ items: MaintenanceWindow[] }>("/maintenance-windows"),
+
+  createMaintenance: (input: MaintenanceInput) =>
+    request<MaintenanceWindow>("/maintenance-windows", { method: "POST", body: JSON.stringify(input) }),
+
+  updateMaintenance: (id: number, input: MaintenanceInput) =>
+    request<MaintenanceWindow>(`/maintenance-windows/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }),
+
+  endMaintenance: (id: number) =>
+    request<MaintenanceWindow>(`/maintenance-windows/${id}/end`, { method: "POST" }),
+
+  deleteMaintenance: (id: number) => request<void>(`/maintenance-windows/${id}`, { method: "DELETE" }),
 };
 
 /**

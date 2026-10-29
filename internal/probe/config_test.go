@@ -12,6 +12,7 @@ import (
 
 	"github.com/Jbnado/upwatch/internal/domain"
 	"github.com/Jbnado/upwatch/internal/probe"
+	"github.com/Jbnado/upwatch/internal/testdir"
 )
 
 // Tokens fictícios: o formato é o do UpWatch, o valor não abre nada.
@@ -38,7 +39,7 @@ func redisCheck(name string) probe.Check {
 
 func writeFile(t *testing.T, content string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "probe.yaml")
+	path := filepath.Join(testdir.New(t), "probe.yaml")
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +132,7 @@ checks:
 }
 
 func TestLoadReportsAMissingFileAsNotExist(t *testing.T) {
-	_, err := probe.Load(filepath.Join(t.TempDir(), "nao-existe.yaml"))
+	_, err := probe.Load(filepath.Join(testdir.New(t), "nao-existe.yaml"))
 	if !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("err = %v, want os.ErrNotExist", err)
 	}
@@ -155,7 +156,7 @@ func TestLoadRejectsAFileOthersCanRead(t *testing.T) {
 }
 
 func TestSaveWritesOwnerOnlyAndRoundTrips(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "probe.yaml")
+	path := filepath.Join(testdir.New(t), "probe.yaml")
 	cfg := probe.Config{
 		Name:      "vm-prod-1",
 		Heartbeat: probe.Heartbeat{PushURL: heartbeatURL, Interval: probe.Duration(time.Minute)},

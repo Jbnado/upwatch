@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/Jbnado/upwatch/internal/secretbox"
+	"github.com/Jbnado/upwatch/internal/testdir"
 )
 
 func newResolver(t *testing.T, configured string) (secretbox.Resolver, *bytes.Buffer) {
@@ -18,7 +19,7 @@ func newResolver(t *testing.T, configured string) (secretbox.Resolver, *bytes.Bu
 	var logs bytes.Buffer
 	return secretbox.Resolver{
 		Configured: configured,
-		AutoPath:   filepath.Join(t.TempDir(), "secret.key"),
+		AutoPath:   filepath.Join(testdir.New(t), "secret.key"),
 		Logger:     slog.New(slog.NewTextHandler(&logs, nil)),
 	}, &logs
 }

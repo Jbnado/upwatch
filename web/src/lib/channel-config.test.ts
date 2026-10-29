@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  lerConfig,
   montarConfig,
   montarConfigEmail,
   montarConfigNtfy,
@@ -248,5 +249,52 @@ describe("ntfyServidorPublico", () => {
     for (const servidor of ["https://ntfy.exemplo.com", "https://ntfy.sh.exemplo.com", "http://localhost:2586"]) {
       expect(ntfyServidorPublico(servidor), `servidor ${JSON.stringify(servidor)}`).toBe(false);
     }
+  });
+});
+
+describe("edição", () => {
+  it("sem a URL digitada, não manda url quando há uma guardada", () => {
+    const r = montarConfig({ url: "  ", cabecalhos: [], mapeamento: "", urlGuardada: true });
+
+    expect(r.config).toEqual({});
+  });
+
+  it("cabeçalho guardado em branco pede o valor guardado; preenchido, troca", () => {
+    const r = montarConfig({
+      url: "",
+      urlGuardada: true,
+      cabecalhos: [
+        { nome: "Authorization", valor: "", mantido: true },
+        { nome: "X-Api-Key", valor: "nova", mantido: true },
+        cab("X-Vazio", ""),
+      ],
+      mapeamento: "",
+    });
+
+    expect(r.config?.headers).toEqual({ Authorization: "***", "X-Api-Key": "nova", "X-Vazio": "" });
+  });
+
+  it("devolve o modelo de mensagem que a tela não edita", () => {
+    const r = montarConfig({ url: "https://x.exemplo", cabecalhos: [], mapeamento: "", template: "t" });
+
+    expect(r.config).toEqual({ url: "https://x.exemplo", template: "t" });
+  });
+
+  it("lerConfig preenche o formulário sem segredo e marca o que está guardado", () => {
+    const e = lerConfig({
+      url_set: true,
+      headers: { Authorization: "***" },
+      body_template: { event: "$status" },
+      password_set: true,
+      token_set: false,
+    });
+
+    expect(e.cabecalhos).toEqual([
+      { nome: "Authorization", valor: "", mantido: true },
+      { nome: "", valor: "" },
+    ]);
+    expect(JSON.parse(e.mapeamento)).toEqual({ event: "$status" });
+    expect(e.guardados).toEqual({ url: true, senha: true, token: false });
+    expect(e.email.senha).toBe("");
   });
 });

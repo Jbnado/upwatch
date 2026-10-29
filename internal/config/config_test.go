@@ -7,13 +7,14 @@ import (
 	"time"
 
 	"github.com/Jbnado/upwatch/internal/config"
+	"github.com/Jbnado/upwatch/internal/testdir"
 )
 
 // writeFile grava um arquivo de configuração temporário.
 func writeFile(t *testing.T, conteudo string) string {
 	t.Helper()
 
-	caminho := filepath.Join(t.TempDir(), "upwatch.yaml")
+	caminho := filepath.Join(testdir.New(t), "upwatch.yaml")
 	if err := os.WriteFile(caminho, []byte(conteudo), 0o600); err != nil {
 		t.Fatalf("WriteFile returned unexpected error: %v", err)
 	}
@@ -211,7 +212,7 @@ func TestEmptySentinelListDisablesSuppression(t *testing.T) {
 }
 
 func TestMissingFileIsReported(t *testing.T) {
-	if _, err := config.Load(filepath.Join(t.TempDir(), "nao-existe.yaml")); err == nil {
+	if _, err := config.Load(filepath.Join(testdir.New(t), "nao-existe.yaml")); err == nil {
 		t.Fatal("Load of a missing file returned nil error, want an error")
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/Jbnado/upwatch/internal/statuspage"
 	"github.com/Jbnado/upwatch/internal/store"
 	"github.com/Jbnado/upwatch/internal/store/sqlstore"
+	"github.com/Jbnado/upwatch/internal/testdir"
 )
 
 // A montagem da página pública.
@@ -29,7 +30,7 @@ var agora = time.Date(2026, 7, 30, 15, 0, 0, 0, time.UTC)
 func newStore(t *testing.T) store.Store {
 	t.Helper()
 
-	s, err := sqlstore.OpenSQLite(filepath.Join(t.TempDir(), "status.db"), secretbox.Ephemeral())
+	s, err := sqlstore.OpenSQLite(filepath.Join(testdir.New(t), "status.db"), secretbox.Ephemeral())
 	if err != nil {
 		t.Fatalf("abrindo banco: %v", err)
 	}

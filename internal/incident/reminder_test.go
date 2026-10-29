@@ -8,6 +8,7 @@ import (
 	"github.com/Jbnado/upwatch/internal/clock"
 	"github.com/Jbnado/upwatch/internal/domain"
 	"github.com/Jbnado/upwatch/internal/incident"
+	"github.com/Jbnado/upwatch/internal/maintenance"
 	"github.com/Jbnado/upwatch/internal/notifier"
 )
 
@@ -240,26 +241,36 @@ func TestRemindersSurviveRestart(t *testing.T) {
 	}
 }
 
-// A janela de manutenção (#37) cala o lembrete enquanto durar; acabada a
-// janela, a queda que segue aberta volta a ser lembrada.
+// A janela de manutenção cala o lembrete da queda que segue aberta
+// enquanto durar; acabada a janela, a queda volta a ser lembrada.
 func TestRemindersSkipMaintenance(t *testing.T) {
 	f := newEngine(t)
 	f.linkChannel(t)
 	f.derruba(t)
 
-	emManutencao := true
-	relogio := clock.NewFake(quedaConfirmada.Add(time.Hour))
-	r := incident.NewReminders(f.engine, incident.ReminderOptions{
-		Clock: relogio, Default: 30 * time.Minute,
-		UnderMaintenance: func(context.Context, domain.Monitor, time.Time) bool { return emManutencao },
-	})
+	ctx := context.Background()
+	w := domain.MaintenanceWindow{
+		Title: "deploy", StartsAt: quedaConfirmada.Add(30 * time.Minute), EndsAt: quedaConfirmada.Add(90 * time.Minute),
+		Recurrence: domain.RecurrenceNone, TimeZone: "UTC", MonitorIDs: []int64{f.monitor.ID},
+	}
+	if err := f.store.Maintenance().Create(ctx, &w); err != nil {
+		t.Fatalf("Maintenance().Create: %v", err)
+	}
+	cal := maintenance.New(f.store)
+	if err := cal.Reload(ctx); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	f.engine.WithMaintenance(cal)
 
-	r.Tick(context.Background())
+	relogio := clock.NewFake(quedaConfirmada.Add(time.Hour))
+	r := novosLembretes(f.engine, relogio, 30*time.Minute)
+
+	r.Tick(ctx)
 	if n := len(lembretes(f.dispatch)); n != 0 {
 		t.Fatalf("%d lembretes durante a manutenção", n)
 	}
-	emManutencao = false
-	r.Tick(context.Background())
+	relogio.Advance(31 * time.Minute)
+	r.Tick(ctx)
 	if n := len(lembretes(f.dispatch)); n != 1 {
 		t.Errorf("%d lembretes depois da manutenção, quer 1", n)
 	}

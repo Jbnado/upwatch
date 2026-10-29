@@ -54,6 +54,7 @@ describe("Settings", () => {
       "Grupos",
       "Contas e acesso",
       "Canais",
+      "Manutenção",
       "Páginas de estado",
       "Tokens de API",
       "Senha",

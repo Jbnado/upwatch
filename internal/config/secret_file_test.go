@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/Jbnado/upwatch/internal/config"
+	"github.com/Jbnado/upwatch/internal/testdir"
 )
 
 // validKey é uma chave de segredos bem formada: 32 bytes em base64.
@@ -16,7 +17,7 @@ var validKey = base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456
 // secretFile grava o conteúdo num arquivo, como o Docker monta um secret.
 func secretFile(t *testing.T, content string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "secret")
+	path := filepath.Join(testdir.New(t), "secret")
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile returned unexpected error: %v", err)
 	}
@@ -108,7 +109,7 @@ func TestSensitiveOptionInBothFormsStopsStartup(t *testing.T) {
 // aberto — esconderia o defeito até alguém notar a consequência.
 func TestBrokenSecretFileStopsStartup(t *testing.T) {
 	for name, path := range map[string]string{
-		"inexistente": filepath.Join(t.TempDir(), "nao-existe"),
+		"inexistente": filepath.Join(testdir.New(t), "nao-existe"),
 		"vazio":       secretFile(t, "\n"),
 	} {
 		t.Run(name, func(t *testing.T) {

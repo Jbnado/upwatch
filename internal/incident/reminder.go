@@ -23,11 +23,6 @@ type ReminderOptions struct {
 	// Zero desliga.
 	Default time.Duration
 	Tick    time.Duration
-
-	// UnderMaintenance diz se o monitor está em janela de manutenção (#37).
-	// Lembrete durante manutenção é ruído sobre uma queda que alguém
-	// anunciou de antemão. Nulo enquanto as janelas não existirem.
-	UnderMaintenance func(ctx context.Context, m domain.Monitor, at time.Time) bool
 }
 
 // Reminders relembra as quedas que seguem abertas sem que ninguém tenha
@@ -112,8 +107,7 @@ func (r *Reminders) Tick(ctx context.Context) {
 		if agora.Sub(ultimo) < intervalo {
 			continue
 		}
-		// TODO(#37): ligar UnderMaintenance às janelas de manutenção.
-		if r.opts.UnderMaintenance != nil && r.opts.UnderMaintenance(ctx, m, agora) {
+		if e.underMaintenance(m, agora) {
 			continue
 		}
 
@@ -173,6 +167,23 @@ func (e *Engine) reminderTarget(id int64) (domain.Monitor, bool) {
 	return m, true
 }
 
+// underMaintenance diz se uma janela de manutenção cobre o monitor agora.
+//
+// A queda que já estava aberta quando a janela começou não é relembrada
+// enquanto ela durar: alguém anunciou aquele intervalo de antemão, e o
+// lembrete seria ruído sobre ele. Acabada a janela, a queda que segue
+// aberta volta a ser lembrada. A pergunta é a mesma que a triagem das
+// batidas faz, ao mesmo calendário, para as duas não discordarem.
+func (e *Engine) underMaintenance(m domain.Monitor, at time.Time) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if e.maintenance == nil {
+		return false
+	}
+	_, ok := e.maintenance.Covering(m, e.lookup, at)
+	return ok
+}
+
 // remind entrega o lembrete pelos mesmos canais e pela mesma fila do aviso
 // de queda.
 func (e *Engine) remind(ctx context.Context, m domain.Monitor, inc domain.Incident, at time.Time, grupos domain.GroupTree) {
@@ -198,8 +209,8 @@ func (e *Engine) remind(ctx context.Context, m domain.Monitor, inc domain.Incide
 	}, destinos)
 }
 
-// destinations monta os notificadores dos canais do monitor. Canal mal
-// configurado fica de fora sem calar os outros, como no aviso de queda.
+// destinations monta os notificadores dos canais do monitor para o
+// lembrete, pela mesma regra do aviso de mudança (Channels().Destinations).
 func (e *Engine) destinations(ctx context.Context, m domain.Monitor) []notifier.Notifier {
 	canais, err := e.store.Channels().Destinations(ctx, m.ID)
 	if err != nil {
@@ -211,6 +222,8 @@ func (e *Engine) destinations(ctx context.Context, m domain.Monitor) []notifier.
 	for _, canal := range canais {
 		n, err := notifier.Build(canal.Type, canal.Config)
 		if err != nil {
+			// Canal mal configurado não pode calar os outros: o que dá
+			// para entregar, se entrega.
 			slog.Error("canal de aviso inválido",
 				"canal", canal.Name, "tipo", canal.Type, "erro", err)
 			continue
