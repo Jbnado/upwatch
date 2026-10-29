@@ -114,6 +114,30 @@ func TestSetChildrenOutsideTheScopeIsNotFound(t *testing.T) {
 	assertStatus(t, resp, http.StatusOK)
 }
 
+// Desligar pela página do pai solta só o que depende dele: um id de
+// filho de outra sonda responde como o inexistente e não muda nada.
+func TestUnlinkChildOnlyFromItsOwnParent(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+	sonda := s.createMonitor(t, newMonitorBody("sonda"))
+	outra := s.createMonitor(t, newMonitorBody("outra sonda"))
+	corpo := newMonitorBody("redis")
+	corpo["parent_id"] = sonda
+	redis := s.createMonitor(t, corpo)
+
+	resp := s.do(t, http.MethodDelete, "/api/v1/monitors/"+itoa(outra)+"/children/"+itoa(redis), nil)
+	assertStatus(t, resp, http.StatusNotFound)
+	if got := s.paiDe(t, redis); got == nil || *got != sonda {
+		t.Fatalf("redis parent = %v after a refused unlink, want %d", got, sonda)
+	}
+
+	resp = s.do(t, http.MethodDelete, "/api/v1/monitors/"+itoa(sonda)+"/children/"+itoa(redis), nil)
+	assertStatus(t, resp, http.StatusNoContent)
+	if got := s.paiDe(t, redis); got != nil {
+		t.Errorf("redis parent = %d after unlink, want none", *got)
+	}
+}
+
 type resumoAfetado struct {
 	MonitorID  int64  `json:"monitor_id"`
 	Status     string `json:"status"`
