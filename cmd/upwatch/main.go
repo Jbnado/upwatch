@@ -125,6 +125,7 @@ type application struct {
 	writer    *store.BatchWriter
 	scheduler *scheduler.Scheduler
 	incidents *incident.Engine
+	reminders *incident.Reminders
 	alerts    *notifier.Dispatcher
 	rollups   *rollup.Worker
 	auth      *auth.Service
@@ -240,7 +241,11 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 		writer:    writer,
 		scheduler: sched,
 		incidents: engine,
-		alerts:    alerts,
+		reminders: incident.NewReminders(engine, incident.ReminderOptions{
+			Clock:   real,
+			Default: cfg.ReminderInterval,
+		}),
+		alerts: alerts,
 		rollups: rollup.NewWorker(st, rollup.Options{
 			Interval:  cfg.RollupInterval,
 			Retention: cfg.RetentionPolicy(),
@@ -277,6 +282,7 @@ func (a *application) run(ctx context.Context, cfg config.Config) error {
 	spawn("scheduler", a.scheduler.Run)
 	spawn("rollup", a.rollups.Run)
 	spawn("alertas", a.alerts.Run)
+	spawn("lembretes", a.reminders.Run)
 	spawn("sessoes", a.sweepSessions)
 
 	server := &http.Server{

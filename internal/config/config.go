@@ -19,6 +19,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/Jbnado/upwatch/internal/domain"
 	"github.com/Jbnado/upwatch/internal/rollup"
 	"github.com/Jbnado/upwatch/internal/scheduler"
 	"github.com/Jbnado/upwatch/internal/secretbox"
@@ -66,6 +67,12 @@ type Config struct {
 
 	// SessionTTL é a validade de um login na interface.
 	SessionTTL time.Duration `yaml:"session_ttl"`
+
+	// ReminderInterval é de quanto em quanto tempo uma queda aberta e não
+	// reconhecida é relembrada, para monitor e grupo que não escolheram o
+	// próprio. Zero, o padrão, desliga: ligar sozinho numa atualização
+	// faria toda queda antiga, ainda aberta, voltar a tocar de uma vez.
+	ReminderInterval time.Duration `yaml:"reminder_interval"`
 
 	// MetricsToken, quando definido, passa a ser exigido em /metrics.
 	// Vazio mantém a exposição aberta, que serve à rede local; numa
@@ -207,6 +214,9 @@ func applyEnv(cfg *Config) error {
 	if err := dur(&cfg.SessionTTL, "SESSION_TTL"); err != nil {
 		return err
 	}
+	if err := dur(&cfg.ReminderInterval, "REMINDER_INTERVAL"); err != nil {
+		return err
+	}
 	if err := num(&cfg.Workers, "WORKERS"); err != nil {
 		return err
 	}
@@ -242,6 +252,10 @@ func (c Config) Validate() error {
 	}
 	if c.SessionTTL <= 0 {
 		return fmt.Errorf("config: session_ttl precisa ser positivo")
+	}
+	if domain.ValidateReminderInterval(&c.ReminderInterval) != nil {
+		return fmt.Errorf("config: reminder_interval precisa ser 0 (desligado) ou ficar entre %s e %s",
+			domain.MinReminderInterval, domain.MaxReminderInterval)
 	}
 
 	if c.SecretKey != "" {

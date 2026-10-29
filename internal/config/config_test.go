@@ -290,3 +290,26 @@ setup_token: "token-de-configuracao-dos-testes"
 		t.Errorf("SetupToken = %q, want empty: the YAML must not carry it", cfg.SetupToken)
 	}
 }
+
+// Desligado por padrão: ligar sozinho na atualização faria toda queda
+// antiga ainda aberta voltar a tocar de uma vez. E um intervalo curto
+// demais é recusado na subida, não descoberto como spam na madrugada.
+func TestReminderIntervalIsOptIn(t *testing.T) {
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("Load returned unexpected error: %v", err)
+	}
+	if cfg.ReminderInterval != 0 {
+		t.Errorf("ReminderInterval padrão = %v, quer desligado", cfg.ReminderInterval)
+	}
+
+	t.Setenv("UPWATCH_REMINDER_INTERVAL", "30m")
+	if cfg, err = config.Load(""); err != nil || cfg.ReminderInterval != 30*time.Minute {
+		t.Errorf("30m: cfg=%v err=%v", cfg.ReminderInterval, err)
+	}
+
+	t.Setenv("UPWATCH_REMINDER_INTERVAL", "1m")
+	if _, err := config.Load(""); err == nil {
+		t.Error("intervalo de 1 minuto aceito")
+	}
+}
