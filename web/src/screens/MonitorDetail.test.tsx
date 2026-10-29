@@ -40,6 +40,7 @@ const EU: User = {
   username: "ana",
   role: "viewer",
   scope: { all_groups: true, group_ids: [] },
+  totp_enabled: false,
   created_at: "",
   updated_at: "",
 };

@@ -16,7 +16,12 @@ import (
 
 type userRepo struct{ db *db }
 
-const userColumns = `id, username, role, password_hash, created_at, updated_at, all_groups`
+// O segundo fator vem numa subconsulta, e não numa coluna da conta: quem
+// o liga e desliga é o fluxo próprio dele (ver twofactor.go), e uma
+// coluna aqui seria mais um campo que a gravação da conta poderia
+// regravar com um valor velho.
+const userColumns = `id, username, role, password_hash, created_at, updated_at, all_groups,
+	(SELECT COUNT(*) FROM user_totp t WHERE t.user_id = app_user.id AND t.enabled = 1)`
 
 // Create grava a conta e o escopo numa transação: uma conta gravada sem
 // as concessões apareceria, por um instante, com o escopo zero — que é
@@ -234,10 +239,12 @@ func scanUser(sc scanner) (domain.User, error) {
 		createdMS int64
 		updatedMS int64
 		allGroups int64
+		totp      int64
 	)
-	if err := sc.Scan(&u.ID, &u.Username, &roleName, &u.PasswordHash, &createdMS, &updatedMS, &allGroups); err != nil {
+	if err := sc.Scan(&u.ID, &u.Username, &roleName, &u.PasswordHash, &createdMS, &updatedMS, &allGroups, &totp); err != nil {
 		return domain.User{}, err
 	}
+	u.TOTPEnabled = totp > 0
 	// Só o valor 1 alcança tudo. Qualquer outra coisa vinda do banco é
 	// restrita: no caso em que não se sabe o que está gravado, negar é o
 	// desfecho seguro.
@@ -379,6 +386,15 @@ func (r *sessionRepo) DeleteExpired(ctx context.Context, before time.Time) (int6
 func (r *sessionRepo) DeleteByUser(ctx context.Context, userID int64) error {
 	if _, err := r.db.ExecContext(ctx, `DELETE FROM session WHERE user_id = ?`, userID); err != nil {
 		return fmt.Errorf("sqlstore: apagando sessões do usuário %d: %w", userID, err)
+	}
+	return nil
+}
+
+// DeleteOthers encerra as sessões da conta, menos a indicada.
+func (r *sessionRepo) DeleteOthers(ctx context.Context, userID int64, keep string) error {
+	if _, err := r.db.ExecContext(ctx,
+		`DELETE FROM session WHERE user_id = ? AND token_hash <> ?`, userID, keep); err != nil {
+		return fmt.Errorf("sqlstore: apagando as outras sessões do usuário %d: %w", userID, err)
 	}
 	return nil
 }

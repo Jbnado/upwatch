@@ -22,6 +22,19 @@ info:
     O segredo de um token aparece **apenas** na resposta que o cria. Depois
     disso só o prefixo é exposto, e nada permite reconstruí-lo.
 
+    ## Corpo e origem
+
+    Toda requisição com corpo JSON precisa declarar
+    `Content-Type: application/json`; sem isso a resposta é 415, com o
+    corpo de erro de sempre. A exceção é `/push`, que aceita o sinal na
+    query e ignora corpo de outro tipo.
+
+    Requisições que mudam estado (POST, PUT, PATCH, DELETE) autenticadas
+    pelo cookie de sessão, e também login e primeiro acesso, são recusadas
+    com 403 quando o navegador indica outra origem (`Sec-Fetch-Site` ou
+    `Origin`). Clientes fora do navegador não mandam esses cabeçalhos e não
+    são afetados; o token Bearer não passa por essa conferência.
+
     ## Retenção
 
     Batidas cruas vivem poucos dias; o histórico longo é servido por
@@ -246,6 +259,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/auth/login:
     post:
@@ -255,7 +269,13 @@ paths:
         Senha errada e conta inexistente devolvem a mesma resposta, de
         propósito: distingui-las permitiria descobrir quais contas existem.
 
-        Falhas repetidas bloqueiam a conta temporariamente.
+        Falhas repetidas bloqueiam a conta temporariamente. Além disso, os
+        dois passos do login dividem um limite por origem.
+
+        Conta com verificação em duas etapas não recebe sessão aqui: a
+        resposta traz `status: two_factor_required` e um `challenge`, que
+        `POST /api/v1/auth/login/2fa` troca pela sessão junto com o código.
+        Só quem acertou a senha descobre que a conta tem o segundo fator.
       security: []
       requestBody:
         required: true
@@ -269,17 +289,59 @@ paths:
                 password: { type: string }
       responses:
         "200":
+          description: |
+            Senha certa. Com `status: ok`, a sessão foi aberta e o cookie
+            acompanha a resposta; com `status: two_factor_required`, falta
+            o código.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+              description: Cookie `upwatch_session`, HttpOnly e SameSite=Lax (só com status ok)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LoginResult" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/LoginTooManyRequests" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+
+  /api/v1/auth/login/2fa:
+    post:
+      tags: [auth]
+      summary: Conclui o login com o segundo fator
+      description: |
+        Troca o `challenge` devolvido pelo login e um código pela sessão.
+        O código é o de seis dígitos do aplicativo ou um código de
+        recuperação, que vale uma vez só.
+
+        O desafio vence em cinco minutos, aceita cinco códigos e abre uma
+        sessão só. Desafio vencido, esgotado ou já usado devolve 401 com
+        `field: challenge`: é preciso começar de novo pela senha. Código
+        errado devolve 401 com `field: code` e conta no mesmo bloqueio da
+        senha errada.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [challenge, code]
+              properties:
+                challenge: { type: string }
+                code: { type: string, description: Código de seis dígitos ou de recuperação }
+      responses:
+        "200":
           description: Sessão aberta; o cookie acompanha a resposta
           headers:
             Set-Cookie:
               schema: { type: string }
               description: Cookie `upwatch_session`, HttpOnly e SameSite=Lax
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "429":
-          description: Tentativas demais; aguarde antes de tentar novamente
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Error" }
+              schema: { $ref: "#/components/schemas/LoginResult" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/LoginTooManyRequests" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/auth/logout:
     post:
@@ -292,13 +354,166 @@ paths:
     get:
       tags: [auth]
       summary: Devolve a conta autenticada
+      description: |
+        `two_factor_enrollment_required` vem verdadeiro quando a instalação
+        exige verificação em duas etapas de administradores
+        (`UPWATCH_REQUIRE_2FA_ADMIN`) e esta conta, logada por sessão, ainda
+        não a cadastrou. Enquanto isso, a sessão só alcança esta rota, o
+        cadastro (`/auth/2fa`, `/auth/2fa/setup`, `/auth/2fa/enable`) e o
+        logout; o resto responde 403 com `code: two_factor_enrollment_required`.
       responses:
         "200":
           description: Conta atual
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/User" }
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/User"
+                  - type: object
+                    properties:
+                      two_factor_enrollment_required: { type: boolean }
         "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/auth/2fa:
+    get:
+      tags: [auth]
+      summary: Estado da verificação em duas etapas da conta
+      responses:
+        "200":
+          description: Estado atual
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled: { type: boolean }
+                  pending:
+                    type: boolean
+                    description: Cadastro começado e ainda não confirmado
+                  recovery_codes_left: { type: integer }
+                  required:
+                    type: boolean
+                    description: A instalação exige o segundo fator desta conta
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/auth/2fa/setup:
+    post:
+      tags: [auth]
+      summary: Começa o cadastro do aplicativo autenticador
+      description: |
+        Sorteia um segredo TOTP (SHA-1, seis dígitos, passo de 30 s) e o
+        guarda como pendente. A resposta traz o segredo em base32 e o
+        endereço `otpauth://` do QR code; é a única vez que o segredo sai
+        da API. Chamar de novo descarta o pendente anterior.
+
+        Exige a senha atual. A errada conta no bloqueio da conta, como no
+        login.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string }
+      responses:
+        "200":
+          description: Segredo pendente
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  secret: { type: string }
+                  uri: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "429":
+          description: Tentativas demais; aguarde antes de tentar novamente
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/auth/2fa/enable:
+    post:
+      tags: [auth]
+      summary: Confirma o cadastro com um código do aplicativo
+      description: |
+        Liga o segundo fator e devolve dez códigos de recuperação, que não
+        aparecem de novo. As outras sessões da conta são encerradas; a
+        desta requisição continua.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+      responses:
+        "200":
+          description: Segundo fator ligado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecoveryCodes" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+
+  /api/v1/auth/2fa/recovery-codes:
+    post:
+      tags: [auth]
+      summary: Gera códigos de recuperação novos
+      description: |
+        Exige a senha e um código válido (do aplicativo ou de
+        recuperação). Os códigos anteriores deixam de valer.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SecondFactorProof" }
+      responses:
+        "200":
+          description: Códigos novos
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecoveryCodes" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429":
+          description: Tentativas demais; aguarde antes de tentar novamente
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+
+  /api/v1/auth/2fa/disable:
+    post:
+      tags: [auth]
+      summary: Desliga a verificação em duas etapas da conta
+      description: |
+        Exige a senha e um código válido. As outras sessões da conta são
+        encerradas; a desta requisição continua.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SecondFactorProof" }
+      responses:
+        "204": { description: Segundo fator desligado }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429":
+          description: Tentativas demais; aguarde antes de tentar novamente
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/auth/password:
     post:
@@ -308,6 +523,8 @@ paths:
         Encerra todas as sessões abertas, inclusive a desta requisição.
         Trocar a senha porque ela pode ter vazado não adianta se quem a
         obteve continuar logado.
+
+        A senha atual errada conta no bloqueio da conta, como no login.
       requestBody:
         required: true
         content:
@@ -322,6 +539,12 @@ paths:
         "204": { description: Senha trocada e sessões encerradas }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "429":
+          description: Tentativas demais; aguarde antes de tentar novamente
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/auth/tokens:
     get:
@@ -370,6 +593,7 @@ paths:
                       token:
                         type: string
                         description: O segredo; não é recuperável depois
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/auth/tokens/{id}:
     delete:
@@ -440,6 +664,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/users/{id}:
     put:
@@ -485,6 +710,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
     delete:
       tags: [auth]
       summary: Remove uma conta
@@ -505,6 +731,29 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/users/{id}/2fa:
+    delete:
+      tags: [auth]
+      summary: Desliga a verificação em duas etapas de outra conta
+      description: |
+        Para quem perdeu o celular e os códigos de recuperação. Encerra
+        todas as sessões da conta, e fica no log com quem fez.
+
+        A própria conta devolve 409: ela desliga o segundo fator por
+        `POST /api/v1/auth/2fa/disable`, que pede senha e código. Conta sem
+        segundo fator também devolve 409.
+
+        Sem nenhum administrador capaz de entrar, a saída é a linha de
+        comando: `upwatch disable-2fa <conta>`.
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+      responses:
+        "204": { description: Segundo fator desligado e sessões encerradas }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
 
   /api/v1/monitors:
     get:
@@ -553,9 +802,11 @@ paths:
         Para conta com acesso restrito a grupos, com
         `UPWATCH_RESTRICT_PRIVATE_TARGETS` ligado (o padrão), o destino que
         resolver para loopback, rede privada, enlace local (metadado da
-        nuvem) ou espaço compartilhado de provedor é recusado com 400, e o
-        nome que não resolve também. Na edição, o destino que não mudou não
-        é conferido de novo.
+        nuvem), espaço compartilhado de provedor, faixas reservadas ou
+        endereço IPv6 que embute IPv4 (NAT64, 6to4, SIIT) é recusado com
+        400, e o nome que não resolve também. Na edição, o destino que não
+        mudou não é conferido de novo; mudar a configuração (método,
+        corpo, cabeçalhos, asserções, consulta) é escolher destino.
 
         `parent_id` de fora do escopo responde 404, como o inexistente.
       requestBody:
@@ -576,6 +827,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/monitors/{id}:
     get:
@@ -596,6 +848,11 @@ paths:
         As mesmas regras de alvo interno e de `parent_id` do cadastro. O
         pai que depende, direta ou indiretamente, do próprio monitor fecha
         um ciclo e é recusado com 400 em `parent_id`.
+
+        Para conta com escopo, o pai gravado que ela não enxerga é mantido
+        quando `parent_id` vem ausente, nulo ou igual a ele. O monitor do
+        qual dependem, direta ou indiretamente, monitores fora do escopo
+        responde 403: só quem alcança todos os grupos o altera.
       parameters: [{ $ref: "#/components/parameters/PathID" }]
       requestBody:
         required: true
@@ -609,13 +866,19 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Monitor" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
     delete:
       tags: [monitors]
       summary: Remove o monitor e todo o seu histórico
+      description: |
+        Para conta com escopo, o monitor do qual dependem monitores fora do
+        escopo responde 403.
       parameters: [{ $ref: "#/components/parameters/PathID" }]
       responses:
         "204": { description: Monitor removido }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /api/v1/monitors/{id}/children:
@@ -659,6 +922,7 @@ paths:
                     items: { $ref: "#/components/schemas/Monitor" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/monitors/{id}/incidents/{incidentID}/ack:
     post:
@@ -701,6 +965,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/monitors/{id}/children/{childID}:
     delete:
@@ -833,7 +1098,12 @@ paths:
     get:
       tags: [data]
       summary: Exporta as batidas do período
-      description: A resposta é enviada em fluxo; períodos longos não são materializados em memória.
+      description: |
+        A resposta é enviada em fluxo; períodos longos não são materializados em memória.
+
+        No CSV, as colunas de texto (probe_id e message) que começam com
+        =, +, -, @, tabulação ou retorno de carro ganham um apóstrofo na
+        frente, para a planilha não as ler como fórmula. O JSON sai cru.
       parameters:
         - $ref: "#/components/parameters/PathID"
         - $ref: "#/components/parameters/From"
@@ -1015,6 +1285,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/channels/{id}:
     get:
@@ -1063,6 +1334,7 @@ paths:
               schema: { $ref: "#/components/schemas/Channel" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
     delete:
       tags: [alerts]
       summary: Remove um canal e seus vínculos
@@ -1102,6 +1374,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/channels/{id}/test:
     post:
@@ -1281,6 +1554,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/groups/summary:
     get:
@@ -1344,6 +1618,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
     delete:
       tags: [groups]
       summary: Apaga um grupo vazio
@@ -1619,6 +1894,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/status-pages/{id}:
     get:
@@ -1667,6 +1943,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
     delete:
       tags: [status-pages]
       summary: Remove a página
@@ -1725,6 +2002,7 @@ paths:
               schema: { $ref: "#/components/schemas/StatusPageGroup" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/status-pages/{id}/groups/{groupID}:
     put:
@@ -1747,6 +2025,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
     delete:
       tags: [status-pages]
       summary: Desfaz o agrupamento
@@ -1791,6 +2070,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
     delete:
       tags: [status-pages]
       summary: Despublica um monitor da página
@@ -1807,6 +2087,10 @@ paths:
     get:
       tags: [status-pages]
       summary: Lista os relatos publicados
+      description: |
+        Para conta com escopo, some o relato que não é global e não cita
+        nenhum componente visível, e do que sobra saem os componentes de
+        fora.
       parameters:
         - name: open
           in: query
@@ -1860,11 +2144,15 @@ paths:
               schema: { $ref: "#/components/schemas/Announcement" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/announcements/{id}:
     get:
       tags: [status-pages]
       summary: Relato com a linha do tempo
+      description: |
+        Para conta com escopo, o relato que não é global e não cita nenhum
+        componente visível responde 404, como um id inexistente.
       parameters:
         - $ref: "#/components/parameters/PathID"
       responses:
@@ -1903,6 +2191,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
     delete:
       tags: [status-pages]
       summary: Remove um relato
@@ -1942,6 +2231,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/maintenance-windows:
     get:
@@ -1989,6 +2279,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/maintenance-windows/{id}:
     get:
@@ -2027,6 +2318,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
     delete:
       tags: [maintenance]
       summary: Apaga uma janela de manutenção
@@ -2163,24 +2455,47 @@ components:
       description: Fim do período (RFC 3339). Padrão&#58; agora.
 
   responses:
+    UnsupportedMediaType:
+      description: |
+        O corpo veio sem `Content-Type: application/json`. Parâmetros como
+        `; charset=utf-8` são aceitos.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     Forbidden:
       description: |
         A conta está autenticada, mas não tem permissão. Devolvido a um
         observador em qualquer rota de escrita, e a quem tem escopo ao
-        alterar canal, página pública ou relato, criar grupo de topo ou
-        conceder mais do que tem. Monitor ou grupo fora do escopo nunca dá
+        alterar canal, página pública ou relato, criar grupo de topo,
+        conceder mais do que tem ou alterar monitor do qual dependem
+        monitores fora do escopo. Monitor ou grupo fora do escopo nunca dá
         403, e sim 404, para não confirmar que existe.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     PushTooManyRequests:
       description: |
-        Requisições demais da mesma origem. O limite é por endereço da
-        conexão; atrás de proxy reverso, todos dividem o do proxy.
+        Requisições demais da mesma origem. A origem é o endereço da
+        conexão, ou o bloco /64 dele no IPv6; atrás de proxy reverso,
+        todos dividem o do proxy, a menos que ele esteja em
+        `UPWATCH_TRUSTED_PROXIES`.
       headers:
         Retry-After:
           schema: { type: integer }
           description: Segundos até a próxima tentativa valer
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    LoginTooManyRequests:
+      description: |
+        Tentativas demais. Ou a conta está bloqueada pelas falhas
+        seguidas, ou a origem esgotou o limite dos dois passos do login
+        (contado como o de `PushTooManyRequests`); só neste caso vem
+        `Retry-After`.
+      headers:
+        Retry-After:
+          schema: { type: integer }
+          description: Segundos até a próxima tentativa valer (limite por origem)
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -2222,12 +2537,39 @@ components:
                 - unauthorized
                 - not_found
                 - conflict
+                - forbidden
                 - too_many_requests
+                - unsupported_media_type
                 - internal_error
             message: { type: string }
             field:
               type: string
               description: Campo reprovado, quando o erro for de validação
+
+    LoginResult:
+      type: object
+      properties:
+        status: { type: string, enum: [ok, two_factor_required] }
+        challenge:
+          type: string
+          description: Só com two_factor_required. Vale cinco minutos e uma sessão.
+        expires_at: { type: string, format: date-time }
+
+    RecoveryCodes:
+      type: object
+      properties:
+        recovery_codes:
+          type: array
+          items: { type: string }
+          description: Cada um vale uma vez. Não aparecem de novo.
+        warning: { type: string }
+
+    SecondFactorProof:
+      type: object
+      required: [password, code]
+      properties:
+        password: { type: string }
+        code: { type: string, description: Código de seis dígitos ou de recuperação }
 
     User:
       type: object
@@ -2243,6 +2585,9 @@ components:
             tudo que altera o estado exige administrador, tudo que só lê
             aceita observador.
         scope: { $ref: "#/components/schemas/Scope" }
+        totp_enabled:
+          type: boolean
+          description: A conta tem a verificação em duas etapas ligada.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
@@ -2311,7 +2656,9 @@ components:
           description: |
             Monitor do qual este depende, como a sonda de quem a
             verificação depende. Com o pai em queda confirmada, a falha
-            deste vira lacuna e não avisa. Omitir desliga o pai.
+            deste vira lacuna e não avisa. Omitir desliga o pai — exceto,
+            para conta com escopo, o pai gravado que ela não enxerga, que é
+            mantido.
         group_id:
           type: integer
           format: int64
@@ -2426,6 +2773,12 @@ components:
         - type: object
           properties:
             id: { type: integer, format: int64 }
+            parent_id:
+              type: integer
+              format: int64
+              description: |
+                Ausente sem pai, e também quando a conta não enxerga o pai:
+                o id de um monitor fora do escopo não sai.
             created_at: { type: string, format: date-time }
             updated_at: { type: string, format: date-time }
             next_expected_push:
@@ -2772,7 +3125,14 @@ components:
         headers:
           type: object
           additionalProperties: { type: string }
-          description: Cabeçalhos extras, para destinos que exigem token próprio
+          description: |
+            Cabeçalhos extras, para destinos que exigem token próprio.
+            Com cabeçalho, a url precisa ser https (ou loopback): por http
+            eles atravessariam a rede em claro. Recusado ao criar e ao
+            editar; um canal gravado antes da regra continua entregando.
+            Nenhum canal segue redirecionamento - a resposta 3xx é falha
+            definitiva da entrega, para os cabeçalhos não irem a outro
+            host.
         template:
           type: string
           description: |
@@ -2784,6 +3144,13 @@ components:
             do monitor nunca está ao alcance do modelo - ela guarda
             senhas e tokens -, e um modelo que tenta ler campo
             inexistente, como .Monitor.Config, é recusado no cadastro.
+
+            Limites, conferidos no cadastro - até 8 KiB; range só sobre
+            .Monitor.Tags e sem range aninhado; sem define, template e
+            block; saída e cada texto de print, printf, html, js e
+            urlquery até 64 KiB; printf sem largura ou precisão acima de
+            1000 nem vinda de argumento. Na entrega, o modelo que passa de
+            64 KiB dá lugar à frase padrão.
         body_template:
           description: |
             Forma do corpo inteiro, e não só da frase. Só no canal

@@ -3,6 +3,7 @@ package api
 import (
 	"net"
 	"net/http"
+	"net/netip"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -85,6 +86,16 @@ type Options struct {
 	// padrão: o checker conecta a partir do servidor, e liberar faria de
 	// cada administrador de um grupo uma sonda na rede de dentro dele.
 	AllowScopedPrivateTargets bool
+
+	// Require2FAAdmin obriga administrador sem segundo fator a cadastrá-lo
+	// antes de usar o resto da API pela sessão. Desligado por padrão: ligar
+	// sozinho numa atualização prenderia todo administrador no cadastro.
+	Require2FAAdmin bool
+
+	// TrustedProxies são os proxies reversos de quem o X-Forwarded-For é
+	// aceito para saber o endereço do cliente nos limites por origem.
+	// Vazio, o padrão, nunca lê o cabeçalho (ver originResolver).
+	TrustedProxies []netip.Prefix
 }
 
 // MonitorSink recebe as alterações de monitor.
@@ -116,6 +127,7 @@ type API struct {
 
 	resolver                  Resolver
 	allowScopedPrivateTargets bool
+	require2FAAdmin           bool
 
 	counters *metrics.Counters
 
@@ -126,9 +138,14 @@ type API struct {
 	// setupLimit segura o POST /setup, onde se tenta o token de
 	// configuração.
 	setupLimit *rateLimiter
+	// loginLimit segura os dois passos do login.
+	loginLimit *rateLimiter
 
 	// policies é a política de escopo de cada rota, declarada ao registrá-la.
 	policies map[string]scopePolicy
+
+	// originCheck recusa escrita vinda de outra origem (ver sameOrigin).
+	originCheck *http.CrossOriginProtection
 }
 
 // New monta o roteador da API.
@@ -145,6 +162,7 @@ func New(opts Options) http.Handler {
 	if opts.Resolver == nil {
 		opts.Resolver = net.DefaultResolver
 	}
+	origins := originResolver{trusted: opts.TrustedProxies}
 
 	a := &API{
 		store:         opts.Store,
@@ -163,17 +181,22 @@ func New(opts Options) http.Handler {
 		resolver:      opts.Resolver,
 
 		allowScopedPrivateTargets: opts.AllowScopedPrivateTargets,
+		require2FAAdmin:           opts.Require2FAAdmin,
 		events:                    newEventHub(),
-		pushLimit:                 newRateLimiter(opts.Clock, pushBurst, pushPerSecond),
-		setupLimit:                newRateLimiter(opts.Clock, setupBurst, setupPerSecond),
+		pushLimit:                 newRateLimiter(opts.Clock, origins, pushBurst, pushPerSecond),
+		setupLimit:                newRateLimiter(opts.Clock, origins, setupBurst, setupPerSecond),
+		loginLimit:                newRateLimiter(opts.Clock, origins, loginBurst, loginPerSecond),
 		policies:                  map[string]scopePolicy{},
+		originCheck:               newOriginCheck(opts.PublicURL),
 	}
 	return a.routes()
 }
 
 func (a *API) routes() http.Handler {
 	r := chi.NewRouter()
-	r.Use(recoverPanic, securityHeaders)
+	// A conferência de origem vem antes de qualquer rota: uma rota de
+	// escrita nova nasce protegida, sem depender de alguém lembrar.
+	r.Use(recoverPanic, securityHeaders, a.sameOrigin)
 	// Toda rota entra pela tabela, que exige a política de escopo junto.
 	t := routeTable{r: r, policies: a.policies}
 
@@ -197,7 +220,12 @@ func (a *API) routes() http.Handler {
 		t.handle(http.MethodGet, "/setup", policyPublic, a.handleSetupStatus)
 		t.on(r.With(a.setupLimit.limit)).handle(http.MethodPost, "/setup", policyPublic, a.handleSetup)
 
-		t.handle(http.MethodPost, "/auth/login", policyPublic, a.handleLogin)
+		// Os dois passos do login, limitados por origem além do bloqueio
+		// por conta: o bloqueio não vê quem espalha palpites por muitas
+		// contas, nem quem troca de conta a cada desafio.
+		login := t.on(r.With(a.loginLimit.limit))
+		login.handle(http.MethodPost, "/auth/login", policyPublic, a.handleLogin)
+		login.handle(http.MethodPost, "/auth/login/2fa", policyPublic, a.handleLoginSecondFactor)
 
 		// Endpoint de push: o segredo está no caminho, então a sessão não
 		// se aplica. É como um cron reporta sem carregar credencial de
@@ -229,12 +257,30 @@ func (a *API) routes() http.Handler {
 		// O escopo é aplicado pela guarda do grupo de rotas, como o papel,
 		// segundo a política que cada rota declara ao ser registrada. Rota
 		// sem política não sobe.
+		//
+		// O primeiro grupo é o que a conta alcança mesmo devendo o cadastro
+		// do segundo fator (ver requireEnrollment): saber quem é, cadastrar
+		// e sair. Fica à parte para os outros nascerem barrados.
 		r.Group(func(r chi.Router) {
 			r.Use(a.authenticate, a.withViewer, a.scopeGuard)
 			t := t.on(r)
 
 			t.handle(http.MethodPost, "/auth/logout", policyAccount, a.handleLogout)
 			t.handle(http.MethodGet, "/auth/me", policyAccount, a.handleMe)
+
+			t.handle(http.MethodGet, "/auth/2fa", policyAccount, a.handleTOTPStatus)
+			t.handle(http.MethodPost, "/auth/2fa/setup", policyAccount, a.handleTOTPSetup)
+			t.handle(http.MethodPost, "/auth/2fa/enable", policyAccount, a.handleTOTPEnable)
+		})
+
+		r.Group(func(r chi.Router) {
+			r.Use(a.authenticate, a.requireEnrollment, a.withViewer, a.scopeGuard)
+			t := t.on(r)
+
+			// Desligar o segundo fator e trocar os códigos pedem senha e
+			// código. Qualquer papel: o fator é da conta, não da instalação.
+			t.handle(http.MethodPost, "/auth/2fa/disable", policyAccount, a.handleTOTPDisable)
+			t.handle(http.MethodPost, "/auth/2fa/recovery-codes", policyAccount, a.handleTOTPRecoveryCodes)
 			// Trocar a própria senha não é administrar. Exigir
 			// administrador aqui obrigaria a pedir ajuda justamente
 			// quando alguém suspeita da própria credencial.
@@ -288,7 +334,7 @@ func (a *API) routes() http.Handler {
 		// mais provável de a permissão vazar; aqui o esquecimento é
 		// impossível, porque a rota nasce dentro do grupo.
 		r.Group(func(r chi.Router) {
-			r.Use(a.authenticate, a.requireAdmin, a.withViewer, a.scopeGuard)
+			r.Use(a.authenticate, a.requireEnrollment, a.requireAdmin, a.withViewer, a.scopeGuard)
 			t := t.on(r)
 
 			// Token de API faz tudo o que a interface faz, então criá-lo
@@ -302,6 +348,8 @@ func (a *API) routes() http.Handler {
 			t.handle(http.MethodPost, "/users", policyPlacement, a.handleCreateUser)
 			t.handle(http.MethodPut, "/users/{id}", policyUser, a.handleUpdateUserRole)
 			t.handle(http.MethodDelete, "/users/{id}", policyUser, a.handleDeleteUser)
+			// Para quem perdeu o celular e os códigos de recuperação.
+			t.handle(http.MethodDelete, "/users/{id}/2fa", policyUser, a.handleResetUserTOTP)
 
 			t.handle(http.MethodPost, "/monitors", policyPlacement, a.handleCreateMonitor)
 			t.handle(http.MethodPut, "/monitors/{id}", policyMonitor, a.handleUpdateMonitor)

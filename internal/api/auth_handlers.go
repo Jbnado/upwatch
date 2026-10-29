@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
@@ -78,19 +79,54 @@ func (a *API) handleSetup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, u)
 }
 
-// handleLogin abre uma sessão e devolve o cookie.
+// handleLogin confere a senha e abre a sessão, ou, se a conta tiver o
+// segundo fator, devolve o desafio que /auth/login/2fa troca pela sessão.
+//
+// 200 nos dois casos: a senha estava certa, e o status diz o que falta.
+// Senha errada é 401 igual com ou sem segundo fator.
 func (a *API) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var body credentials
 	if !decodeJSON(w, r, &body) {
 		return
 	}
 
-	secret, err := a.auth.Login(r.Context(), body.Username, body.Password)
+	res, err := a.auth.Login(r.Context(), body.Username, body.Password)
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
 
+	if res.NeedsSecondFactor() {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":     "two_factor_required",
+			"challenge":  res.Challenge,
+			"expires_at": res.ChallengeExpiresAt,
+		})
+		return
+	}
+	a.startSession(w, res.Session)
+}
+
+// handleLoginSecondFactor troca desafio e código pela sessão.
+func (a *API) handleLoginSecondFactor(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Challenge string `json:"challenge"`
+		Code      string `json:"code"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+
+	secret, err := a.auth.CompleteLogin(r.Context(), body.Challenge, body.Code)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	a.startSession(w, secret)
+}
+
+// startSession entrega o cookie da sessão recém-aberta.
+func (a *API) startSession(w http.ResponseWriter, secret string) {
 	http.SetCookie(w, a.sessionCookie(secret, a.clock.Now().Add(a.sessionTTL)))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
@@ -126,9 +162,33 @@ func (a *API) sessionCookie(value string, expires time.Time) *http.Cookie {
 	}
 }
 
-// handleMe devolve a conta autenticada.
+// handleMe devolve a conta autenticada, e se ela precisa cadastrar o
+// segundo fator antes de usar o resto da API. A interface lê isso aqui,
+// e não esperando um 403, para levar direto ao cadastro.
 func (a *API) handleMe(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, mustUser(r))
+	u := mustUser(r)
+	writeJSON(w, http.StatusOK, meResponse{User: u, MustEnroll: a.mustEnroll(r)})
+}
+
+// meResponse é a conta com o que só vale para quem pergunta.
+type meResponse struct {
+	domain.User
+	MustEnroll bool
+}
+
+// MarshalJSON acrescenta o campo ao da conta. Sem isto, o MarshalJSON de
+// domain.User, promovido pelo campo embutido, engoliria o campo novo.
+func (m meResponse) MarshalJSON() ([]byte, error) {
+	base, err := json.Marshal(m.User)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]json.RawMessage
+	if err := json.Unmarshal(base, &out); err != nil {
+		return nil, err
+	}
+	out["two_factor_enrollment_required"] = json.RawMessage(strconv.FormatBool(m.MustEnroll))
+	return json.Marshal(out)
 }
 
 // handleChangePassword troca a senha e encerra as sessões abertas.

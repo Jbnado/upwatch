@@ -118,6 +118,7 @@ func run() error {
 var maintenance = map[string]func([]string) error{
 	"rotate-secret-key": rotateSecretKey,
 	"forget-secrets":    forgetSecrets,
+	"disable-2fa":       disableTwoFactor,
 }
 
 // application reúne as peças em execução.
@@ -229,6 +230,13 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 		return nil, err
 	}
 
+	// Validado na leitura da configuração; o erro só voltaria aqui se a
+	// validação tivesse sido pulada.
+	trustedProxies, err := cfg.TrustedProxyPrefixes()
+	if err != nil {
+		return nil, err
+	}
+
 	apiHandler := api.New(api.Options{
 		Store:         st,
 		Auth:          authSvc,
@@ -245,6 +253,8 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 		SetupToken:    setupToken,
 
 		AllowScopedPrivateTargets: !cfg.RestrictPrivateTargets,
+		Require2FAAdmin:           cfg.Require2FAAdmin,
+		TrustedProxies:            trustedProxies,
 	})
 
 	return &application{
@@ -264,7 +274,7 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 			Clock:     real,
 		}),
 		auth:    authSvc,
-		handler: server.New(apiHandler, web.Handler()),
+		handler: server.New(apiHandler, web.Handler(), server.Options{SecureCookies: cfg.SecureCookies}),
 	}, nil
 }
 
@@ -386,6 +396,11 @@ func (a *application) sweepSessions(ctx context.Context) {
 				slog.Warn("falha ao limpar sessoes vencidas", "erro", err)
 			} else if n > 0 {
 				slog.Debug("sessoes vencidas removidas", "total", n)
+			}
+			if n, err := a.auth.SweepExpiredChallenges(ctx); err != nil {
+				slog.Warn("falha ao limpar desafios de login vencidos", "erro", err)
+			} else if n > 0 {
+				slog.Debug("desafios de login vencidos removidos", "total", n)
 			}
 		}
 	}

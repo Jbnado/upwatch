@@ -109,6 +109,11 @@ respondendo normalmente em <code>/api/v1</code>.</p>
 `
 
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// O aviso é estilizado inline, e a política do servidor recusa
+		// estilo inline. Aqui pode: o texto é fixo, sem nada vindo de fora,
+		// e a página não tem script.
+		w.Header().Set("Content-Security-Policy",
+			"default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte(aviso))

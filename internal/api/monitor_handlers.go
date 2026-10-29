@@ -140,8 +140,9 @@ func toMonitorResponse(m domain.Monitor, to checker.Audience) monitorResponse {
 
 // detailResponse é a resposta de um monitor isolado, com o que só faz
 // sentido calcular para um de cada vez.
-func (a *API) detailResponse(m domain.Monitor, to checker.Audience) monitorResponse {
+func (a *API) detailResponse(r *http.Request, m domain.Monitor, to checker.Audience) monitorResponse {
 	resp := toMonitorResponse(m, to)
+	a.parentVisibility(r.Context(), viewerFrom(r)).apply(&resp)
 	if m.Type != domain.MonitorPush {
 		return resp
 	}
@@ -180,9 +181,12 @@ func (a *API) handleListMonitors(w http.ResponseWriter, r *http.Request) {
 	}
 
 	to := audienceOf(r)
+	pais := a.parentVisibility(r.Context(), viewerFrom(r))
 	items := make([]monitorResponse, 0, len(page.Items))
 	for _, m := range page.Items {
-		items = append(items, toMonitorResponse(m, to))
+		resp := toMonitorResponse(m, to)
+		pais.apply(&resp)
+		items = append(items, resp)
 	}
 
 	body := map[string]any{"items": items, "has_more": page.HasMore}
@@ -237,8 +241,8 @@ func (a *API) handleCreateMonitor(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.notifyScheduler(m)
-	a.events.publish(event{Type: "monitor.created", Data: toMonitorResponse(m, checker.Readers), monitor: &m})
-	writeJSON(w, http.StatusCreated, a.detailResponse(m, checker.Admins))
+	a.publishMonitor(r.Context(), "monitor.created", m, nil)
+	writeJSON(w, http.StatusCreated, a.detailResponse(r, m, checker.Admins))
 }
 
 // handleGetMonitor devolve um monitor, já lido e conferido pela guarda
@@ -247,13 +251,17 @@ func (a *API) handleGetMonitor(w http.ResponseWriter, r *http.Request) {
 	if _, ok := pathID(w, r); !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, a.detailResponse(monitorFrom(r), audienceOf(r)))
+	writeJSON(w, http.StatusOK, a.detailResponse(r, monitorFrom(r), audienceOf(r)))
 }
 
 // handleUpdateMonitor sobrescreve um monitor.
 func (a *API) handleUpdateMonitor(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r)
 	if !ok {
+		return
+	}
+	if err := a.checkDependentsInScope(r.Context(), viewerFrom(r), id); err != nil {
+		writeDependentsError(w, err)
 		return
 	}
 
@@ -268,6 +276,7 @@ func (a *API) handleUpdateMonitor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m.ID = id
+	paiMantido := a.keepHiddenParent(r, &m)
 	if !a.carrySecrets(w, r, &m) {
 		return
 	}
@@ -278,9 +287,13 @@ func (a *API) handleUpdateMonitor(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	if err := a.checkMonitorParent(r.Context(), viewerFrom(r), m.ParentID); err != nil {
-		writeStoreError(w, err)
-		return
+	// O pai de fora do escopo que já estava gravado não é conferido: a
+	// conta não o escolheu e nem o enxerga (ver keepHiddenParent).
+	if !paiMantido {
+		if err := a.checkMonitorParent(r.Context(), viewerFrom(r), m.ParentID); err != nil {
+			writeStoreError(w, err)
+			return
+		}
 	}
 	// Só a edição pode fechar um ciclo: o monitor novo ainda não tem
 	// filhos que o pai escolhido pudesse ser.
@@ -311,14 +324,18 @@ func (a *API) handleUpdateMonitor(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.notifyScheduler(m)
-	a.events.publish(event{Type: "monitor.updated", Data: toMonitorResponse(m, checker.Readers), monitor: &m, previous: &anterior})
-	writeJSON(w, http.StatusOK, a.detailResponse(m, checker.Admins))
+	a.publishMonitor(r.Context(), "monitor.updated", m, &anterior)
+	writeJSON(w, http.StatusOK, a.detailResponse(r, m, checker.Admins))
 }
 
 // handleDeleteMonitor remove um monitor e seu histórico.
 func (a *API) handleDeleteMonitor(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r)
 	if !ok {
+		return
+	}
+	if err := a.checkDependentsInScope(r.Context(), viewerFrom(r), id); err != nil {
+		writeDependentsError(w, err)
 		return
 	}
 

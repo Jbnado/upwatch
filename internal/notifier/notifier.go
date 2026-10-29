@@ -86,13 +86,16 @@ var canais = []struct {
 	// edicao é como a configuração sai para o formulário e como a edição
 	// recupera o que não voltou (ver RedactConfig e CarrySecrets).
 	edicao edicao
+	// cadastro é a regra que vale só ao criar ou editar o canal, além do
+	// que o construtor confere (ver Validate). Nulo quando não há.
+	cadastro func(json.RawMessage) error
 }{
-	{"webhook", NewWebhook, webhookSecrets, edicaoWebhook},
-	{"discord", NewDiscord, webhookSecrets, edicaoWebhook},
-	{"slack", NewSlack, webhookSecrets, edicaoWebhook},
-	{"teams", NewTeams, webhookSecrets, edicaoWebhook},
-	{"email", NewEmail, secretbox.Fields{Names: []string{"password"}}, edicaoEmail},
-	{"ntfy", NewNtfy, secretbox.Fields{Names: []string{"token"}}, edicaoNtfy},
+	{"webhook", NewWebhook, webhookSecrets, edicaoWebhook, cabecalhoSemTLS},
+	{"discord", NewDiscord, webhookSecrets, edicaoWebhook, cabecalhoSemTLS},
+	{"slack", NewSlack, webhookSecrets, edicaoWebhook, cabecalhoSemTLS},
+	{"teams", NewTeams, webhookSecrets, edicaoWebhook, nil},
+	{"email", NewEmail, secretbox.Fields{Names: []string{"password"}}, edicaoEmail, nil},
+	{"ntfy", NewNtfy, secretbox.Fields{Names: []string{"token"}}, edicaoNtfy, nil},
 }
 
 // webhookSecrets vale para os canais de webhook. A URL do Discord e a do
@@ -115,6 +118,26 @@ func Build(kind string, config json.RawMessage) (Notifier, error) {
 		}
 	}
 	return nil, fmt.Errorf("notifier: tipo de canal desconhecido %q", kind)
+}
+
+// Validate confere a configuração de um canal sendo criado ou editado.
+//
+// É o Build mais as regras que só valem dali em diante. Elas ficam fora
+// do construtor de propósito: o construtor também monta os canais já
+// gravados a cada aviso, e uma regra nova ali calaria, sem aviso, um
+// canal que funcionava — que é o pior desfecho num sistema de alerta. O
+// canal antigo segue entregando; a regra aparece na próxima edição dele.
+func Validate(kind string, config json.RawMessage) error {
+	if _, err := Build(kind, config); err != nil {
+		return err
+	}
+	tipo := normalize(kind)
+	for _, c := range canais {
+		if c.tipo == tipo && c.cadastro != nil {
+			return c.cadastro(config)
+		}
+	}
+	return nil
 }
 
 // SecretFields diz onde a configuração do canal guarda credencial, para
@@ -312,11 +335,19 @@ func compileTemplate(raw string) (*template.Template, error) {
 		return nil, nil
 	}
 
-	t, err := template.New("mensagem").Parse(raw)
+	if err := conferirTamanho(raw); err != nil {
+		return nil, fmt.Errorf("notifier: modelo de mensagem inválido: %w", err)
+	}
+	t, err := template.New("mensagem").Funcs(funcoesLimitadas).Parse(raw)
 	if err != nil {
 		return nil, fmt.Errorf("notifier: modelo de mensagem inválido: %w", err)
 	}
-	if err := t.Execute(io.Discard, exemploModelo); err != nil {
+	// A árvore é conferida antes do ensaio: o ensaio executa o modelo, e é
+	// justamente a execução sem limite que a conferência evita.
+	if err := conferirArvore(t); err != nil {
+		return nil, fmt.Errorf("notifier: modelo de mensagem inválido: %w", err)
+	}
+	if err := executarLimitado(t, io.Discard, exemploModelo); err != nil {
 		return nil, fmt.Errorf("notifier: modelo de mensagem inválido: %w", err)
 	}
 	return t, nil
@@ -330,10 +361,11 @@ func renderWith(t *template.Template, n Notification) string {
 	}
 
 	var buf bytes.Buffer
-	if err := t.Execute(&buf, newTemplateData(n, padrao)); err != nil {
+	if err := executarLimitado(t, &buf, newTemplateData(n, padrao)); err != nil {
 		// Modelo que falha em execução não pode engolir o aviso: o texto
 		// padrão vai no lugar, porque avisar de forma feia é melhor que
-		// não avisar.
+		// não avisar. Vale também para o que passou do tamanho: a causa
+		// de verdade pode ser bem maior que a do ensaio.
 		return padrao
 	}
 	return buf.String()
@@ -396,6 +428,10 @@ func post(ctx context.Context, url string, headers map[string]string, payload an
 type statusError struct{ Code int }
 
 func (e *statusError) Error() string {
+	if e.Code >= 300 && e.Code < 400 {
+		return fmt.Sprintf("notifier: o canal respondeu com redirecionamento (%d); "+
+			"cadastre o endereço final, em https", e.Code)
+	}
 	return fmt.Sprintf("notifier: o canal respondeu %d", e.Code)
 }
 
@@ -404,9 +440,14 @@ func (e *statusError) Error() string {
 // Só os códigos em que o destino disse, sem ambiguidade, que aquela
 // requisição nunca vai passar: corpo malformado (400), credencial recusada
 // (401, 403), destino apagado (404), corpo grande demais (413) ou
-// recusado pelo conteúdo (422). 429 e 5xx ficam de fora: limite de taxa e
-// servidor sobrecarregado são exatamente o que a espera resolve.
+// recusado pelo conteúdo (422). O redirecionamento também: o cliente não
+// o segue, e a URL cadastrada continua a mesma na próxima tentativa. 429 e
+// 5xx ficam de fora: limite de taxa e servidor sobrecarregado são
+// exatamente o que a espera resolve.
 func (e *statusError) Permanent() bool {
+	if e.Code >= 300 && e.Code < 400 {
+		return true
+	}
 	switch e.Code {
 	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden,
 		http.StatusNotFound, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
@@ -421,7 +462,24 @@ func (e *statusError) Permanent() bool {
 // faria a notificação sumir em silêncio, que é o pior desfecho possível
 // num sistema de alerta.
 func postRaw(ctx context.Context, url string, headers map[string]string, contentType string, corpo []byte) error {
-	return postRawVia(ctx, http.DefaultClient, url, headers, contentType, corpo)
+	return postRawVia(ctx, clienteHTTP, url, headers, contentType, corpo)
+}
+
+// clienteHTTP é o cliente das entregas.
+//
+// Próprio, e não o http.DefaultClient, porque aquele segue até dez
+// redirecionamentos: num 307 ou 308 para outro host, o Go tira só
+// Authorization e Cookie, e um X-Api-Key do webhook iria junto para quem
+// redirecionou. Um destino que redireciona está mal configurado — a URL
+// cadastrada não é a final —, e a resposta 3xx volta como falha com esse
+// motivo, como faz o push da sonda. O transporte é um clone do padrão para
+// continuar respeitando HTTPS_PROXY.
+var clienteHTTP = &http.Client{
+	Transport: http.DefaultTransport.(*http.Transport).Clone(),
+	Timeout:   sendTimeout,
+	CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
 }
 
 // postRawVia é o postRaw com o cliente escolhido; o do Teams o troca nos

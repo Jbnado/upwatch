@@ -17,6 +17,7 @@ function conta(role: User["role"], all_groups: boolean): User {
     username: "ana",
     role,
     scope: { all_groups, group_ids: all_groups ? [] : [4] },
+    totp_enabled: false,
     created_at: "",
     updated_at: "",
   };
@@ -34,6 +35,7 @@ describe("menu dos ajustes", () => {
       "paginas",
       "tokens",
       "senha",
+      "seguranca",
     ]);
   });
 
@@ -41,12 +43,12 @@ describe("menu dos ajustes", () => {
     // Canal, manutenção e página pública valem para todos os grupos, e o servidor
     // recusa a escrita deles a quem não alcança todos. Token não: ele é
     // da própria conta e herda o escopo dela, então o servidor o emite.
-    expect(ids(conta("admin", false))).toEqual(["grupos", "contas", "tokens", "senha"]);
+    expect(ids(conta("admin", false))).toEqual(["grupos", "contas", "tokens", "senha", "seguranca"]);
   });
 
-  it("deixa ao observador só a própria senha", () => {
-    expect(ids(conta("viewer", true))).toEqual(["senha"]);
-    expect(ids(conta("viewer", false))).toEqual(["senha"]);
+  it("deixa ao observador só a própria conta", () => {
+    expect(ids(conta("viewer", true))).toEqual(["senha", "seguranca"]);
+    expect(ids(conta("viewer", false))).toEqual(["senha", "seguranca"]);
   });
 
   it("não deixa título de grupo sem item embaixo", () => {

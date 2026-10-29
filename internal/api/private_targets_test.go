@@ -254,3 +254,72 @@ func TestNoRestrictionWhenTheRuleIsOff(t *testing.T) {
 		t.Error("monitor is restricted with the rule off")
 	}
 }
+
+// Manter o alvo e trocar o resto não é manter o destino. Do contrário a
+// conta restrita transformaria a verificação de saúde que alguém de
+// escopo total apontou para dentro numa requisição sua — outro método,
+// corpo, cabeçalhos, asserções sobre a resposta, outra consulta no banco
+// com a senha guardada.
+func TestScopedEditOfRequestShapingFieldsIsANewDestination(t *testing.T) {
+	c := novoCenarioEscopo(t)
+	adm := c.s.como(c.retAdmin)
+
+	id := c.s.createMonitor(t, monitorPara("health", "http", "http://10.0.0.7/health", c.retProd))
+	for nome, cfg := range map[string]map[string]any{
+		"método e corpo": {"method": "DELETE", "body": `{"drop":"everything"}`},
+		"cabeçalhos":     {"headers": map[string]string{"X-Admin": "1"}},
+		"asserção":       {"body_regex": `^{"secret":"a`},
+	} {
+		t.Run(nome, func(t *testing.T) {
+			corpo := monitorPara("health", "http", "http://10.0.0.7/health", c.retProd)
+			corpo["config"] = cfg
+			assertStatus(t, adm.do(t, http.MethodPut, "/api/v1/monitors/"+itoa(id), corpo), http.StatusBadRequest)
+		})
+	}
+	if restricao(t, c.s, id) {
+		t.Error("a refused edit restricted the monitor")
+	}
+
+	t.Run("consulta do banco com a senha guardada", func(t *testing.T) {
+		corpo := monitorPara("banco", "postgres", "10.0.0.7:5432", c.retProd)
+		corpo["config"] = map[string]any{"username": "monitor", "password": "senha-do-banco"}
+		banco := c.s.createMonitor(t, corpo)
+
+		corpo["config"] = map[string]any{"username": "postgres", "query": "SELECT 1"}
+		assertStatus(t, adm.do(t, http.MethodPut, "/api/v1/monitors/"+itoa(banco), corpo), http.StatusBadRequest)
+	})
+}
+
+// O formulário reenvia a configuração que o GET devolveu. Sem mudança
+// nela, renomear e pausar o monitor que aponta para dentro continuam
+// livres, e a marca de restrição não vem.
+func TestScopedEditWithTheSameConfigKeepsTheDestination(t *testing.T) {
+	c := novoCenarioEscopo(t)
+	adm := c.s.como(c.retAdmin)
+
+	corpo := monitorPara("health", "http", "http://10.0.0.7/health", c.retProd)
+	corpo["config"] = map[string]any{
+		"method": "POST", "body": "ping",
+		"headers": map[string]string{"Authorization": "Bearer segredo"},
+	}
+	id := c.s.createMonitor(t, corpo)
+
+	resp := adm.do(t, http.MethodGet, "/api/v1/monitors/"+itoa(id), nil)
+	assertStatus(t, resp, http.StatusOK)
+	lido := decode[map[string]any](t, resp)
+
+	corpo = monitorPara("health-renomeado", "http", "http://10.0.0.7/health", c.retProd)
+	corpo["config"] = lido["config"]
+	corpo["enabled"] = false
+	assertStatus(t, adm.do(t, http.MethodPut, "/api/v1/monitors/"+itoa(id), corpo), http.StatusOK)
+	if restricao(t, c.s, id) {
+		t.Error("an edit that kept the config restricted the monitor")
+	}
+
+	banco := monitorPara("banco", "postgres", "10.0.0.7:5432", c.retProd)
+	banco["config"] = map[string]any{"username": "monitor", "password": "senha-do-banco"}
+	bancoID := c.s.createMonitor(t, banco)
+	banco["name"] = "banco-renomeado"
+	banco["config"] = map[string]any{"username": "monitor"}
+	assertStatus(t, adm.do(t, http.MethodPut, "/api/v1/monitors/"+itoa(bancoID), banco), http.StatusOK)
+}

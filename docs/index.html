@@ -593,8 +593,9 @@ docker compose -f compose.postgres.yaml up -d</code></pre>
           <tr><td>UPWATCH_RETENTION_HOURLY</td><td>2160h</td><td>Retenção do agregado horário</td></tr>
           <tr><td>UPWATCH_RETENTION_DAILY</td><td>17520h</td><td>Retenção do agregado diário</td></tr>
           <tr><td>UPWATCH_WORKERS</td><td>50</td><td>Teto de verificações simultâneas</td></tr>
-          <tr><td>UPWATCH_SECURE_COOKIES</td><td>false</td><td>Ligue ao servir por HTTPS</td></tr>
-          <tr><td>UPWATCH_PUBLIC_URL</td><td>vazio</td><td>Endereço externo, para o feed usar URLs absolutas</td></tr>
+          <tr><td>UPWATCH_SECURE_COOKIES</td><td>false</td><td>Ligue ao servir por HTTPS; liga também o HSTS</td></tr>
+          <tr><td>UPWATCH_PUBLIC_URL</td><td>vazio</td><td>Endereço externo, para o feed usar URLs absolutas e a conferência de origem reconhecê-lo atrás de proxy</td></tr>
+          <tr><td>UPWATCH_REQUIRE_2FA_ADMIN</td><td>false</td><td>Exige verificação em duas etapas (TOTP) de todo administrador; quem entra sem ela só consegue cadastrá-la</td></tr>
         </tbody>
       </table>
       </div>
@@ -707,6 +708,13 @@ docker compose -f compose.postgres.yaml up -d</code></pre>
       </p>
 <pre><code>curl -H "Authorization: Bearer upw_..." \
   http://localhost:8080/api/v1/monitors</code></pre>
+
+      <p>
+        Corpo vai sempre com <code>Content-Type: application/json</code>;
+        outro tipo responde 415. Escrita feita pelo cookie de sessão só é
+        aceita da própria origem; scripts com token Bearer não são
+        afetados.
+      </p>
 
       <p>
         Para quem já tem Prometheus, <code>/metrics</code> responde sem

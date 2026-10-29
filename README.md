@@ -115,7 +115,23 @@ maior que o dele e não mexe em canal (nem no vínculo de canal com
 monitor ou grupo), página pública ou relato, que afetam todos os
 grupos. Ele também só enxerga os canais ligados ao que é dele, e não
 aponta monitor para a rede interna do servidor (ver
-`UPWATCH_RESTRICT_PRIVATE_TARGETS`).
+`UPWATCH_RESTRICT_PRIVATE_TARGETS`). Relato que só fala de monitores de
+fora não aparece para ele, e o pai de fora do escopo não sai no
+`parent_id` — e a dependência continua gravada quando ele salva o
+monitor. O monitor do qual dependem monitores de outros grupos (a sonda
+que um administrador de escopo total ligou como pai deles) só é
+alterado ou excluído por quem alcança todos os grupos: a queda dele
+calaria os alertas dos outros.
+
+**Verificação em duas etapas, opcional por conta.** Em Ajustes ›
+Verificação em duas etapas, a conta cadastra um aplicativo autenticador
+(TOTP: Google Authenticator, Authy, 1Password, Bitwarden…) e recebe dez
+códigos de recuperação de uso único, mostrados uma vez. Daí em diante o
+login pede o código depois da senha. Desligar e gerar códigos novos
+pedem senha e código; ligar e desligar encerram as outras sessões da
+conta. Quem perdeu o celular e os códigos pede a um administrador, que
+desliga o segundo fator dela em Contas e acesso. Tokens de API não
+passam pelo segundo fator. Ver [Verificação em duas etapas](#verificação-em-duas-etapas).
 
 **Publica uma página de estado** no formato que Anthropic, Cloudflare e
 Google consolidaram: veredito no topo, componentes agrupados, noventa
@@ -197,18 +213,29 @@ configuração nenhuma e uma instalação séria versiona o YAML.
 | `UPWATCH_WORKERS` | `50` | Teto de verificações simultâneas |
 | `UPWATCH_SESSION_TTL` | `168h` | Validade da sessão da interface |
 | `UPWATCH_REMINDER_INTERVAL` | `0` | De quanto em quanto uma queda aberta e não reconhecida é relembrada, para monitor e grupo sem intervalo próprio; `0` desliga, e o mínimo é `5m` |
-| `UPWATCH_SECURE_COOKIES` | `false` | Marca o cookie como Secure; ligue ao servir por HTTPS |
-| `UPWATCH_PUBLIC_URL` | vazio | Endereço externo, para o feed da página pública usar URLs absolutas e o cartão do Teams ter o botão "Abrir no UpWatch" |
+| `UPWATCH_SECURE_COOKIES` | `false` | Marca o cookie como Secure e liga o HSTS; ligue ao servir por HTTPS |
+| `UPWATCH_PUBLIC_URL` | vazio | Endereço externo, para o feed da página pública usar URLs absolutas, o cartão do Teams ter o botão "Abrir no UpWatch" e a conferência de origem reconhecer o endereço atrás de proxy |
 | `UPWATCH_METRICS_TOKEN` | vazio | Exige `Authorization: Bearer <token>` em `/metrics`; vazio deixa aberto enquanto não houver conta restrita; aceita `_FILE` |
 | `UPWATCH_SETUP_TOKEN` | vazio | Token exigido na tela de primeiro acesso; vazio, um aleatório é gerado na subida e escrito só no log; sem efeito depois que a conta existe; aceita `_FILE` (ver [Primeiro acesso](#primeiro-acesso)) |
 | `UPWATCH_SECRET_KEY` | vazio | Chave (base64 de 32 bytes) que cifra as credenciais no banco; vazia, o SQLite usa a gerada ao lado do banco; aceita `_FILE` (ver [Segredos](#segredos)) |
 | `UPWATCH_RESTRICT_PRIVATE_TARGETS` | `true` | Recusa, para contas com acesso restrito a grupos, monitor cujo alvo resolva para a rede interna do servidor, no cadastro e na conexão |
+| `UPWATCH_REQUIRE_2FA_ADMIN` | `false` | Exige verificação em duas etapas de todo administrador: quem entra sem ela só consegue cadastrá-la (ver [Verificação em duas etapas](#verificação-em-duas-etapas)) |
+| `UPWATCH_TRUSTED_PROXIES` | vazio | Proxies reversos na frente da instalação, em CIDR ou endereço, separados por vírgula (`10.0.0.0/8, 192.168.1.10`); só de uma conexão vinda deles o `X-Forwarded-For` é lido nos limites por origem (ver [Limites por origem](#limites-por-origem)) |
 
 Durações aceitam sufixo de dias: `90d` é o mesmo que `2160h`.
 
 `UPWATCH_SECURE_COOKIES` fica desligado por padrão de propósito. Muita
 instalação caseira serve em HTTP na rede local, e um cookie Secure ali
 simplesmente não é enviado — o login pareceria quebrado sem explicação.
+Ligado, ele também acrescenta `Strict-Transport-Security` (dois anos,
+com subdomínios): o navegador passa a recusar HTTP no host. Só ligue
+quando o HTTPS for definitivo.
+
+Toda resposta, da API, da interface e da página pública, sai com
+`Content-Security-Policy`, `X-Frame-Options: DENY`,
+`X-Content-Type-Options: nosniff` e `Referrer-Policy` (só a origem na
+interface, nada na página pública). Nenhuma tela pode ser posta num
+iframe, nem a página pública.
 
 `UPWATCH_RESTRICT_PRIVATE_TARGETS` fica ligado por padrão. O checker
 conecta a partir do servidor, e uma conta restrita a um grupo que
@@ -217,12 +244,18 @@ usaria o servidor como sonda na rede de dentro dele — varrendo portas
 pela causa de cada falha e, no metadado da nuvem, saindo com
 credencial. Com a regra ligada, criar ou editar monitor com conta
 restrita recusa destino que resolva para loopback, rede privada (RFC
-1918 e ULA), enlace local ou espaço compartilhado de provedor, e também
-nome que não resolve — em todo tipo que conecta, inclusive Redis,
-PostgreSQL e MySQL. Contas que alcançam todos os grupos não são
-afetadas, e editar sem mudar o destino escolhido por outra pessoa
-continua permitido. Desligue se a instalação existe justamente para os
-times monitorarem a rede interna.
+1918 e ULA), enlace local, espaço compartilhado de provedor, faixas
+reservadas (`192.0.0.0/24`, `198.18.0.0/15`, `240.0.0.0/4`) ou endereço
+IPv6 que embute IPv4 (NAT64, 6to4, IPv4-compatível, SIIT) ou
+site-local, e também nome que não resolve — em todo tipo que conecta,
+inclusive Redis, PostgreSQL e MySQL. Contas que alcançam todos os grupos
+não são afetadas, e editar sem mudar o destino escolhido por outra
+pessoa continua permitido: renomear, pausar, mudar intervalo, tempo
+limite, limiares, grupo e etiquetas. Mudar a configuração — método,
+corpo, cabeçalhos, autenticação, asserções, consulta ou usuário do
+banco — é escolher o destino de novo, e passa pela mesma conferência.
+Desligue se a instalação existe justamente para os times monitorarem a
+rede interna.
 
 A conferência do cadastro resolve o nome naquela hora, e por isso o
 checker confere de novo ao conectar, com o endereço efetivamente
@@ -231,14 +264,37 @@ um nome que passa a apontar para dentro depois (DNS rebinding) e um
 redirecionamento HTTP para dentro derrubam a verificação com a causa "o
 destino aponta para a rede interna do servidor", sem dizer o endereço.
 Vale para cada salto do redirecionamento e para todos os tipos; no ping,
-o pacote vai ao endereço conferido, e o DNS sem resolvedor configurado
-continua usando o do sistema. Esses monitores ignoram `HTTPS_PROXY`:
+o pacote vai ao endereço conferido. O DNS sem resolvedor configurado
+continua usando o do sistema, mas a resposta que aponta para a rede
+interna não conta e não aparece, e os registros que não são endereço
+(CNAME, MX, NS, TXT) não são mostrados — só comparados com os valores
+esperados. Esses monitores ignoram `HTTPS_PROXY`:
 atrás de um proxy é ele quem conecta, e o servidor não saberia para
 onde. O monitor salvo antes desta conferência existir só a recebe quando
 uma conta restrita mudar o destino de novo. Desligar a regra desliga as
 duas conferências, inclusive para o monitor já salvo. A sonda
 (`upwatch-probe`) não faz nenhuma das duas: ela roda dentro da rede
 privada justamente para alcançá-la.
+
+### Limites por origem
+
+O login (os dois passos, num balde só: 30 de rajada, 10 por minuto
+depois disso), o `POST /api/v1/setup` e o push limitam a taxa por
+origem, além do bloqueio por conta do login (cinco falhas, quinze
+minutos). Acima do limite, 429 com `Retry-After`. A origem é o endereço
+da conexão; no IPv6, o bloco /64 inteiro, que é o que um provedor
+entrega a um cliente só.
+
+Atrás de proxy reverso, todos os clientes chegam do proxy e dividiriam o
+mesmo limite. **`UPWATCH_TRUSTED_PROXIES`** resolve: declare ali os
+endereços dos proxies, e de uma conexão vinda deles o cliente passa a
+ser lido do `X-Forwarded-For` — o primeiro endereço, da direita para a
+esquerda, que não é um dos proxies declarados. O que fica à esquerda dele
+foi escrito pelo próprio cliente e é ignorado. Vazio, o padrão, nunca lê
+o cabeçalho: de qualquer conexão, ele deixaria quem ataca escolher a
+própria origem a cada pedido. Declare só o que de fato é o seu proxy, e
+confira que ele sobrescreve ou acrescenta o `X-Forwarded-For` em vez de
+repassar o do cliente sozinho.
 
 ## Segredos
 
@@ -320,6 +376,47 @@ Sem as opções, a chave atual é a da partida (`UPWATCH_SECRET_KEY`,
 numa transação só: ou passa inteiro para a nova, ou nada muda. Depois,
 aponte `UPWATCH_SECRET_KEY_FILE` para a nova antes de subir.
 
+O segredo da verificação em duas etapas também é cifrado com esta chave
+e entra na troca. Se a chave se perder, `forget-secrets` apaga também o
+segundo fator de todas as contas: elas voltam a entrar só com a senha
+até cadastrar o aplicativo de novo.
+
+## Verificação em duas etapas
+
+TOTP (RFC 6238): SHA-1, seis dígitos, passo de 30 segundos, com um passo
+de tolerância para cada lado, que é o que os aplicativos autenticadores
+usam. Um código vale uma vez: o mesmo código, ou um mais antigo que o
+último aceito, é recusado. O segredo fica cifrado no banco (ver
+[Segredos](#segredos)); dos códigos de recuperação, só o hash.
+
+No login, a senha certa de uma conta com segundo fator não abre sessão:
+devolve um desafio que vale cinco minutos, aceita cinco códigos e serve
+uma vez. Código errado conta no mesmo bloqueio da senha errada (cinco
+falhas, quinze minutos). Senha errada responde igual com ou sem segundo
+fator, para não revelar quais contas o têm. Começar o cadastro pede a
+senha atual, que também conta no bloqueio: com a sessão só, quem roubou
+o cookie cadastraria o próprio aplicativo e deixaria o dono de fora. A API está descrita em
+`/api/v1/openapi.yaml` (`/auth/login/2fa` e `/auth/2fa/*`).
+
+**`UPWATCH_REQUIRE_2FA_ADMIN`** vem desligado, para uma atualização não
+prender ninguém no cadastro sem aviso. Ligado, o administrador sem
+segundo fator que entra com a senha certa só alcança o cadastro, a
+própria conta e o logout; o resto responde 403 com
+`code: two_factor_enrollment_required`, e a interface o leva direto ao
+cadastro. Terminado o cadastro, a restrição cai na mesma sessão.
+Observadores e tokens de API não são afetados.
+
+**Sem ninguém para desligar pela interface** — o único administrador
+perdeu o celular e os códigos —, quem tem acesso ao servidor desliga
+pela linha de comando:
+
+```bash
+upwatch disable-2fa admin
+```
+
+Na imagem: `docker compose run --rm upwatch disable-2fa admin`. As
+sessões da conta são encerradas, e ela volta a entrar só com a senha.
+
 ### Opções sensíveis por arquivo (`_FILE`)
 
 `UPWATCH_DB_DSN`, `UPWATCH_METRICS_TOKEN`, `UPWATCH_SECRET_KEY` e
@@ -346,6 +443,23 @@ sentidos.
 # Token de acesso: Ajustes → Tokens de acesso
 curl -H "Authorization: Bearer upw_..." http://localhost:8080/api/v1/monitors
 ```
+
+Corpo vai sempre com `Content-Type: application/json` (`; charset=utf-8`
+é aceito); outro tipo responde 415. A exceção é o [push](#push).
+
+```bash
+curl -H "Authorization: Bearer upw_..." -H "Content-Type: application/json" \
+  -d '{"name":"site","type":"http","target":"https://exemplo.com","interval_seconds":60,"timeout_seconds":10}' \
+  http://localhost:8080/api/v1/monitors
+```
+
+Escrita autenticada pelo cookie de sessão, e também login e primeiro
+acesso, só é aceita da própria origem: o navegador informa de onde veio a
+requisição (`Sec-Fetch-Site`, `Origin`), e a que vem de outra origem
+recebe 403. Script fora do navegador não manda esses
+cabeçalhos e não é afetado, e o token Bearer não passa por essa
+conferência. Atrás de um proxy que reescreve o `Host`, defina
+`UPWATCH_PUBLIC_URL` para o endereço externo ser reconhecido.
 
 ## Conferindo o corpo JSON
 
@@ -436,6 +550,20 @@ vem vazio para monitor sem grupo — monitores costumam se chamar só `api`
 ou `front`, e é o grupo que diz qual sistema caiu. Pelo mesmo motivo, a
 frase padrão traz o grupo entre parênteses depois do nome.
 
+Os cabeçalhos de `headers` existem para autenticar contra o destino, e
+por isso exigem `https://`: por `http://` eles atravessariam a rede em
+claro. A exceção é o loopback (`localhost`, `127.0.0.1`, `::1`), que não
+sai da máquina — a mesma regra do token do ntfy. A recusa vale ao criar e
+ao editar o canal; um canal gravado antes dela, com `http://` e
+cabeçalho, continua entregando, e a regra aparece na próxima vez que ele
+for salvo.
+
+Nenhum canal segue redirecionamento. Num 307 ou 308 para outro host, o
+cliente HTTP do Go só tira `Authorization` e `Cookie`, e um `X-Api-Key`
+iria junto para quem redirecionou. A resposta 3xx conta como falha da
+entrega, com o motivo — "o canal respondeu com redirecionamento" —, e
+não é repetida: cadastre o endereço final.
+
 `event` diz o que o aviso conta: `transition` é a mudança de estado, e
 `reminder` é o [lembrete](#o-que-ele-faz) de uma queda que segue aberta.
 No lembrete os outros campos continuam os da queda — mesmo `monitor_id`,
@@ -507,14 +635,42 @@ deles para escrever uma frase. Um modelo que tenta ler campo que não está
 na lista, como `.Monitor.Config`, é recusado no cadastro. Os marcadores de
 `body_template` seguem a mesma regra.
 
-Nome, alvo e causa vêm de fora — a causa de um monitor push é escrita por
-quem bate no UpWatch —, então não viram menção em massa. No Discord, o
-aviso vai com `allowed_mentions` vazio, e um `@everyone` na causa chega
-como texto, sem pingar ninguém. No Slack, `<`, `>` e `&` desses campos são
-escapados, e `<!channel>` ou um link disfarçado chegam como texto; o que
-você escreve no próprio `template`, como um link para o runbook, passa
-intacto. No Teams, menção só existe quando o cartão a declara, e o
-UpWatch não declara nenhuma.
+A execução de um modelo não pode ser interrompida no meio, então o que ele
+pode fazer é limitado antes de rodar, e o cadastro recusa o que passa
+disso:
+
+- o modelo tem até 8 KiB;
+- `range` só percorre as etiquetas (`{{range .Monitor.Tags}}`), e sem
+  outro `range` dentro — `{{range 1000000000}}` ou `{{range .Monitor.ID}}`
+  dariam bilhões de voltas;
+- `define`, `template` e `block` não são aceitos: com eles, um modelo
+  chama a si mesmo e o trabalho dobra a cada chamada;
+- o texto produzido, e cada texto montado com `print`, `printf`, `html`,
+  `js` ou `urlquery`, tem até 64 KiB, e o `printf` não aceita largura ou
+  precisão acima de 1000 nem vinda de argumento (`%*d`).
+
+Na hora do aviso, o modelo que passa de 64 KiB — a causa de verdade pode
+ser bem maior que a do ensaio no cadastro — dá lugar à frase padrão, e o
+aviso sai do mesmo jeito.
+
+Nome, grupo, alvo e causa vêm de fora — a causa de um monitor push é
+escrita por quem bate no UpWatch —, então não viram menção em massa nem
+formatação. O que você escreve no próprio `template`, como um link para o
+runbook, passa intacto em todos os canais.
+
+- **Discord:** o aviso vai com `allowed_mentions` vazio, e um `@everyone`
+  na causa chega como texto, sem pingar ninguém. O Markdown desses campos
+  é escapado com barra invertida (`` \ * _ ~ ` | > # - [ ] ( ) ``), e
+  `[Reautentique aqui](https://…)` chega como texto, não como link
+  disfarçado. Um endereço solto (`https://…`) fica como está, porque o
+  Discord faz o link pelo texto cru e o escape o quebraria.
+- **Slack:** `<`, `>` e `&` são escapados, e `<!channel>` ou um link
+  disfarçado chegam como texto.
+- **Teams:** menção só existe quando o cartão a declara, e o UpWatch não
+  declara nenhuma. O Markdown é escapado como no Discord (mais `+`), no
+  título, na frase, na causa e no alvo, e as chaves também: um
+  `{{DATE(...)}}` ou `{{TIME(...)}}` na causa chega como texto, sem virar
+  data. O horário que o próprio cartão mostra continua no fuso de quem lê.
 
 Os campos avançados também estão na interface, em Ajustes → Canais de
 aviso, atrás de "cabeçalhos e formato do corpo".
@@ -842,7 +998,8 @@ atrás de VPN. O sinal vai para `/api/v1/push/{token}`, por `GET` ou
 `POST`, sem sessão — o token no caminho é a credencial. Cada token
 pertence a um monitor só, e o endpoint limita a taxa por origem (300 de
 rajada, 5 por segundo depois disso; acima, 429 com `Retry-After`). Atrás de
-proxy reverso, todos os crons dividem o limite do proxy.
+proxy reverso, todos os crons dividem o limite do proxy, a menos que ele
+esteja em `UPWATCH_TRUSTED_PROXIES` (ver [Limites por origem](#limites-por-origem)).
 
 ```bash
 # Estou vivo (o mesmo que status=up)
