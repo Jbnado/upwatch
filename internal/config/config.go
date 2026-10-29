@@ -87,6 +87,11 @@ type Config struct {
 	// Só vem do ambiente ou de arquivo apontado por ele, nunca do YAML:
 	// o arquivo de configuração costuma ir para o controle de versão.
 	SecretKey string `yaml:"-"`
+
+	// SetupToken é exigido na configuração inicial, enquanto a instalação
+	// não tem conta. Vazio, o processo gera um na subida e o escreve só no
+	// log. Como a chave, só vem do ambiente ou de arquivo.
+	SetupToken string `yaml:"-"`
 }
 
 // Database identifica o armazenamento.
@@ -180,6 +185,7 @@ func applyEnv(cfg *Config) error {
 		{&cfg.Database.DSN, "DB_DSN"},
 		{&cfg.MetricsToken, "METRICS_TOKEN"},
 		{&cfg.SecretKey, "SECRET_KEY"},
+		{&cfg.SetupToken, "SETUP_TOKEN"},
 	} {
 		if err := secret(opt.dst, opt.name); err != nil {
 			return err

@@ -18,6 +18,7 @@ type GateProps = {
 export function Gate({ mode, onDone }: GateProps) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [setupToken, setSetupToken] = useState("");
   const [erro, setErro] = useState<string | null>(null);
   const [campoErro, setCampoErro] = useState<string | null>(null);
   const [enviando, setEnviando] = useState(false);
@@ -32,7 +33,8 @@ export function Gate({ mode, onDone }: GateProps) {
 
     try {
       if (criando) {
-        await api.createAdmin(username, password);
+        // Os espaços em volta vêm da cópia do log, não do token.
+        await api.createAdmin(username, password, setupToken.trim());
         await api.login(username, password);
       } else {
         await api.login(username, password);
@@ -61,7 +63,7 @@ export function Gate({ mode, onDone }: GateProps) {
           </h1>
           <p className="text-body text-ink-2">
             {criando
-              ? "Esta é a única conta criada sem autenticação. Depois dela, o cadastro fecha."
+              ? "Esta é a única conta criada sem login, e por isso pede o token de configuração, que só quem tem acesso ao servidor vê. Depois dela, o cadastro fecha."
               : "Use as credenciais definidas na instalação."}
           </p>
         </div>
@@ -92,6 +94,22 @@ export function Gate({ mode, onDone }: GateProps) {
               required
             />
           </Field>
+
+          {criando && (
+            <Field
+              label="token de configuração"
+              hint="Está no log do servidor, na linha com token_de_configuracao (por exemplo, docker compose logs upwatch). Se você definiu UPWATCH_SETUP_TOKEN, é o valor dela."
+              error={campoErro === "setup_token" ? erro ?? undefined : undefined}
+            >
+              <Input
+                value={setupToken}
+                onChange={(e) => setSetupToken(e.target.value)}
+                autoComplete="off"
+                spellCheck={false}
+                required
+              />
+            </Field>
+          )}
 
           <Button type="submit" variant="primary" disabled={enviando} className="mt-2">
             {enviando ? "Aguarde" : criando ? "Criar conta e entrar" : "Entrar"}

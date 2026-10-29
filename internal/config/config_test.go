@@ -272,3 +272,21 @@ func TestRestrictPrivateTargetsIsOnByDefault(t *testing.T) {
 		t.Error("RestrictPrivateTargets = true com a variável em false")
 	}
 }
+
+// O token da configuração inicial vem do ambiente ou de arquivo apontado
+// por ele, nunca do YAML: o arquivo de configuração costuma ir para o
+// controle de versão, e o token publicado ali abriria a instância a quem
+// lê o repositório.
+func TestSetupTokenIsNotReadFromTheConfigFile(t *testing.T) {
+	caminho := writeFile(t, `
+setup_token: "token-de-configuracao-dos-testes"
+`)
+
+	cfg, err := config.Load(caminho)
+	if err != nil {
+		t.Fatalf("Load returned unexpected error: %v", err)
+	}
+	if cfg.SetupToken != "" {
+		t.Errorf("SetupToken = %q, want empty: the YAML must not carry it", cfg.SetupToken)
+	}
+}
