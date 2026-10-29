@@ -524,6 +524,18 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 1rem; justify-content: space
         administração. É a única conta criada sem autenticação; depois
         dela, o cadastro fecha.
       </p>
+      <p>
+        A tela pede o <strong>token de configuração</strong>, para a
+        instância recém-publicada não ser tomada por quem chegar antes de
+        você. Ele está no log, escrito uma vez na subida:
+      </p>
+<pre><code>docker logs upwatch 2&gt;&amp;1 | grep token_de_configuracao</code></pre>
+      <p>
+        Num deploy automatizado, escolha o valor com
+        <code>UPWATCH_SETUP_TOKEN</code> (ou
+        <code>UPWATCH_SETUP_TOKEN_FILE</code>), e ele não vai para o log. O
+        token deixa de valer quando a conta passa a existir.
+      </p>
 
       <h3>Docker Compose</h3>
 <pre><code>curl -O https://raw.githubusercontent.com/Jbnado/upwatch/main/compose.yaml
@@ -576,6 +588,7 @@ docker compose -f compose.postgres.yaml up -d</code></pre>
           <tr><td>UPWATCH_DB_DRIVER</td><td>sqlite</td><td><code>sqlite</code> ou <code>postgres</code></td></tr>
           <tr><td>UPWATCH_DB_DSN</td><td>/data/upwatch.db</td><td>Caminho do arquivo ou string de conexão; aceita <code>_FILE</code></td></tr>
           <tr><td>UPWATCH_SECRET_KEY</td><td>vazio</td><td>Chave (base64 de 32 bytes) que cifra as credenciais no banco; vazia, o SQLite gera uma ao lado do banco; aceita <code>_FILE</code></td></tr>
+          <tr><td>UPWATCH_SETUP_TOKEN</td><td>vazio</td><td>Token da tela de primeiro acesso; vazio, um aleatório é gerado na subida e escrito só no log; aceita <code>_FILE</code></td></tr>
           <tr><td>UPWATCH_RETENTION_RAW</td><td>168h</td><td>Quanto tempo as batidas cruas duram</td></tr>
           <tr><td>UPWATCH_RETENTION_HOURLY</td><td>2160h</td><td>Retenção do agregado horário</td></tr>
           <tr><td>UPWATCH_RETENTION_DAILY</td><td>17520h</td><td>Retenção do agregado diário</td></tr>

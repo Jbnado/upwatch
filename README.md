@@ -118,6 +118,25 @@ docker compose -f compose.postgres.yaml up -d
 A senha do banco, o DSN e a chave dos segredos vão por arquivo (ver
 [Segredos](#segredos)).
 
+### Primeiro acesso
+
+Abra a interface e crie a conta de administração. A tela pede o **token
+de configuração**: sem ele, uma instância recém-publicada na internet
+seria de quem chegasse antes de você. O token está no log do processo,
+numa linha só, escrita uma vez na subida:
+
+```bash
+docker compose logs upwatch | grep token_de_configuracao
+```
+
+Para escolher o valor em vez de ler do log — num deploy automatizado,
+por exemplo —, defina `UPWATCH_SETUP_TOKEN` (ou
+`UPWATCH_SETUP_TOKEN_FILE`); aí ele não vai para o log. O gerado muda a
+cada reinício, e qualquer um deles deixa de valer quando a conta passa a
+existir: instalação já configurada não gera token nem o menciona. O
+`POST /api/v1/setup` compara o token em tempo constante e limita as
+tentativas por origem.
+
 ### Binário
 
 Baixe o executável da página de releases. Ele é estático e não depende de
@@ -147,6 +166,7 @@ configuração nenhuma e uma instalação séria versiona o YAML.
 | `UPWATCH_SECURE_COOKIES` | `false` | Marca o cookie como Secure; ligue ao servir por HTTPS |
 | `UPWATCH_PUBLIC_URL` | vazio | Endereço externo, para o feed da página pública usar URLs absolutas |
 | `UPWATCH_METRICS_TOKEN` | vazio | Exige `Authorization: Bearer <token>` em `/metrics`; vazio deixa aberto enquanto não houver conta restrita; aceita `_FILE` |
+| `UPWATCH_SETUP_TOKEN` | vazio | Token exigido na tela de primeiro acesso; vazio, um aleatório é gerado na subida e escrito só no log; sem efeito depois que a conta existe; aceita `_FILE` (ver [Primeiro acesso](#primeiro-acesso)) |
 | `UPWATCH_SECRET_KEY` | vazio | Chave (base64 de 32 bytes) que cifra as credenciais no banco; vazia, o SQLite usa a gerada ao lado do banco; aceita `_FILE` (ver [Segredos](#segredos)) |
 | `UPWATCH_RESTRICT_PRIVATE_TARGETS` | `true` | Recusa, para contas com acesso restrito a grupos, monitor cujo alvo resolva para a rede interna do servidor |
 
@@ -255,7 +275,8 @@ aponte `UPWATCH_SECRET_KEY_FILE` para a nova antes de subir.
 
 ### Opções sensíveis por arquivo (`_FILE`)
 
-`UPWATCH_DB_DSN`, `UPWATCH_METRICS_TOKEN` e `UPWATCH_SECRET_KEY` aceitam
+`UPWATCH_DB_DSN`, `UPWATCH_METRICS_TOKEN`, `UPWATCH_SECRET_KEY` e
+`UPWATCH_SETUP_TOKEN` aceitam
 também `<NOME>_FILE`, com o caminho de um arquivo cujo conteúdo é o
 valor — a convenção das imagens oficiais, e o que o Docker Swarm, o
 Kubernetes e o Compose montam como secret. Variável de ambiente aparece
