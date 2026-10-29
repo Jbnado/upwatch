@@ -34,6 +34,7 @@ const (
 	codeNotFound       errorCode = "not_found"
 	codeConflict       errorCode = "conflict"
 	codeTooManyReqs    errorCode = "too_many_requests"
+	codeMediaType      errorCode = "unsupported_media_type"
 	codeInternal       errorCode = "internal_error"
 
 	// codeTwoFactorEnrollment é a conta que precisa cadastrar o segundo
@@ -148,7 +149,16 @@ func writeStoreError(w http.ResponseWriter, err error) {
 // Recusar campo desconhecido transforma erro de digitação em resposta
 // explícita, em vez de o valor ser silenciosamente ignorado e o operador
 // achar que configurou algo que não configurou.
+//
+// Exige Content-Type JSON antes de ler. O tipo declarado é parte do
+// contrato: um corpo que se diz texto ou formulário não é tratado como
+// JSON, e a API não depende de adivinhar.
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	if !isJSON(r.Header.Get("Content-Type")) {
+		writeError(w, http.StatusUnsupportedMediaType, codeMediaType,
+			"o corpo deve ser enviado com Content-Type: application/json")
+		return false
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
 
 	dec := json.NewDecoder(r.Body)
