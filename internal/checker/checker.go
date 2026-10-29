@@ -63,6 +63,23 @@ type NetworkProbe interface {
 type Registry struct {
 	byType  map[domain.MonitorType]Checker
 	network NetworkProbe
+
+	// ignoreRestriction desliga a conferência de alvo interno na conexão
+	// (ver IgnoreInternalRestriction).
+	ignoreRestriction bool
+}
+
+// IgnoreInternalRestriction faz o registry verificar todo monitor sem a
+// conferência de alvo interno na conexão, mesmo o marcado com
+// RestrictInternal.
+//
+// É o que vale com UPWATCH_RESTRICT_PRIVATE_TARGETS desligada: quem opera
+// o servidor escolheu deixar as contas restritas alcançarem a rede
+// interna, e o monitor salvo antes, com a regra ligada, não pode
+// continuar barrado só porque ninguém o salvou de novo.
+func (r *Registry) IgnoreInternalRestriction() *Registry {
+	r.ignoreRestriction = true
+	return r
 }
 
 // WithNetworkProbe liga a sentinela de rede ao registry.
@@ -133,6 +150,9 @@ func (r *Registry) Check(ctx context.Context, m domain.Monitor) Result {
 		return Result{Status: domain.StatusDown, Message: err.Error()}
 	}
 
+	if r.ignoreRestriction {
+		m.RestrictInternal = false
+	}
 	res := safeCheck(ctx, c, m)
 	res = applyDegradedLatency(res, m)
 	return r.applyNetworkSentinel(ctx, res)

@@ -175,6 +175,11 @@ func serverLimit(ctx context.Context) time.Duration {
 // classify traduz os erros próprios de cada banco; o que é comum aos dois
 // (tempo, rede, TLS) se resolve aqui.
 func sqlFailure(m domain.Monitor, meta map[string]string, password, stage string, err error, classify func(error) (string, bool)) Result {
+	if refused, ok := internalRefusal(err); ok {
+		refused.Message = stage + ": " + refused.Message
+		refused.Meta = meta
+		return refused
+	}
 	class, known := classify(err)
 	if !known {
 		class, known = commonSQLClass(err)

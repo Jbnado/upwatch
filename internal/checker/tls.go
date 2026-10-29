@@ -49,13 +49,11 @@ func (c TLSConfig) degradedWindow() time.Duration {
 }
 
 // TLSChecker inspeciona o certificado apresentado por um serviço.
-type TLSChecker struct {
-	dialer *net.Dialer
-}
+type TLSChecker struct{}
 
 // NewTLS cria o checker de certificado.
 func NewTLS() *TLSChecker {
-	return &TLSChecker{dialer: &net.Dialer{}}
+	return &TLSChecker{}
 }
 
 // Type identifica o tipo de monitor atendido.
@@ -105,7 +103,7 @@ func (c *TLSChecker) Check(ctx context.Context, m domain.Monitor) Result {
 
 	start := time.Now()
 	conn, err := tls.DialWithDialer(
-		dialerWithDeadline(c.dialer, ctx),
+		dialerWithDeadline(dialerFor(m), ctx),
 		"tcp", m.Target,
 		&tls.Config{
 			// Verificação desligada de propósito: a validação é feita
@@ -116,6 +114,9 @@ func (c *TLSChecker) Check(ctx context.Context, m domain.Monitor) Result {
 		},
 	)
 	latency := time.Since(start).Milliseconds()
+	if refused, ok := internalRefusal(err); ok {
+		return refused
+	}
 	if err != nil {
 		return down("%v", err)
 	}

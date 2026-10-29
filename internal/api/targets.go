@@ -22,11 +22,13 @@ import (
 // isso a regra vale só para conta restrita — e pode ser desligada, porque
 // há instalação que existe justamente para isso.
 //
-// A conferência é na validação, resolvendo o nome na hora. O checker ainda
-// não confere ao conectar: um nome que troca de endereço depois do
-// cadastro (DNS rebinding) e um redirecionamento HTTP para dentro passam.
-// Fechar isso exige guardar no monitor a política que vale para ele e
-// levar um controle de dialer a cada checker (issue #59).
+// A conferência acontece duas vezes. Aqui, na validação, resolvendo o nome
+// na hora, para o erro aparecer no cadastro. E no checker, ao conectar,
+// com o endereço efetivamente conectado: um nome que troca de endereço
+// depois do cadastro (DNS rebinding) e um redirecionamento HTTP para
+// dentro só aparecem ali. O checker não sabe quem salvou o monitor; a
+// marca RestrictInternal, decidida em restrictInternal, é como ele fica
+// sabendo. As duas usam checker.InternalAddr, para não divergirem.
 
 // Resolver resolve nomes em endereços. *net.Resolver atende; o teste
 // injeta um que não depende da rede.
@@ -76,6 +78,26 @@ func (a *API) checkTargetReach(ctx context.Context, v viewer, m domain.Monitor, 
 		}
 	}
 	return nil
+}
+
+// restrictInternal decide a marca RestrictInternal do monitor que vai ser
+// gravado. anterior é nulo na criação.
+//
+// A marca segue quem escolheu o destino, a mesma regra de
+// checkTargetReach: a conta restrita que só renomeia ou pausa o monitor
+// que alguém de escopo total apontou para dentro não o marca, senão ele
+// cairia na verificação seguinte por um destino que ela nem escolheu.
+// Quem alcança tudo, ao salvar, assume o destino e tira a marca.
+func (a *API) restrictInternal(v viewer, m domain.Monitor, anterior *domain.Monitor) bool {
+	if v.access.All() || a.allowScopedPrivateTargets {
+		return false
+	}
+	if anterior != nil {
+		if destinos, err := checker.Destinations(m); err == nil && sameDestination(*anterior, m, destinos) {
+			return anterior.RestrictInternal
+		}
+	}
+	return true
 }
 
 // sameDestination informa se a edição mantém o destino do monitor.

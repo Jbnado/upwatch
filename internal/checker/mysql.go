@@ -171,6 +171,9 @@ func (c *MySQL) Check(ctx context.Context, m domain.Monitor) Result {
 	// ninguém ligar): é o que impede a consulta de verificação de carregar
 	// um segundo comando fora da transação somente leitura.
 	dc.MultiStatements = false
+	if m.RestrictInternal {
+		dc.DialFunc = dialerFor(m).DialContext
+	}
 
 	connector, err := mysql.NewConnector(dc)
 	if err != nil {
