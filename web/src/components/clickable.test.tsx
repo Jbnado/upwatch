@@ -1,5 +1,5 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import { InlineLink, TextLink } from "./ui";
 
 // O cursor de mão e a área ampliada vivem no CSS, que o ambiente de
@@ -18,5 +18,18 @@ describe("ação em texto", () => {
     );
     expect(screen.getByRole("button", { name: "voltar" }).className).toContain("text-action");
     expect(screen.getByRole("link", { name: "painel" }).className).toContain("text-action");
+  });
+
+  // Seções que abrem dentro de um formulário usam TextLink; se ele
+  // enviasse o formulário, abrir "cabeçalhos" criaria o canal na hora.
+  it("TextLink dentro de formulário não envia o formulário", () => {
+    const enviar = vi.fn((e: { preventDefault: () => void }) => e.preventDefault());
+    render(
+      <form onSubmit={enviar}>
+        <TextLink>abrir</TextLink>
+      </form>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "abrir" }));
+    expect(enviar).not.toHaveBeenCalled();
   });
 });
