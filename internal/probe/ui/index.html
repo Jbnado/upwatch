@@ -57,7 +57,7 @@
     <label>Intervalo <input name="interval" value="60s"></label>
     <label class="wide">Endereço de push <input name="push_url" required placeholder="https://upwatch.exemplo.com/api/v1/push/TOKEN"></label>
     <label class="wide">Asserções de Redis, uma por linha
-      <textarea name="assert" placeholder="SCARD rq:workers:default >= 1"></textarea>
+      <textarea name="assert" placeholder="SCARD rq:workers:default >= 1&#10;WORKERS bull:minha-fila >= 1"></textarea>
     </label>
     <label>Status HTTP esperados <input name="expect_status" placeholder="200"></label>
     <button class="wide">Adicionar</button>

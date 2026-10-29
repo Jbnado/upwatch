@@ -26,7 +26,7 @@ var operatorSymbols = map[string]string{
 // A forma é COMANDO [chave] [campo] OPERADOR VALOR, e quantos argumentos
 // cabem entre o comando e o operador depende do comando: nenhum em
 // DBSIZE, chave e campo em HGET, seção e campo em INFO, só a chave nos
-// demais. O resultado passa pela validação do próprio checker, para a
+// demais (em WORKERS, a "chave" é <prefixo>:<fila> da fila Bull). O resultado passa pela validação do próprio checker, para a
 // sonda não ser um segundo caminho até um comando fora da lista fechada.
 func ParseRedisAssertion(line string) (checker.RedisAssertion, error) {
 	parts := strings.Fields(line)
@@ -37,7 +37,7 @@ func ParseRedisAssertion(line string) (checker.RedisAssertion, error) {
 
 	if !checker.RedisReadCommand(parts[0]) {
 		return checker.RedisAssertion{}, fmt.Errorf(
-			"comando %q não é permitido; use um de SCARD, LLEN, GET, EXISTS, HGET, ZCARD, DBSIZE ou INFO", parts[0])
+			"comando %q não é permitido; use um de %s", parts[0], checker.RedisReadCommandList)
 	}
 	op, ok := operatorNames[strings.ToLower(parts[len(parts)-2])]
 	if !ok {

@@ -3,6 +3,7 @@ import {
   argumentosDe,
   assercaoVazia,
   COMANDOS_REDIS,
+  exemploDeChave,
   OPERADORES,
   type Assercao,
   type EntradaProtocolo,
@@ -175,7 +176,7 @@ function RedisFields({
 
       <Field
         label="condições"
-        hint="Comandos de leitura conferidos depois do PING. Ex.: SCARD rq:workers:default >= 1 acusa quando não há worker."
+        hint="Comandos de leitura conferidos depois do PING. Ex.: SCARD rq:workers:default >= 1 acusa quando não há worker do RQ; WORKERS bull:minha-fila >= 1, do Bull/BullMQ."
         error={erroDe("assercoes")}
       >
         <div className="flex flex-col gap-2">
@@ -208,7 +209,7 @@ function RedisFields({
                   <Input
                     value={a.chave}
                     onChange={(e) => mudar(i, { chave: e.target.value })}
-                    placeholder="rq:workers:default"
+                    placeholder={exemploDeChave(a.comando)}
                     className="min-w-0 flex-1 tabular"
                     aria-label="chave"
                   />
