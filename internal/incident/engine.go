@@ -216,6 +216,7 @@ func (e *Engine) notify(ctx context.Context, m domain.Monitor, evt Event, cause 
 		Monitor: m,
 		Event:   evt,
 		Message: cause,
+		Group:   e.groupPath(ctx, m),
 	}, destinos)
 }
 

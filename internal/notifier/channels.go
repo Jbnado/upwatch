@@ -75,6 +75,9 @@ func (w *webhook) Send(ctx context.Context, n Notification) error {
 		"message":          n.Message,
 		"at":               n.Event.At,
 		"duration_seconds": int(n.Event.Duration.Seconds()),
+		// Sempre presente, vazio sem grupo: um campo que some conforme o
+		// monitor reprova validação de esquema do outro lado.
+		"group": n.Group,
 	})
 }
 
@@ -185,7 +188,7 @@ var slackEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
 // mensagem.
 //
 // No Slack, <!channel> é menção em massa e <url|texto> é link disfarçado.
-// Nome, alvo e causa vêm de quem cadastrou o monitor e do próprio alvo — a
+// Nome, grupo, alvo e causa vêm de quem cadastrou o monitor e do próprio alvo — a
 // causa de um push é escrita por quem bate no UpWatch. O modelo do canal
 // fica de fora de propósito: quem o escreve pode querer um link para o
 // runbook, e escapar a mensagem pronta quebraria isso.
@@ -193,5 +196,6 @@ func slackEscapeOutside(n Notification) Notification {
 	n.Monitor.Name = slackEscaper.Replace(n.Monitor.Name)
 	n.Monitor.Target = slackEscaper.Replace(n.Monitor.Target)
 	n.Message = slackEscaper.Replace(n.Message)
+	n.Group = slackEscaper.Replace(n.Group)
 	return n
 }

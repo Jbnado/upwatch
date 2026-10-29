@@ -2386,7 +2386,7 @@ components:
             erro aparecer aqui e não durante o incidente.
 
             Campos disponíveis - Monitor (com ID, Name, Target, Type e
-            Tags), Status, Message, Duration, At e Text. A configuração
+            Tags), Group, Status, Message, Duration, At e Text. A configuração
             do monitor nunca está ao alcance do modelo - ela guarda
             senhas e tokens -, e um modelo que tenta ler campo
             inexistente, como .Monitor.Config, é recusado no cadastro.
@@ -2399,7 +2399,7 @@ components:
             Qualquer objeto ou lista JSON. Em qualquer texto dentro
             dele, os marcadores são substituídos - $monitor,
             $monitor_id, $target, $status, $previous_status, $message,
-            $at, $duration_seconds e $text. Também vale ${nome}, e $$
+            $at, $duration_seconds, $group e $text. Também vale ${nome}, e $$
             escreve um cifrão literal.
 
             Sozinho, o marcador entrega o valor com o tipo dele, de

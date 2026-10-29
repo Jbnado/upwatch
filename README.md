@@ -367,22 +367,26 @@ Sem configuração extra, o corpo é este envelope:
 
 ```json
 {
-  "text": "api-de-producao está fora do ar: connection refused",
-  "monitor": "api-de-producao",
+  "text": "api (RPA / prod) está fora do ar: connection refused",
+  "monitor": "api",
   "monitor_id": 7,
   "target": "https://api.exemplo.com",
   "status": "down",
   "previous_status": "up",
   "message": "connection refused",
   "at": "2026-07-30T18:42:11Z",
-  "duration_seconds": 0
+  "duration_seconds": 0,
+  "group": "RPA / prod"
 }
 ```
 
 `status` e `previous_status` são `up`, `down`, `degraded` ou `unknown`.
 `duration_seconds` é quanto durou o estado **anterior**: na queda vem 0, na
 volta vem o tempo que o alvo ficou fora. `message` é a causa observada e
-pode vir vazia.
+pode vir vazia. `group` é o caminho do grupo do monitor (`RPA / prod`), e
+vem vazio para monitor sem grupo — monitores costumam se chamar só `api`
+ou `front`, e é o grupo que diz qual sistema caiu. Pelo mesmo motivo, a
+frase padrão traz o grupo entre parênteses depois do nome.
 
 ### Escolhendo a forma do corpo
 
@@ -413,6 +417,7 @@ marcadores são substituídos:
 | `$message` | Causa observada, quando houver |
 | `$at` | Instante da mudança |
 | `$duration_seconds` | Duração do estado anterior, como número |
+| `$group` | Caminho do grupo (`RPA / prod`), vazio sem grupo |
 | `$text` | A frase pronta do aviso |
 
 Também vale `${nome}`, para quando o marcador encosta em texto que
@@ -438,8 +443,8 @@ corpo deles é ditado pelo destino.
 Em webhook, Discord e Slack, `template` troca a frase padrão por um modelo
 [text/template](https://pkg.go.dev/text/template) do Go, como
 `"{{.Monitor.Name}} => {{.Status}}"`. O modelo enxerga `Monitor` (`ID`,
-`Name`, `Target`, `Type` e `Tags`), `Status`, `Message`, `Duration`, `At` e
-`Text`, a frase pronta. A configuração do monitor fica de fora: ela guarda
+`Name`, `Target`, `Type` e `Tags`), `Group`, `Status`, `Message`,
+`Duration`, `At` e `Text`, a frase pronta. A configuração do monitor fica de fora: ela guarda
 a senha do check HTTP e o token do push, e quem cadastra canal não precisa
 deles para escrever uma frase. Um modelo que tenta ler campo que não está
 na lista, como `.Monitor.Config`, é recusado no cadastro. Os marcadores de
