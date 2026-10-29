@@ -52,6 +52,12 @@ histórico, e o aviso do pai diz quantos dependentes ficaram calados;
 quando o pai volta, o filho que continuar fora avisa. Pai sem medição
 ou pausado não cala ninguém, e ciclos são recusados no cadastro.
 
+**Sabe que o deploy das 19h vai derrubar a API.** Uma
+[janela de manutenção](#janelas-de-manutenção) cala os avisos de um
+monitor, de um grupo inteiro ou dos dois, uma vez ou toda semana, sem
+desligar nada: as verificações continuam e o histórico registra a
+manutenção, que não conta como queda na disponibilidade.
+
 **Avisa** por webhook, Discord, Slack, [Microsoft Teams](#microsoft-teams),
 [e-mail](#e-mail) e [ntfy](#ntfy),
 com um botão de teste em cada canal. Descobrir que o alerta não chega
@@ -717,6 +723,48 @@ obrigar você a renomeá-lo nem a entregar sua convenção de nomes.
 Há também um feed Atom em `/api/v1/public/<slug>/feed.atom`, para
 acompanhar sem cadastrar e-mail e para ligar num canal de chat sem que o
 UpWatch precise saber falar com aquele canal.
+
+## Janelas de manutenção
+
+Em Ajustes → Manutenção, ou pela API em `/api/v1/maintenance-windows`.
+Declare "RPA/prod em manutenção hoje das 19h às 19h30" e o deploy não
+acende o aviso do time inteiro.
+
+Dentro da janela:
+
+- as verificações continuam e são gravadas; a falha vira "sem medição"
+  com o motivo na mensagem (`em manutenção — deploy do RPA; resultado
+  descartado (falha original: …)`), e é assim que aparece nos eventos do
+  monitor;
+- não abre incidente nem avisa, nem por queda nem por degradação;
+- a disponibilidade não conta o intervalo como queda;
+- a página pública mostra "manutenção" no componente afetado, com o
+  título e o texto da janela, e anuncia a janela que começa nos próximos
+  sete dias.
+
+**Alvo.** Monitores e grupos, à vontade. A janela num sistema vale para
+todos os ambientes dele — `RPA` cobre `RPA/hml` e `RPA/prod`, inclusive
+monitores criados depois. E vale para os dependentes: com o pai em
+manutenção, a queda do filho é a do pai, e fica calada também.
+
+**Recorrência.** Avulsa, diária ou semanal, no fuso da janela: "todo
+domingo, 02h–03h" continua às 2h depois da troca de horário de verão. A
+avulsa dura no máximo 31 dias — uma janela esquecida é o monitor
+desligado que ninguém religou —, e a recorrente precisa ser mais curta
+que o intervalo da repetição.
+
+**Quando a janela acaba com o alvo fora.** Ele avisa, uma vez, depois das
+confirmações de sempre, como uma queda nova. A queda confirmada antes de
+a janela começar já tinha avisado; a volta dela, mesmo no meio da
+janela, também avisa.
+
+**Encerrar antes do previsto** (`POST /api/v1/maintenance-windows/<id>/end`)
+para de silenciar na hora, e cancela as próximas ocorrências da
+recorrente. Apagar a janela também, mas encerrar mantém o registro.
+
+Declarar janela exige acesso a todos os grupos, como canal e relato: ela
+cala avisos, e numa conta restrita calaria o pager do time vizinho.
+Quem tem escopo vê as janelas que tocam os grupos dele.
 
 ## Prometheus
 

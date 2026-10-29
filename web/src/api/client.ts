@@ -16,6 +16,8 @@ import {
   type Incident,
   type IncidentImpact,
   type IncidentPhase,
+  type MaintenanceInput,
+  type MaintenanceWindow,
   type Monitor,
   type MonitorInput,
   type Page,
@@ -344,6 +346,24 @@ export const api = {
       `/announcements/${id}/updates`,
       { method: "POST", body: JSON.stringify(input) },
     ),
+
+  // ---------- janelas de manutenção ----------
+
+  maintenanceWindows: () => request<{ items: MaintenanceWindow[] }>("/maintenance-windows"),
+
+  createMaintenance: (input: MaintenanceInput) =>
+    request<MaintenanceWindow>("/maintenance-windows", { method: "POST", body: JSON.stringify(input) }),
+
+  updateMaintenance: (id: number, input: MaintenanceInput) =>
+    request<MaintenanceWindow>(`/maintenance-windows/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }),
+
+  endMaintenance: (id: number) =>
+    request<MaintenanceWindow>(`/maintenance-windows/${id}/end`, { method: "POST" }),
+
+  deleteMaintenance: (id: number) => request<void>(`/maintenance-windows/${id}`, { method: "DELETE" }),
 };
 
 /**

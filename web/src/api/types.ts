@@ -381,6 +381,8 @@ export type PublicView = {
   generated_at: string;
   groups: PublicGroup[];
   announcements: PublicAnnouncement[];
+  /** Janelas em curso e as que começam nos próximos sete dias. */
+  maintenances?: PublicMaintenance[];
 };
 
 export type PublicGroup = {
@@ -396,6 +398,8 @@ export type PublicMonitor = {
   uptime_percent?: number;
   latency_p95_ms?: number;
   history: PublicDay[];
+  /** Numa janela de manutenção agora. */
+  maintenance?: boolean;
 };
 
 export type PublicDay = {
@@ -414,6 +418,53 @@ export type PublicAnnouncement = {
   started_at: string;
   resolved_at?: string | null;
   updates: PublicAnnouncementUpdate[];
+};
+
+export type Recurrence = "none" | "daily" | "weekly";
+
+export type PublicMaintenance = {
+  title: string;
+  message?: string;
+  /** Ocorrência em curso ou a próxima. */
+  starts_at: string;
+  ends_at: string;
+  recurrence: Recurrence;
+  active: boolean;
+  /** Rótulos públicos dos componentes afetados. */
+  components: string[];
+};
+
+/**
+ * Janela de manutenção. Dentro dela a falha não avisa nem conta como
+ * queda; as verificações continuam.
+ */
+export type MaintenanceWindow = {
+  id: number;
+  title: string;
+  message?: string;
+  /** Primeira ocorrência; a recorrente repete o horário no fuso dela. */
+  starts_at: string;
+  ends_at: string;
+  recurrence: Recurrence;
+  time_zone: string;
+  monitor_ids: number[];
+  group_ids: number[];
+  /** Encerramento antes do previsto. */
+  ended_at?: string | null;
+  state: "scheduled" | "active" | "finished";
+  /** Ocorrência em curso ou a próxima, calculada pelo servidor. */
+  next?: { start: string; end: string };
+};
+
+export type MaintenanceInput = {
+  title: string;
+  message: string;
+  starts_at: string;
+  ends_at: string;
+  recurrence: Recurrence;
+  time_zone: string;
+  monitor_ids: number[];
+  group_ids: number[];
 };
 
 export type PublicAnnouncementUpdate = {
