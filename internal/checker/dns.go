@@ -106,9 +106,23 @@ func (c *DNSChecker) Check(ctx context.Context, m domain.Monitor) Result {
 	msg := new(dns.Msg)
 	msg.SetQuestion(dns.Fqdn(strings.TrimSpace(m.Target)), qtype)
 
+	client := c.client
+	if m.RestrictInternal && cfg.Resolver != "" {
+		// Só o resolvedor escolhido no cadastro é conferido. O do sistema
+		// foi escolhido por quem instalou e costuma morar na rede interna
+		// (127.0.0.53 no systemd-resolved); o cadastro também não o
+		// confere (ver Destinations).
+		restricted := *c.client
+		restricted.Dialer = dialerFor(m)
+		client = &restricted
+	}
+
 	start := time.Now()
-	resp, _, err := c.client.ExchangeContext(ctx, msg, server)
+	resp, _, err := client.ExchangeContext(ctx, msg, server)
 	latency := time.Since(start).Milliseconds()
+	if refused, ok := internalRefusal(err); ok {
+		return refused
+	}
 	if err != nil {
 		return down("consultando %s: %v", server, err)
 	}

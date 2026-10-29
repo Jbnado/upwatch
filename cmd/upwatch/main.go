@@ -170,6 +170,12 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A regra desligada vale também para o monitor marcado antes, com ela
+	// ligada: a marca guarda quem escolheu o destino, e esta chave diz se
+	// isso ainda importa.
+	if !cfg.RestrictPrivateTargets {
+		registry.IgnoreInternalRestriction()
+	}
 
 	// A sentinela evita que perder conectividade dispare alerta sobre
 	// todos os alvos ao mesmo tempo, quando eles seguem no ar.

@@ -135,7 +135,21 @@ func (c *ICMP) Check(ctx context.Context, m domain.Monitor) Result {
 		pinger = def
 	}
 
-	stats, err := pinger.Ping(ctx, strings.TrimSpace(m.Target), cfg.count(), m.Timeout)
+	host := strings.TrimSpace(m.Target)
+	if m.RestrictInternal {
+		// O ping não passa por dialer: o endereço é conferido aqui e é ele,
+		// e não o nome, que vai ao pinger. Resolver de novo na hora de
+		// enviar reabriria a janela de rebinding.
+		host, err = checkedAddr(ctx, host)
+		if refused, ok := internalRefusal(err); ok {
+			return refused
+		}
+		if err != nil {
+			return down("%v", err)
+		}
+	}
+
+	stats, err := pinger.Ping(ctx, host, cfg.count(), m.Timeout)
 	if err != nil {
 		return down("%s", explainPingError(err))
 	}
