@@ -328,6 +328,26 @@ type ChannelRepo interface {
 	Destinations(ctx context.Context, monitorID int64) ([]domain.Channel, error)
 }
 
+// MaintenanceRepo guarda as janelas de manutenção.
+//
+// Os alvos (monitores e grupos) saem por cascata quando o monitor ou o
+// grupo é apagado: a janela fica com menos alcance, nunca com outro.
+type MaintenanceRepo interface {
+	Create(ctx context.Context, w *domain.MaintenanceWindow) error
+	Get(ctx context.Context, id int64) (domain.MaintenanceWindow, error)
+	// Update regrava a definição e os alvos, sem tocar em EndedAt: o
+	// encerramento tem caminho próprio (End), para uma edição feita com a
+	// tela aberta desde antes não reabrir a janela que alguém encerrou.
+	Update(ctx context.Context, w domain.MaintenanceWindow) error
+	Delete(ctx context.Context, id int64) error
+	// List traz todas, da que começa mais tarde para a mais antiga. São
+	// poucas, e o motor precisa de todas para decidir.
+	List(ctx context.Context) ([]domain.MaintenanceWindow, error)
+	// End encerra a janela no instante, ou mantém o encerramento anterior
+	// se ele for mais cedo.
+	End(ctx context.Context, id int64, at time.Time) error
+}
+
 // GroupRepo guarda os grupos de monitores.
 //
 // A forma da árvore — dois níveis, só folha recebe monitor — é conferida
@@ -454,6 +474,7 @@ type MetadataStore interface {
 	Announcements() AnnouncementRepo
 	Groups() GroupRepo
 	Transitions() TransitionRepo
+	Maintenance() MaintenanceRepo
 	Close() error
 }
 
