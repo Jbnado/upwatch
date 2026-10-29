@@ -45,6 +45,13 @@ medição" em vez de "fora do ar". Essa sonda só ganha esse poder depois
 de provar que funciona — uma sonda bloqueada por firewall silenciaria
 todos os alertas para sempre.
 
+**Um aviso por causa, não um por sintoma.** Um monitor pode depender de
+outro — a verificação do Redis, do sinal de vida da sonda que a faz.
+Com o pai fora do ar, a falha do filho não avisa e vira lacuna no
+histórico, e o aviso do pai diz quantos dependentes ficaram calados;
+quando o pai volta, o filho que continuar fora avisa. Pai sem medição
+ou pausado não cala ninguém, e ciclos são recusados no cadastro.
+
 **Avisa** por webhook, Discord, Slack, [e-mail](#e-mail) e [ntfy](#ntfy),
 com um botão de teste em cada canal. Descobrir que o alerta não chega
 durante a queda é descobrir tarde. O webhook genérico aceita cabeçalhos
