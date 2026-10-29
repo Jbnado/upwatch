@@ -81,10 +81,10 @@ export const api = {
 
   needsSetup: () => request<{ needs_setup: boolean }>("/setup"),
 
-  createAdmin: (username: string, password: string) =>
+  createAdmin: (username: string, password: string, setupToken: string) =>
     request<User>("/setup", {
       method: "POST",
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ username, password, setup_token: setupToken }),
     }),
 
   login: (username: string, password: string) =>
