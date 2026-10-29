@@ -3,6 +3,7 @@ package api
 import (
 	"net"
 	"net/http"
+	"net/netip"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -90,6 +91,11 @@ type Options struct {
 	// antes de usar o resto da API pela sessão. Desligado por padrão: ligar
 	// sozinho numa atualização prenderia todo administrador no cadastro.
 	Require2FAAdmin bool
+
+	// TrustedProxies são os proxies reversos de quem o X-Forwarded-For é
+	// aceito para saber o endereço do cliente nos limites por origem.
+	// Vazio, o padrão, nunca lê o cabeçalho (ver originResolver).
+	TrustedProxies []netip.Prefix
 }
 
 // MonitorSink recebe as alterações de monitor.
@@ -132,6 +138,8 @@ type API struct {
 	// setupLimit segura o POST /setup, onde se tenta o token de
 	// configuração.
 	setupLimit *rateLimiter
+	// loginLimit segura os dois passos do login.
+	loginLimit *rateLimiter
 
 	// policies é a política de escopo de cada rota, declarada ao registrá-la.
 	policies map[string]scopePolicy
@@ -151,6 +159,7 @@ func New(opts Options) http.Handler {
 	if opts.Resolver == nil {
 		opts.Resolver = net.DefaultResolver
 	}
+	origins := originResolver{trusted: opts.TrustedProxies}
 
 	a := &API{
 		store:         opts.Store,
@@ -171,8 +180,9 @@ func New(opts Options) http.Handler {
 		allowScopedPrivateTargets: opts.AllowScopedPrivateTargets,
 		require2FAAdmin:           opts.Require2FAAdmin,
 		events:                    newEventHub(),
-		pushLimit:                 newRateLimiter(opts.Clock, pushBurst, pushPerSecond),
-		setupLimit:                newRateLimiter(opts.Clock, setupBurst, setupPerSecond),
+		pushLimit:                 newRateLimiter(opts.Clock, origins, pushBurst, pushPerSecond),
+		setupLimit:                newRateLimiter(opts.Clock, origins, setupBurst, setupPerSecond),
+		loginLimit:                newRateLimiter(opts.Clock, origins, loginBurst, loginPerSecond),
 		policies:                  map[string]scopePolicy{},
 	}
 	return a.routes()
@@ -204,11 +214,12 @@ func (a *API) routes() http.Handler {
 		t.handle(http.MethodGet, "/setup", policyPublic, a.handleSetupStatus)
 		t.on(r.With(a.setupLimit.limit)).handle(http.MethodPost, "/setup", policyPublic, a.handleSetup)
 
-		t.handle(http.MethodPost, "/auth/login", policyPublic, a.handleLogin)
-		// Segundo passo do login com dois fatores. Sem limite por origem:
-		// cada desafio aceita poucas tentativas, e o bloqueio por conta
-		// cobre quem pede desafios novos.
-		t.handle(http.MethodPost, "/auth/login/2fa", policyPublic, a.handleLoginSecondFactor)
+		// Os dois passos do login, limitados por origem além do bloqueio
+		// por conta: o bloqueio não vê quem espalha palpites por muitas
+		// contas, nem quem troca de conta a cada desafio.
+		login := t.on(r.With(a.loginLimit.limit))
+		login.handle(http.MethodPost, "/auth/login", policyPublic, a.handleLogin)
+		login.handle(http.MethodPost, "/auth/login/2fa", policyPublic, a.handleLoginSecondFactor)
 
 		// Endpoint de push: o segredo está no caminho, então a sessão não
 		// se aplica. É como um cron reporta sem carregar credencial de
