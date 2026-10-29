@@ -653,6 +653,21 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/v1/monitors/{id}/children/{childID}:
+    delete:
+      tags: [monitors]
+      summary: Desliga um dependente deste monitor
+      description: |
+        O monitor `childID` deixa de depender do monitor do caminho e
+        volta a avisar por conta própria. Responde 404 se ele não existe,
+        está fora do escopo ou depende de outro pai.
+      parameters:
+        - { $ref: "#/components/parameters/PathID" }
+        - { $ref: "#/components/parameters/PathChildID" }
+      responses:
+        "204": { description: Dependente desligado }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/v1/summaries:
     get:
       tags: [data]
@@ -1900,6 +1915,11 @@ components:
       schema: { type: integer, format: int64, minimum: 1 }
     PathChannelID:
       name: channelID
+      in: path
+      required: true
+      schema: { type: integer, format: int64, minimum: 1 }
+    PathChildID:
+      name: childID
       in: path
       required: true
       schema: { type: integer, format: int64, minimum: 1 }

@@ -1,4 +1,5 @@
 import type { AffectedBy, Group, Monitor } from "../api/types";
+import type { LockedBox } from "./service-tree";
 
 /**
  * Monitores dependentes, do lado da tela.
@@ -88,13 +89,54 @@ export function opcoesDePai(
 }
 
 /**
- * candidatosAFilho são os monitores que podem passar a depender do pai:
- * nem ele, nem os ancestrais dele (fecharia ciclo), nem quem já depende.
+ * aninharDependentes põe cada item sob o pai, quando o pai está na mesma
+ * lista. É a forma de toda lista de monitores: o painel, a lista do grupo
+ * e os seletores.
+ *
+ * Quem tem o pai fora da lista fica na raiz: o pai noutro grupo, ou
+ * escondido pela busca, não pode levar o filho junto para fora da tela.
+ * Um ciclo antigo no banco também fica na raiz, senão os dois sumiriam
+ * um dentro do outro. A ordem de entrada é mantida em cada nível.
  */
-export function candidatosAFilho(pai: number, monitores: Monitor[]): Monitor[] {
-  const proibidos = ancestrais(pai, monitores);
-  proibidos.add(pai);
-  return monitores
-    .filter((m) => !proibidos.has(m.id) && m.parent_id !== pai)
-    .sort(porNome);
+export function aninharDependentes<T>(
+  itens: T[],
+  monitorDe: (item: T) => Monitor,
+): { raiz: T[]; filhos: Map<number, T[]> } {
+  const presentes = new Map(itens.map((i) => [monitorDe(i).id, monitorDe(i)]));
+  const emCiclo = (m: Monitor) => {
+    const vistos = new Set<number>();
+    for (let p = m.parent_id; p != null && presentes.has(p); p = presentes.get(p)!.parent_id) {
+      if (p === m.id) return true;
+      // Ciclo acima dele, entre os ancestrais: ele mesmo pode aninhar.
+      if (vistos.has(p)) return false;
+      vistos.add(p);
+    }
+    return false;
+  };
+
+  const raiz: T[] = [];
+  const filhos = new Map<number, T[]>();
+  for (const item of itens) {
+    const m = monitorDe(item);
+    if (m.parent_id == null || !presentes.has(m.parent_id) || emCiclo(m)) {
+      raiz.push(item);
+      continue;
+    }
+    filhos.set(m.parent_id, [...(filhos.get(m.parent_id) ?? []), item]);
+  }
+  return { raiz, filhos };
+}
+
+/**
+ * travasDeFilho são as caixas que não se marcam ao ligar dependentes ao
+ * pai: ele e os ancestrais dele (fechariam ciclo), vazios, e quem já
+ * depende dele, marcados. Ficam à vista, com o porquê, em vez de sumir
+ * da árvore: sumidos, a pessoa procuraria o monitor sem achar.
+ */
+export function travasDeFilho(pai: number, monitores: Monitor[]): Map<number, LockedBox> {
+  const travas = new Map<number, LockedBox>();
+  for (const m of filhosDe(pai, monitores)) travas.set(m.id, { checked: true, reason: "já depende deste" });
+  for (const id of ancestrais(pai, monitores)) travas.set(id, { checked: false, reason: "este depende dele" });
+  travas.set(pai, { checked: false, reason: "é este monitor" });
+  return travas;
 }

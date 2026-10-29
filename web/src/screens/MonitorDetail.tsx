@@ -14,6 +14,7 @@ import type {
 } from "../api/types";
 import { channelTypeLabel, MonitorChannels } from "./Channels";
 import { Menu, type MenuItem } from "../components/Menu";
+import { MonitorTree } from "../components/MonitorTree";
 import { Pulse } from "../components/Pulse";
 import type { PulseSample } from "../components/pulse-bars";
 import { RangePicker } from "../components/RangePicker";
@@ -21,7 +22,6 @@ import { TabPanel, Tabs } from "../components/Tabs";
 import {
   Alert,
   Button,
-  Checkbox,
   InlineLink,
   Loading,
   Nothing,
@@ -38,7 +38,7 @@ import {
   type TimelineLine,
 } from "../lib/events";
 import { explainCause } from "../lib/cause";
-import { candidatosAFilho, filhosDe, rotuloCalado } from "../lib/dependencies";
+import { filhosDe, rotuloCalado, travasDeFilho } from "../lib/dependencies";
 import { crumb } from "../lib/groups";
 import { maskedPushAddress, pushAddress, pushSignal, pushTokenVisible } from "../lib/push";
 import { DEFAULT_RANGE, windowFor, type Range } from "../lib/ranges";
@@ -205,12 +205,16 @@ export function MonitorDetail({
       onSelect: () => setMostrarToken((v) => !v),
     });
   }
-  if (administra) {
-    menu.push({ kind: "action", label: "Ligar dependentes", onSelect: () => setLigando(true) });
-    menu.push({ kind: "action", label: "Remover monitor", onSelect: remover, danger: true });
-  }
   const pai = monitor.parent_id != null ? monitores.find((m) => m.id === monitor.parent_id) : undefined;
   const filhos = filhosDe(monitor.id, monitores);
+  // Com dependentes, a seção já está à vista com o próprio botão; o menu
+  // só serve para o primeiro.
+  if (administra && filhos.length === 0) {
+    menu.push({ kind: "action", label: "Ligar dependentes", onSelect: () => setLigando(true) });
+  }
+  if (administra) {
+    menu.push({ kind: "action", label: "Remover monitor", onSelect: remover, danger: true });
+  }
 
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-6 px-5 py-6">
@@ -292,14 +296,14 @@ export function MonitorDetail({
       {(filhos.length > 0 || ligando) && (
         <Dependents
           monitor={monitor}
+          monitores={monitores}
+          grupos={grupos}
           filhos={filhos}
-          candidatos={candidatosAFilho(monitor.id, monitores)}
+          administra={administra}
           ligando={administra && ligando}
+          onLigar={() => setLigando(true)}
           onFechar={() => setLigando(false)}
-          onLigado={() => {
-            setLigando(false);
-            void carregar();
-          }}
+          onMudou={() => void carregar()}
         />
       )}
 
@@ -434,33 +438,36 @@ function SilencedBox({ por }: { por: AffectedBy }) {
 
 /**
  * Dependents lista quem depende deste monitor e, para quem administra,
- * liga vários de uma vez.
+ * liga e desliga ali mesmo, sem passar pelo menu.
  *
- * Em lote porque o caso comum é ligar as verificações de uma sonda ao
- * sinal de vida dela, e editar uma a uma é onde se esquece alguma.
+ * Ligar é em lote, pela árvore de grupos, porque o caso comum é ligar as
+ * verificações de uma sonda ao sinal de vida dela, e editar uma a uma é
+ * onde se esquece alguma.
  */
 function Dependents({
   monitor,
+  monitores,
+  grupos,
   filhos,
-  candidatos,
+  administra,
   ligando,
+  onLigar,
   onFechar,
-  onLigado,
+  onMudou,
 }: {
   monitor: Monitor;
+  monitores: Monitor[];
+  grupos: Group[];
   filhos: Monitor[];
-  candidatos: Monitor[];
+  administra: boolean;
   ligando: boolean;
+  onLigar: () => void;
   onFechar: () => void;
-  onLigado: () => void;
+  onMudou: () => void;
 }) {
-  const [escolhidos, setEscolhidos] = useState<number[]>([]);
+  const [escolhidos, setEscolhidos] = useState<Set<number>>(new Set());
   const [enviando, setEnviando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
-
-  function alternar(id: number) {
-    setEscolhidos((e) => (e.includes(id) ? e.filter((x) => x !== id) : [...e, id]));
-  }
 
   async function ligar() {
     setEnviando(true);
@@ -469,10 +476,11 @@ function Dependents({
       // Na ordem da lista, e não na dos cliques: o pedido fica previsível.
       await api.setChildren(
         monitor.id,
-        candidatos.filter((c) => escolhidos.includes(c.id)).map((c) => c.id),
+        monitores.filter((m) => escolhidos.has(m.id)).map((m) => m.id),
       );
-      setEscolhidos([]);
-      onLigado();
+      setEscolhidos(new Set());
+      onFechar();
+      onMudou();
     } catch (e) {
       setErro(e instanceof Error ? e.message : "Não foi possível ligar os monitores.");
     } finally {
@@ -480,44 +488,63 @@ function Dependents({
     }
   }
 
+  async function desligar(filho: Monitor) {
+    setErro(null);
+    try {
+      await api.unlinkChild(monitor.id, filho.id);
+      onMudou();
+    } catch (e) {
+      setErro(e instanceof Error ? e.message : `Não foi possível desligar ${filho.name}.`);
+    }
+  }
+
   return (
     <section aria-label="dependentes" className="flex flex-col gap-2">
-      <h2 className="eyebrow">dependem deste monitor</h2>
+      <div className="flex items-baseline justify-between gap-3">
+        <h2 className="eyebrow">dependentes</h2>
+        {administra && !ligando && <TextLink onClick={onLigar}>Ligar dependentes</TextLink>}
+      </div>
+      {erro && <Alert>{erro}</Alert>}
+
       {filhos.length > 0 ? (
-        <p className="text-body text-ink-2">
-          {filhos.map((f, i) => (
-            <span key={f.id}>
-              {i > 0 && ", "}
-              <InlineLink to={{ name: "monitor", id: f.id }}>{f.name}</InlineLink>
-            </span>
-          ))}
-          <span className="text-ink-3"> — com este fora do ar, não avisam.</span>
-        </p>
+        <>
+          <ul className="flex flex-col">
+            {filhos.map((f) => (
+              <li key={f.id} className="flex items-baseline gap-3 border-b border-line py-1.5">
+                <span className="min-w-0 flex-1 truncate text-body">
+                  <InlineLink to={{ name: "monitor", id: f.id }}>{f.name}</InlineLink>
+                </span>
+                {administra && (
+                  <TextLink onClick={() => void desligar(f)} aria-label={`Desligar ${f.name}`}>
+                    desligar
+                  </TextLink>
+                )}
+              </li>
+            ))}
+          </ul>
+          <p className="text-small text-ink-3">Com este fora do ar, eles não avisam.</p>
+        </>
       ) : (
         <p className="text-small text-ink-3">Nenhum monitor depende deste ainda.</p>
       )}
 
       {ligando && (
         <div className="flex flex-col gap-2 rounded-md border border-line-strong px-3 py-3">
-          {erro && <Alert>{erro}</Alert>}
-          {candidatos.length === 0 ? (
-            <p className="text-small text-ink-3">Não há outro monitor para ligar a este.</p>
-          ) : (
-            <div className="flex max-h-64 flex-col overflow-y-auto">
-              {candidatos.map((c) => (
-                <Checkbox key={c.id} checked={escolhidos.includes(c.id)} onChange={() => alternar(c.id)}>
-                  {c.name}
-                </Checkbox>
-              ))}
-            </div>
-          )}
+          <MonitorTree
+            groups={grupos}
+            monitors={monitores}
+            selected={escolhidos}
+            onChange={setEscolhidos}
+            locked={travasDeFilho(monitor.id, monitores)}
+            note="Marcar um grupo liga os monitores que estão nele agora. Um monitor criado depois no grupo não vira dependente sozinho."
+          />
           <div className="flex gap-2">
             <Button
               variant="primary"
-              disabled={escolhidos.length === 0 || enviando}
+              disabled={escolhidos.size === 0 || enviando}
               onClick={() => void ligar()}
             >
-              {escolhidos.length === 1 ? "Ligar 1 monitor" : `Ligar ${escolhidos.length} monitores`}
+              {escolhidos.size === 1 ? "Ligar 1 monitor" : `Ligar ${escolhidos.size} monitores`}
             </Button>
             <Button onClick={onFechar}>Cancelar</Button>
           </div>

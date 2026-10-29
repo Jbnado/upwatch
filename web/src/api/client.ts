@@ -143,6 +143,10 @@ export const api = {
       body: JSON.stringify({ monitor_ids: monitorIds }),
     }),
 
+  /** unlinkChild solta um dependente deste monitor; o de outro pai é 404. */
+  unlinkChild: (id: number, childId: number) =>
+    request<void>(`/monitors/${id}/children/${childId}`, { method: "DELETE" }),
+
   // ---------- dados ----------
 
   /**

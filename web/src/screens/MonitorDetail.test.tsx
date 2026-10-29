@@ -27,6 +27,7 @@ vi.mock("../api/client", () => ({
     unlinkChannel: vi.fn(),
     listMonitors: vi.fn(),
     setChildren: vi.fn(),
+    unlinkChild: vi.fn(),
     exportUrl: () => "/export",
   },
 }));
@@ -528,11 +529,11 @@ describe("MonitorDetail: dependências", () => {
     expect(secao).not.toHaveTextContent("postgres");
   });
 
-  it("liga vários monitores a este de uma vez", async () => {
+  it("liga vários monitores a este de uma vez, pela árvore de grupos", async () => {
     // O caso comum é ligar as quatro verificações de uma sonda ao sinal
     // de vida dela; editar uma a uma é onde se esquece alguma.
     cenario({ status: "up", problema: null, eventos: [] });
-    vi.mocked(api.listMonitors).mockResolvedValue({ items: [BFF, REDIS, SOLTO, FILA], has_more: false });
+    vi.mocked(api.listMonitors).mockResolvedValue({ items: [BFF, SOLTO, FILA], has_more: false });
     vi.mocked(api.setChildren).mockResolvedValue({ items: [] });
 
     render(<MonitorDetail id={12} tab="eventos" eu={ADMIN_TOTAL} />);
@@ -541,13 +542,51 @@ describe("MonitorDetail: dependências", () => {
     fireEvent.click(screen.getByRole("button", { name: "Mais ações" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Ligar dependentes" }));
     const secao = await screen.findByRole("region", { name: "dependentes" });
-    fireEvent.click(within(secao).getByRole("checkbox", { name: "postgres" }));
-    fireEvent.click(within(secao).getByRole("checkbox", { name: "fila" }));
-    // Quem já depende deste não é oferecido de novo.
-    expect(within(secao).queryByRole("checkbox", { name: "redis" })).not.toBeInTheDocument();
+    expect(secao).toHaveTextContent("Um monitor criado depois no grupo não vira dependente sozinho");
+    // Marcar o ambiente leva os monitores dele, menos este próprio.
+    fireEvent.click(within(secao).getByRole("checkbox", { name: /^prod/ }));
+    expect(within(secao).getByRole("checkbox", { name: /^bff/ })).not.toBeChecked();
     fireEvent.click(within(secao).getByRole("button", { name: "Ligar 2 monitores" }));
 
-    await vi.waitFor(() => expect(api.setChildren).toHaveBeenCalledWith(12, expect.arrayContaining([21, 22])));
-    expect(vi.mocked(api.setChildren).mock.lastCall?.[1]).toHaveLength(2);
+    await vi.waitFor(() => expect(api.setChildren).toHaveBeenCalledWith(12, [21, 22]));
+  });
+
+  it("com dependentes, liga e desliga pela seção, sem o menu", async () => {
+    cenario({ status: "up", problema: null, eventos: [] });
+    vi.mocked(api.listMonitors).mockResolvedValue({
+      items: [BFF, REDIS, SOLTO, { ...FILA, parent_id: 9 }, SONDA],
+      has_more: false,
+    });
+    vi.mocked(api.unlinkChild).mockResolvedValue(undefined);
+
+    render(<MonitorDetail id={12} tab="eventos" eu={ADMIN_TOTAL} />);
+    const secao = await screen.findByRole("region", { name: "dependentes" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Mais ações" }));
+    expect(screen.queryByRole("menuitem", { name: "Ligar dependentes" })).not.toBeInTheDocument();
+
+    fireEvent.click(within(secao).getByRole("button", { name: "Ligar dependentes" }));
+    // Quem já depende deste aparece marcado e travado; quem depende de
+    // outro diz de quem.
+    const redis = within(secao).getByRole("checkbox", { name: /^redis/ });
+    expect(redis).toBeChecked();
+    expect(redis).toBeDisabled();
+    expect(within(secao).getByRole("checkbox", { name: /^fila/ }).closest("label")).toHaveTextContent(
+      "depende de sonda vm-01",
+    );
+
+    fireEvent.click(within(secao).getByRole("button", { name: "Desligar redis" }));
+    await vi.waitFor(() => expect(api.unlinkChild).toHaveBeenCalledWith(12, 20));
+  });
+
+  it("quem só observa vê os dependentes, sem ligar nem desligar", async () => {
+    cenario({ status: "up", problema: null, eventos: [] });
+    vi.mocked(api.listMonitors).mockResolvedValue({ items: [BFF, REDIS], has_more: false });
+
+    render(<MonitorDetail id={12} tab="eventos" eu={EU} />);
+    const secao = await screen.findByRole("region", { name: "dependentes" });
+
+    expect(within(secao).getByRole("link", { name: "redis" })).toBeInTheDocument();
+    expect(within(secao).queryByRole("button")).not.toBeInTheDocument();
   });
 });
