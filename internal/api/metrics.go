@@ -220,7 +220,7 @@ func (a *API) handleMetrics(w http.ResponseWriter, r *http.Request) {
 
 	abertos, err := a.store.Incidents().List(ctx, store.IncidentFilter{
 		OnlyOpen: true,
-		Page:     store.PageFilter{Limit: store.MaxPageSize},
+		Limit:    store.MaxPageSize,
 	})
 	if err != nil {
 		writeStoreError(w, err)

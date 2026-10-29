@@ -1275,6 +1275,13 @@ paths:
         Uma queda só entra aqui depois de confirmada pelo número de falhas
         seguidas configurado no monitor; oscilação passageira não vira
         incidente.
+
+        Do mais recente para o mais antigo. Paginação para trás, como a da
+        linha do tempo do monitor&#58; passe o `next_cursor` da página
+        anterior em `cursor`. `after_id` e `next_after_id` continuam como
+        nomes obsoletos dos mesmos valores, com o sentido corrigido (antes
+        devolviam sempre a mesma página). `cursor` e `after_id` juntos e
+        diferentes respondem 400.
       parameters:
         - name: monitor_id
           in: query
@@ -1286,9 +1293,17 @@ paths:
         - name: limit
           in: query
           schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+        - name: cursor
+          in: query
+          schema: { type: string }
+          description: O `next_cursor` da página anterior. Opaco.
         - name: after_id
           in: query
+          deprecated: true
           schema: { type: integer, format: int64 }
+          description: |
+            Nome obsoleto de `cursor`&#58; traz os incidentes com id menor.
+            Use `cursor`.
       responses:
         "200":
           description: Incidentes, do mais recente para o mais antigo
@@ -1301,7 +1316,15 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/Incident" }
                   has_more: { type: boolean }
-                  next_after_id: { type: integer, format: int64 }
+                  next_cursor:
+                    type: string
+                    description: Só quando `has_more`; passe em `cursor`.
+                  next_after_id:
+                    type: integer
+                    format: int64
+                    deprecated: true
+                    description: O mesmo valor de `next_cursor`, para quem usa `after_id`.
+        "400": { $ref: "#/components/responses/BadRequest" }
 
   /api/v1/public:
     get:
