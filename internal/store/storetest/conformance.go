@@ -59,6 +59,7 @@ func monitoringCases() []conformanceCase {
 		{"MonitorCreateAssignsID", testMonitorCreateAssignsID},
 		{"MonitorCreateSetsTimestamps", testMonitorCreateSetsTimestamps},
 		{"MonitorRoundTripsAllFields", testMonitorRoundTripsAllFields},
+		{"MonitorKeepsTheInternalRestriction", testMonitorKeepsTheInternalRestriction},
 		{"MonitorGetMissingReturnsNotFound", testMonitorGetMissingReturnsNotFound},
 		{"MonitorDuplicateNameReturnsConflict", testMonitorDuplicateNameReturnsConflict},
 		{"MonitorUpdatePersistsChanges", testMonitorUpdatePersistsChanges},
@@ -248,6 +249,59 @@ func testMonitorRoundTripsAllFields(t *testing.T, newStore Factory) {
 	}
 	if len(got.Tags) != 2 || got.Tags[0] != "prod" || got.Tags[1] != "crítico" {
 		t.Errorf("Tags = %v, want [prod crítico]", got.Tags)
+	}
+}
+
+// A marca de alvo restrito é o que faz o checker recusar a rede interna
+// na conexão (issue #59). Um backend que a perdesse na gravação, ou só
+// numa das leituras, deixaria o monitor de conta restrita alcançar
+// 127.0.0.1 sem que nada no cadastro indicasse.
+func testMonitorKeepsTheInternalRestriction(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	m := newMonitor("restrito")
+	m.RestrictInternal = true
+	if err := s.Monitors().Create(ctx, &m); err != nil {
+		t.Fatalf("Create returned unexpected error: %v", err)
+	}
+	free := newMonitor("livre")
+	if err := s.Monitors().Create(ctx, &free); err != nil {
+		t.Fatalf("Create returned unexpected error: %v", err)
+	}
+
+	got, err := s.Monitors().Get(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("Get returned unexpected error: %v", err)
+	}
+	if !got.RestrictInternal {
+		t.Error("Get: RestrictInternal = false, want true")
+	}
+
+	page, err := s.Monitors().List(ctx, store.MonitorFilter{})
+	if err != nil {
+		t.Fatalf("List returned unexpected error: %v", err)
+	}
+	for _, it := range page.Items {
+		if want := it.ID == m.ID; it.RestrictInternal != want {
+			t.Errorf("List: monitor %q RestrictInternal = %v, want %v", it.Name, it.RestrictInternal, want)
+		}
+	}
+
+	got.RestrictInternal = false
+	if err := s.Monitors().Update(ctx, got); err != nil {
+		t.Fatalf("Update returned unexpected error: %v", err)
+	}
+	if got, _ := s.Monitors().Get(ctx, m.ID); got.RestrictInternal {
+		t.Error("after Update to false: RestrictInternal = true")
+	}
+
+	free.RestrictInternal = true
+	if err := s.Monitors().Update(ctx, free); err != nil {
+		t.Fatalf("Update returned unexpected error: %v", err)
+	}
+	if got, _ := s.Monitors().Get(ctx, free.ID); !got.RestrictInternal {
+		t.Error("after Update to true: RestrictInternal = false")
 	}
 }
 
