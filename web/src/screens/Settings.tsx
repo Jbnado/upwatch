@@ -26,6 +26,7 @@ import { Channels } from "./Channels";
 import { Groups } from "./Groups";
 import { Maintenance } from "./Maintenance";
 import { StatusPageAdmin, StatusPages } from "./StatusPages";
+import { TwoFactor } from "./TwoFactor";
 import { Users } from "./Users";
 
 /**
@@ -186,6 +187,8 @@ function Secao({
       return <Tokens />;
     case "senha":
       return <Password onSignedOut={onSignedOut} />;
+    case "seguranca":
+      return <TwoFactor />;
   }
 }
 

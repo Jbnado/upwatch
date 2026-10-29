@@ -274,6 +274,27 @@ func TestRestrictPrivateTargetsIsOnByDefault(t *testing.T) {
 	}
 }
 
+// Exigir o segundo fator vem desligado: ligado por padrão, a atualização
+// prenderia todo administrador no cadastro no primeiro login seguinte.
+func TestRequire2FAAdminIsOffByDefault(t *testing.T) {
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Require2FAAdmin {
+		t.Error("Require2FAAdmin = true sem configuração, want false")
+	}
+
+	t.Setenv("UPWATCH_REQUIRE_2FA_ADMIN", "true")
+	cfg, err = config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Require2FAAdmin {
+		t.Error("Require2FAAdmin = false com a variável em true")
+	}
+}
+
 // O token da configuração inicial vem do ambiente ou de arquivo apontado
 // por ele, nunca do YAML: o arquivo de configuração costuma ir para o
 // controle de versão, e o token publicado ali abriria a instância a quem

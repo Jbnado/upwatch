@@ -256,6 +256,11 @@ paths:
         propósito: distingui-las permitiria descobrir quais contas existem.
 
         Falhas repetidas bloqueiam a conta temporariamente.
+
+        Conta com verificação em duas etapas não recebe sessão aqui: a
+        resposta traz `status: two_factor_required` e um `challenge`, que
+        `POST /api/v1/auth/login/2fa` troca pela sessão junto com o código.
+        Só quem acertou a senha descobre que a conta tem o segundo fator.
       security: []
       requestBody:
         required: true
@@ -269,11 +274,59 @@ paths:
                 password: { type: string }
       responses:
         "200":
+          description: |
+            Senha certa. Com `status: ok`, a sessão foi aberta e o cookie
+            acompanha a resposta; com `status: two_factor_required`, falta
+            o código.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+              description: Cookie `upwatch_session`, HttpOnly e SameSite=Lax (só com status ok)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LoginResult" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429":
+          description: Tentativas demais; aguarde antes de tentar novamente
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/auth/login/2fa:
+    post:
+      tags: [auth]
+      summary: Conclui o login com o segundo fator
+      description: |
+        Troca o `challenge` devolvido pelo login e um código pela sessão.
+        O código é o de seis dígitos do aplicativo ou um código de
+        recuperação, que vale uma vez só.
+
+        O desafio vence em cinco minutos, aceita cinco códigos e abre uma
+        sessão só. Desafio vencido, esgotado ou já usado devolve 401 com
+        `field: challenge`: é preciso começar de novo pela senha. Código
+        errado devolve 401 com `field: code` e conta no mesmo bloqueio da
+        senha errada.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [challenge, code]
+              properties:
+                challenge: { type: string }
+                code: { type: string, description: Código de seis dígitos ou de recuperação }
+      responses:
+        "200":
           description: Sessão aberta; o cookie acompanha a resposta
           headers:
             Set-Cookie:
               schema: { type: string }
               description: Cookie `upwatch_session`, HttpOnly e SameSite=Lax
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LoginResult" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "429":
           description: Tentativas demais; aguarde antes de tentar novamente
@@ -292,13 +345,145 @@ paths:
     get:
       tags: [auth]
       summary: Devolve a conta autenticada
+      description: |
+        `two_factor_enrollment_required` vem verdadeiro quando a instalação
+        exige verificação em duas etapas de administradores
+        (`UPWATCH_REQUIRE_2FA_ADMIN`) e esta conta, logada por sessão, ainda
+        não a cadastrou. Enquanto isso, a sessão só alcança esta rota, o
+        cadastro (`/auth/2fa`, `/auth/2fa/setup`, `/auth/2fa/enable`) e o
+        logout; o resto responde 403 com `code: two_factor_enrollment_required`.
       responses:
         "200":
           description: Conta atual
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/User" }
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/User"
+                  - type: object
+                    properties:
+                      two_factor_enrollment_required: { type: boolean }
         "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/auth/2fa:
+    get:
+      tags: [auth]
+      summary: Estado da verificação em duas etapas da conta
+      responses:
+        "200":
+          description: Estado atual
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled: { type: boolean }
+                  pending:
+                    type: boolean
+                    description: Cadastro começado e ainda não confirmado
+                  recovery_codes_left: { type: integer }
+                  required:
+                    type: boolean
+                    description: A instalação exige o segundo fator desta conta
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/auth/2fa/setup:
+    post:
+      tags: [auth]
+      summary: Começa o cadastro do aplicativo autenticador
+      description: |
+        Sorteia um segredo TOTP (SHA-1, seis dígitos, passo de 30 s) e o
+        guarda como pendente. A resposta traz o segredo em base32 e o
+        endereço `otpauth://` do QR code; é a única vez que o segredo sai
+        da API. Chamar de novo descarta o pendente anterior.
+      responses:
+        "200":
+          description: Segredo pendente
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  secret: { type: string }
+                  uri: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/auth/2fa/enable:
+    post:
+      tags: [auth]
+      summary: Confirma o cadastro com um código do aplicativo
+      description: |
+        Liga o segundo fator e devolve dez códigos de recuperação, que não
+        aparecem de novo. As outras sessões da conta são encerradas; a
+        desta requisição continua.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+      responses:
+        "200":
+          description: Segundo fator ligado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecoveryCodes" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/auth/2fa/recovery-codes:
+    post:
+      tags: [auth]
+      summary: Gera códigos de recuperação novos
+      description: |
+        Exige a senha e um código válido (do aplicativo ou de
+        recuperação). Os códigos anteriores deixam de valer.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SecondFactorProof" }
+      responses:
+        "200":
+          description: Códigos novos
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecoveryCodes" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429":
+          description: Tentativas demais; aguarde antes de tentar novamente
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/auth/2fa/disable:
+    post:
+      tags: [auth]
+      summary: Desliga a verificação em duas etapas da conta
+      description: |
+        Exige a senha e um código válido. As outras sessões da conta são
+        encerradas; a desta requisição continua.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SecondFactorProof" }
+      responses:
+        "204": { description: Segundo fator desligado }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429":
+          description: Tentativas demais; aguarde antes de tentar novamente
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/v1/auth/password:
     post:
@@ -505,6 +690,29 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/users/{id}/2fa:
+    delete:
+      tags: [auth]
+      summary: Desliga a verificação em duas etapas de outra conta
+      description: |
+        Para quem perdeu o celular e os códigos de recuperação. Encerra
+        todas as sessões da conta, e fica no log com quem fez.
+
+        A própria conta devolve 409: ela desliga o segundo fator por
+        `POST /api/v1/auth/2fa/disable`, que pede senha e código. Conta sem
+        segundo fator também devolve 409.
+
+        Sem nenhum administrador capaz de entrar, a saída é a linha de
+        comando: `upwatch disable-2fa <conta>`.
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+      responses:
+        "204": { description: Segundo fator desligado e sessões encerradas }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
 
   /api/v1/monitors:
     get:
@@ -2229,6 +2437,31 @@ components:
               type: string
               description: Campo reprovado, quando o erro for de validação
 
+    LoginResult:
+      type: object
+      properties:
+        status: { type: string, enum: [ok, two_factor_required] }
+        challenge:
+          type: string
+          description: Só com two_factor_required. Vale cinco minutos e uma sessão.
+        expires_at: { type: string, format: date-time }
+
+    RecoveryCodes:
+      type: object
+      properties:
+        recovery_codes:
+          type: array
+          items: { type: string }
+          description: Cada um vale uma vez. Não aparecem de novo.
+        warning: { type: string }
+
+    SecondFactorProof:
+      type: object
+      required: [password, code]
+      properties:
+        password: { type: string }
+        code: { type: string, description: Código de seis dígitos ou de recuperação }
+
     User:
       type: object
       description: A senha e seu hash nunca aparecem nesta representação.
@@ -2243,6 +2476,9 @@ components:
             tudo que altera o estado exige administrador, tudo que só lê
             aceita observador.
         scope: { $ref: "#/components/schemas/Scope" }
+        totp_enabled:
+          type: boolean
+          description: A conta tem a verificação em duas etapas ligada.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 

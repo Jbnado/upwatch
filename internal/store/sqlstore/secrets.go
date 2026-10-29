@@ -92,6 +92,7 @@ func (s *Store) hasSealedSecrets(ctx context.Context) (bool, error) {
 		`SELECT 1 FROM secret_key_check`,
 		`SELECT 1 FROM monitor WHERE config LIKE '%"enc:%'`,
 		`SELECT 1 FROM notification_channel WHERE config LIKE '%"enc:%'`,
+		`SELECT 1 FROM user_totp`,
 	} {
 		var one int
 		err := s.db.QueryRowContext(ctx, q+` LIMIT 1`).Scan(&one)
@@ -305,6 +306,9 @@ func (s *Store) RotateSecretKey(ctx context.Context, newKey secretbox.Key) error
 		if err := reseal(t, channelTable, channels, notifier.SecretFields); err != nil {
 			return err
 		}
+		if err := resealTOTP(ctx, t, reader, writer); err != nil {
+			return err
+		}
 		check, err := writer.Seal(keyCheck, keyCheckSlot)
 		if err != nil {
 			return err
@@ -384,10 +388,68 @@ func ForgetSecrets(driver, dsn string) (int, error) {
 		if err := forget(t, channelTable, channels, notifier.SecretFields); err != nil {
 			return err
 		}
+		// O segredo TOTP sem a chave também é ruído, e a conta que o tinha
+		// passa a entrar só com a senha até cadastrar o aplicativo de novo.
+		// Os códigos de recuperação vão junto: sem fator, não recuperam nada.
+		if _, err := t.ExecContext(ctx, `DELETE FROM user_recovery_code`); err != nil {
+			return fmt.Errorf("sqlstore: apagando códigos de recuperação: %w", err)
+		}
+		res, err := t.ExecContext(ctx, `DELETE FROM user_totp`)
+		if err != nil {
+			return fmt.Errorf("sqlstore: apagando segundos fatores: %w", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("sqlstore: contando segundos fatores apagados: %w", err)
+		}
+		erased += int(n)
 		_, err = t.ExecContext(ctx, `DELETE FROM secret_key_check`)
 		return err
 	})
 	return erased, err
+}
+
+// resealTOTP recifra os segredos do segundo fator com a chave nova.
+func resealTOTP(ctx context.Context, t *tx, reader, writer *secretbox.Box) error {
+	rows, err := t.QueryContext(ctx, `SELECT user_id, secret FROM user_totp`)
+	if err != nil {
+		return fmt.Errorf("sqlstore: lendo segundos fatores: %w", err)
+	}
+	type row struct {
+		id     int64
+		secret string
+	}
+	var all []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.secret); err != nil {
+			rows.Close()
+			return fmt.Errorf("sqlstore: lendo segundo fator: %w", err)
+		}
+		all = append(all, r)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("sqlstore: lendo segundos fatores: %w", err)
+	}
+	// Fecha antes de gravar: no PostgreSQL a transação não aceita outro
+	// comando com o cursor ainda aberto.
+	rows.Close()
+
+	for _, r := range all {
+		plain, err := reader.Open(r.secret, totpSlot(r.id))
+		if err != nil {
+			return fmt.Errorf("sqlstore: segundo fator do usuário %d: %w", r.id, err)
+		}
+		sealed, err := writer.Seal(plain, totpSlot(r.id))
+		if err != nil {
+			return fmt.Errorf("sqlstore: recifrando segundo fator do usuário %d: %w", r.id, err)
+		}
+		if _, err := t.ExecContext(ctx, `UPDATE user_totp SET secret = ? WHERE user_id = ?`, sealed, r.id); err != nil {
+			return fmt.Errorf("sqlstore: recifrando segundo fator do usuário %d: %w", r.id, err)
+		}
+	}
+	return nil
 }
 
 // sealForWrite cifra a configuração a gravar no registro dado.

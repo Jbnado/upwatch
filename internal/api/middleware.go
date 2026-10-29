@@ -93,6 +93,41 @@ func (a *API) authenticate(next http.Handler) http.Handler {
 	})
 }
 
+// mustEnroll informa se a requisição vem de um administrador que precisa
+// cadastrar o segundo fator antes de usar o resto da API.
+//
+// Só sessão: token de API não passa pelo login, e exigir o fator dele
+// quebraria a automação sem proteger nada que o token já não proteja.
+// A conta é relida a cada requisição (ver authenticate), então a
+// restrição cai assim que o cadastro termina, na mesma sessão.
+func (a *API) mustEnroll(r *http.Request) bool {
+	if !a.require2FAAdmin {
+		return false
+	}
+	if _, ok := bearerToken(r); ok {
+		return false
+	}
+	u := mustUser(r)
+	return u.Role == domain.RoleAdmin && !u.TOTPEnabled
+}
+
+// requireEnrollment barra, enquanto o cadastro do segundo fator for
+// obrigatório e não tiver sido feito, tudo o que não for cadastrá-lo.
+//
+// Grupo de rotas, como requireAdmin: as rotas liberadas moram num grupo
+// sem esta guarda, e uma rota nova nasce barrada.
+func (a *API) requireEnrollment(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if a.mustEnroll(r) {
+			writeError(w, http.StatusForbidden, codeTwoFactorEnrollment,
+				"esta instalação exige verificação em duas etapas para administradores; "+
+					"cadastre-a em Ajustes, Verificação em duas etapas")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // resolveUser identifica a conta pela credencial apresentada.
 func (a *API) resolveUser(r *http.Request) (domain.User, error) {
 	if secret, ok := bearerToken(r); ok {

@@ -117,6 +117,16 @@ grupos. Ele também só enxerga os canais ligados ao que é dele, e não
 aponta monitor para a rede interna do servidor (ver
 `UPWATCH_RESTRICT_PRIVATE_TARGETS`).
 
+**Verificação em duas etapas, opcional por conta.** Em Ajustes ›
+Verificação em duas etapas, a conta cadastra um aplicativo autenticador
+(TOTP: Google Authenticator, Authy, 1Password, Bitwarden…) e recebe dez
+códigos de recuperação de uso único, mostrados uma vez. Daí em diante o
+login pede o código depois da senha. Desligar e gerar códigos novos
+pedem senha e código; ligar e desligar encerram as outras sessões da
+conta. Quem perdeu o celular e os códigos pede a um administrador, que
+desliga o segundo fator dela em Contas e acesso. Tokens de API não
+passam pelo segundo fator. Ver [Verificação em duas etapas](#verificação-em-duas-etapas).
+
 **Publica uma página de estado** no formato que Anthropic, Cloudflare e
 Google consolidaram: veredito no topo, componentes agrupados, noventa
 barras de histórico, incidentes anteriores com linha do tempo. Ela nunca
@@ -203,6 +213,7 @@ configuração nenhuma e uma instalação séria versiona o YAML.
 | `UPWATCH_SETUP_TOKEN` | vazio | Token exigido na tela de primeiro acesso; vazio, um aleatório é gerado na subida e escrito só no log; sem efeito depois que a conta existe; aceita `_FILE` (ver [Primeiro acesso](#primeiro-acesso)) |
 | `UPWATCH_SECRET_KEY` | vazio | Chave (base64 de 32 bytes) que cifra as credenciais no banco; vazia, o SQLite usa a gerada ao lado do banco; aceita `_FILE` (ver [Segredos](#segredos)) |
 | `UPWATCH_RESTRICT_PRIVATE_TARGETS` | `true` | Recusa, para contas com acesso restrito a grupos, monitor cujo alvo resolva para a rede interna do servidor, no cadastro e na conexão |
+| `UPWATCH_REQUIRE_2FA_ADMIN` | `false` | Exige verificação em duas etapas de todo administrador: quem entra sem ela só consegue cadastrá-la (ver [Verificação em duas etapas](#verificação-em-duas-etapas)) |
 
 Durações aceitam sufixo de dias: `90d` é o mesmo que `2160h`.
 
@@ -319,6 +330,45 @@ Sem as opções, a chave atual é a da partida (`UPWATCH_SECRET_KEY`,
 `docker compose run --rm upwatch rotate-secret-key ...`. Tudo é recifrado
 numa transação só: ou passa inteiro para a nova, ou nada muda. Depois,
 aponte `UPWATCH_SECRET_KEY_FILE` para a nova antes de subir.
+
+O segredo da verificação em duas etapas também é cifrado com esta chave
+e entra na troca. Se a chave se perder, `forget-secrets` apaga também o
+segundo fator de todas as contas: elas voltam a entrar só com a senha
+até cadastrar o aplicativo de novo.
+
+## Verificação em duas etapas
+
+TOTP (RFC 6238): SHA-1, seis dígitos, passo de 30 segundos, com um passo
+de tolerância para cada lado, que é o que os aplicativos autenticadores
+usam. Um código vale uma vez: o mesmo código, ou um mais antigo que o
+último aceito, é recusado. O segredo fica cifrado no banco (ver
+[Segredos](#segredos)); dos códigos de recuperação, só o hash.
+
+No login, a senha certa de uma conta com segundo fator não abre sessão:
+devolve um desafio que vale cinco minutos, aceita cinco códigos e serve
+uma vez. Código errado conta no mesmo bloqueio da senha errada (cinco
+falhas, quinze minutos). Senha errada responde igual com ou sem segundo
+fator, para não revelar quais contas o têm. A API está descrita em
+`/api/v1/openapi.yaml` (`/auth/login/2fa` e `/auth/2fa/*`).
+
+**`UPWATCH_REQUIRE_2FA_ADMIN`** vem desligado, para uma atualização não
+prender ninguém no cadastro sem aviso. Ligado, o administrador sem
+segundo fator que entra com a senha certa só alcança o cadastro, a
+própria conta e o logout; o resto responde 403 com
+`code: two_factor_enrollment_required`, e a interface o leva direto ao
+cadastro. Terminado o cadastro, a restrição cai na mesma sessão.
+Observadores e tokens de API não são afetados.
+
+**Sem ninguém para desligar pela interface** — o único administrador
+perdeu o celular e os códigos —, quem tem acesso ao servidor desliga
+pela linha de comando:
+
+```bash
+upwatch disable-2fa admin
+```
+
+Na imagem: `docker compose run --rm upwatch disable-2fa admin`. As
+sessões da conta são encerradas, e ela volta a entrar só com a senha.
 
 ### Opções sensíveis por arquivo (`_FILE`)
 

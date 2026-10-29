@@ -51,6 +51,7 @@ func RunConformance(t *testing.T, newStore Factory) {
 	cases = append(cases, secretCases()...)
 	cases = append(cases, reminderCases()...)
 	cases = append(cases, maintenanceCases()...)
+	cases = append(cases, twoFactorCases()...)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) { tc.run(t, newStore) })
 	}
