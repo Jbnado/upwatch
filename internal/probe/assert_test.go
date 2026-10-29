@@ -27,6 +27,8 @@ func TestParseRedisAssertionReadsTheOneLineForm(t *testing.T) {
 		"  ZCARD   rq:wip:default   ==  3 ": {Command: "ZCARD", Key: "rq:wip:default", Op: "eq", Value: 3},
 		// O nome do operador da API também vale, para quem copia do JSON.
 		"SCARD k gte 1": {Command: "SCARD", Key: "k", Op: "gte", Value: 1},
+		// Worker do Bull/BullMQ: prefixo e fila, como nas chaves da fila.
+		"WORKERS bull:excel-render >= 1": {Command: "WORKERS", Key: "bull:excel-render", Op: "gte", Value: 1},
 	}
 	for line, want := range cases {
 		got, err := probe.ParseRedisAssertion(line)
@@ -55,6 +57,8 @@ func TestParseRedisAssertionRejectsWhatTheCheckerRejects(t *testing.T) {
 		"SCARD a b >= 1",
 		"DBSIZE k > 0",
 		"INFO memory > 0",
+		// Sem prefixo não há como montar o nome que o Bull dá à conexão.
+		"WORKERS excel-render >= 1",
 	} {
 		if _, err := probe.ParseRedisAssertion(line); err == nil {
 			t.Errorf("ParseRedisAssertion(%q) accepted an invalid line", line)
@@ -71,6 +75,7 @@ func TestFormatRedisAssertionRoundTrips(t *testing.T) {
 		"HGET rq:worker:w1 state != 0",
 		"INFO memory used_memory <= 1000000",
 		"DBSIZE > 0",
+		"WORKERS bull:excel-render >= 1",
 	} {
 		a, err := probe.ParseRedisAssertion(line)
 		if err != nil {

@@ -193,7 +193,7 @@ func (c *Redis) Check(ctx context.Context, m domain.Monitor) Result {
 			return Result{
 				Status:    domain.StatusDown,
 				LatencyMS: latency,
-				Message:   scrubSecret(fmt.Sprintf("%s: %v", a.label(), err), cfg.Password),
+				Message:   scrubSecret(a.explain(err), cfg.Password),
 				Meta:      meta,
 			}
 		}

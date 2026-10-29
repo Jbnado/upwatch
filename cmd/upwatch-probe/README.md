@@ -205,8 +205,8 @@ Opções do `add`:
 | `--interval 60s --timeout 10s --degraded-latency 2s` | todos | |
 
 As asserções de Redis aceitam só comandos de leitura: `SCARD`, `LLEN`,
-`GET`, `EXISTS`, `HGET`, `ZCARD`, `DBSIZE` e `INFO`. Os operadores são
-`==`, `!=`, `<`, `<=`, `>` e `>=`. Exemplos:
+`GET`, `EXISTS`, `HGET`, `ZCARD`, `DBSIZE`, `INFO` e `WORKERS`. Os
+operadores são `==`, `!=`, `<`, `<=`, `>` e `>=`. Exemplos:
 
 ```
 SCARD rq:workers:default >= 1
@@ -214,7 +214,18 @@ LLEN rq:queue:default < 100
 HGET rq:worker:w1 state != 0
 INFO memory used_memory < 1000000000
 DBSIZE > 0
+WORKERS bull:excel-render >= 1
 ```
+
+`WORKERS <prefixo>:<fila>` conta os workers vivos de uma fila Bull ou
+BullMQ. Essas bibliotecas não registram worker em chave nenhuma (e
+`EXISTS bull:<fila>:stalled-check` pisca, porque a chave expira entre uma
+checagem e outra); cada worker dá à sua conexão o nome
+`<prefixo>:<base64 da fila>`, com `:w:<nome>` no fim no BullMQ quando o
+worker tem nome, e a asserção conta essas conexões no `CLIENT LIST`. O
+push leva só a contagem (`WORKERS bull:excel-render = 0, esperado >= 1`),
+nunca endereço ou nome de outras conexões. O usuário precisa de
+`+client|list` na ACL (abaixo).
 
 A senha nunca vai em flag: ficaria no histórico, na gravação do jump
 server e no `ps`. Use `--password-stdin` ou, melhor, um usuário sem senha
@@ -283,6 +294,10 @@ O melhor segredo é o que não abre nada. Crie um usuário só para a sonda:
 ```
 # Redis: só os comandos que a sonda usa, só nas chaves do RQ
 ACL SETUSER upwatch on >SENHA ~rq:* -@all +ping +info +scard +llen
+# com WORKERS (Bull/BullMQ), acrescente; CLIENT LIST não lê chave nenhuma,
+# mas mostra endereço e nome de todas as conexões do Redis
+ACL SETUSER upwatch +client|list
+# e ~bull:* se também vigiar as chaves da fila (LLEN bull:<fila>:wait)
 ```
 
 ```sql
