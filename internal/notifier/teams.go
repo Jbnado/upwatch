@@ -52,7 +52,7 @@ func newTeams(raw json.RawMessage, cliente *http.Client) (Notifier, error) {
 		return nil, err
 	}
 	if cliente == nil {
-		cliente = http.DefaultClient
+		cliente = clienteHTTP
 	}
 	return &teams{cfg: cfg, tmpl: tmpl, cliente: cliente}, nil
 }
@@ -111,6 +111,7 @@ func linkMonitor(id int64) string {
 }
 
 func (t *teams) Send(ctx context.Context, n Notification) error {
+	n = teamsEscapeOutside(n)
 	corpo, err := json.Marshal(teamsCard(n, renderWith(t.tmpl, n)))
 	if err != nil {
 		return fmt.Errorf("notifier: preparando payload: %w", err)
@@ -193,6 +194,31 @@ func teamsCard(n Notification, frase string) map[string]any {
 			},
 		},
 	}
+}
+
+// teamsEscaper escapa o Markdown que o Teams lê no TextBlock e no
+// FactSet, e também as chaves: {{DATE(...)}} e {{TIME(...)}} são
+// trocados pela data no fuso de quem lê, e um texto de fora não tem por
+// que mexer no que o cartão mostra. A barra entre as chaves desfaz o
+// padrão, e o Markdown a consome na hora de desenhar. O + entra porque
+// começa item de lista, como o -.
+var teamsEscaper = escaperDe(markdownEspeciais + "+{}")
+
+// teamsEscapeOutside escapa o texto que vem de fora antes de montar o
+// cartão, como o Slack e o Discord fazem com o deles.
+//
+// Sem isso, "[clique aqui](https://outro-lugar)" na causa de um push
+// viraria um link disfarçado no aviso. Ao contrário do Discord, o Teams
+// não faz link de endereço solto, então o alvo é escapado inteiro e
+// continua aparecendo igual. O modelo do canal fica de fora: quem o
+// escreve pode querer um link para o runbook, ou a própria data no fuso
+// de quem lê.
+func teamsEscapeOutside(n Notification) Notification {
+	n.Monitor.Name = teamsEscaper.Replace(n.Monitor.Name)
+	n.Monitor.Target = teamsEscaper.Replace(n.Monitor.Target)
+	n.Message = teamsEscaper.Replace(n.Message)
+	n.Group = teamsEscaper.Replace(n.Group)
+	return n
 }
 
 // teamsEstado é o estilo do cabeçalho, a cor e o rótulo do estado.

@@ -274,7 +274,7 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 			Clock:     real,
 		}),
 		auth:    authSvc,
-		handler: server.New(apiHandler, web.Handler()),
+		handler: server.New(apiHandler, web.Handler(), server.Options{SecureCookies: cfg.SecureCookies}),
 	}, nil
 }
 

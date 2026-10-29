@@ -207,8 +207,8 @@ configuração nenhuma e uma instalação séria versiona o YAML.
 | `UPWATCH_WORKERS` | `50` | Teto de verificações simultâneas |
 | `UPWATCH_SESSION_TTL` | `168h` | Validade da sessão da interface |
 | `UPWATCH_REMINDER_INTERVAL` | `0` | De quanto em quanto uma queda aberta e não reconhecida é relembrada, para monitor e grupo sem intervalo próprio; `0` desliga, e o mínimo é `5m` |
-| `UPWATCH_SECURE_COOKIES` | `false` | Marca o cookie como Secure; ligue ao servir por HTTPS |
-| `UPWATCH_PUBLIC_URL` | vazio | Endereço externo, para o feed da página pública usar URLs absolutas e o cartão do Teams ter o botão "Abrir no UpWatch" |
+| `UPWATCH_SECURE_COOKIES` | `false` | Marca o cookie como Secure e liga o HSTS; ligue ao servir por HTTPS |
+| `UPWATCH_PUBLIC_URL` | vazio | Endereço externo, para o feed da página pública usar URLs absolutas, o cartão do Teams ter o botão "Abrir no UpWatch" e a conferência de origem reconhecer o endereço atrás de proxy |
 | `UPWATCH_METRICS_TOKEN` | vazio | Exige `Authorization: Bearer <token>` em `/metrics`; vazio deixa aberto enquanto não houver conta restrita; aceita `_FILE` |
 | `UPWATCH_SETUP_TOKEN` | vazio | Token exigido na tela de primeiro acesso; vazio, um aleatório é gerado na subida e escrito só no log; sem efeito depois que a conta existe; aceita `_FILE` (ver [Primeiro acesso](#primeiro-acesso)) |
 | `UPWATCH_SECRET_KEY` | vazio | Chave (base64 de 32 bytes) que cifra as credenciais no banco; vazia, o SQLite usa a gerada ao lado do banco; aceita `_FILE` (ver [Segredos](#segredos)) |
@@ -221,6 +221,15 @@ Durações aceitam sufixo de dias: `90d` é o mesmo que `2160h`.
 `UPWATCH_SECURE_COOKIES` fica desligado por padrão de propósito. Muita
 instalação caseira serve em HTTP na rede local, e um cookie Secure ali
 simplesmente não é enviado — o login pareceria quebrado sem explicação.
+Ligado, ele também acrescenta `Strict-Transport-Security` (dois anos,
+com subdomínios): o navegador passa a recusar HTTP no host. Só ligue
+quando o HTTPS for definitivo.
+
+Toda resposta, da API, da interface e da página pública, sai com
+`Content-Security-Policy`, `X-Frame-Options: DENY`,
+`X-Content-Type-Options: nosniff` e `Referrer-Policy` (só a origem na
+interface, nada na página pública). Nenhuma tela pode ser posta num
+iframe, nem a página pública.
 
 `UPWATCH_RESTRICT_PRIVATE_TARGETS` fica ligado por padrão. O checker
 conecta a partir do servidor, e uma conta restrita a um grupo que
@@ -420,6 +429,23 @@ sentidos.
 curl -H "Authorization: Bearer upw_..." http://localhost:8080/api/v1/monitors
 ```
 
+Corpo vai sempre com `Content-Type: application/json` (`; charset=utf-8`
+é aceito); outro tipo responde 415. A exceção é o [push](#push).
+
+```bash
+curl -H "Authorization: Bearer upw_..." -H "Content-Type: application/json" \
+  -d '{"name":"site","type":"http","target":"https://exemplo.com","interval_seconds":60,"timeout_seconds":10}' \
+  http://localhost:8080/api/v1/monitors
+```
+
+Escrita autenticada pelo cookie de sessão, e também login e primeiro
+acesso, só é aceita da própria origem: o navegador informa de onde veio a
+requisição (`Sec-Fetch-Site`, `Origin`), e a que vem de outra origem
+recebe 403. Script fora do navegador não manda esses
+cabeçalhos e não é afetado, e o token Bearer não passa por essa
+conferência. Atrás de um proxy que reescreve o `Host`, defina
+`UPWATCH_PUBLIC_URL` para o endereço externo ser reconhecido.
+
 ## Conferindo o corpo JSON
 
 Um health que responde 200 com `{"db":"down"}` está fora do ar, e o código
@@ -509,6 +535,20 @@ vem vazio para monitor sem grupo — monitores costumam se chamar só `api`
 ou `front`, e é o grupo que diz qual sistema caiu. Pelo mesmo motivo, a
 frase padrão traz o grupo entre parênteses depois do nome.
 
+Os cabeçalhos de `headers` existem para autenticar contra o destino, e
+por isso exigem `https://`: por `http://` eles atravessariam a rede em
+claro. A exceção é o loopback (`localhost`, `127.0.0.1`, `::1`), que não
+sai da máquina — a mesma regra do token do ntfy. A recusa vale ao criar e
+ao editar o canal; um canal gravado antes dela, com `http://` e
+cabeçalho, continua entregando, e a regra aparece na próxima vez que ele
+for salvo.
+
+Nenhum canal segue redirecionamento. Num 307 ou 308 para outro host, o
+cliente HTTP do Go só tira `Authorization` e `Cookie`, e um `X-Api-Key`
+iria junto para quem redirecionou. A resposta 3xx conta como falha da
+entrega, com o motivo — "o canal respondeu com redirecionamento" —, e
+não é repetida: cadastre o endereço final.
+
 `event` diz o que o aviso conta: `transition` é a mudança de estado, e
 `reminder` é o [lembrete](#o-que-ele-faz) de uma queda que segue aberta.
 No lembrete os outros campos continuam os da queda — mesmo `monitor_id`,
@@ -580,14 +620,42 @@ deles para escrever uma frase. Um modelo que tenta ler campo que não está
 na lista, como `.Monitor.Config`, é recusado no cadastro. Os marcadores de
 `body_template` seguem a mesma regra.
 
-Nome, alvo e causa vêm de fora — a causa de um monitor push é escrita por
-quem bate no UpWatch —, então não viram menção em massa. No Discord, o
-aviso vai com `allowed_mentions` vazio, e um `@everyone` na causa chega
-como texto, sem pingar ninguém. No Slack, `<`, `>` e `&` desses campos são
-escapados, e `<!channel>` ou um link disfarçado chegam como texto; o que
-você escreve no próprio `template`, como um link para o runbook, passa
-intacto. No Teams, menção só existe quando o cartão a declara, e o
-UpWatch não declara nenhuma.
+A execução de um modelo não pode ser interrompida no meio, então o que ele
+pode fazer é limitado antes de rodar, e o cadastro recusa o que passa
+disso:
+
+- o modelo tem até 8 KiB;
+- `range` só percorre as etiquetas (`{{range .Monitor.Tags}}`), e sem
+  outro `range` dentro — `{{range 1000000000}}` ou `{{range .Monitor.ID}}`
+  dariam bilhões de voltas;
+- `define`, `template` e `block` não são aceitos: com eles, um modelo
+  chama a si mesmo e o trabalho dobra a cada chamada;
+- o texto produzido, e cada texto montado com `print`, `printf`, `html`,
+  `js` ou `urlquery`, tem até 64 KiB, e o `printf` não aceita largura ou
+  precisão acima de 1000 nem vinda de argumento (`%*d`).
+
+Na hora do aviso, o modelo que passa de 64 KiB — a causa de verdade pode
+ser bem maior que a do ensaio no cadastro — dá lugar à frase padrão, e o
+aviso sai do mesmo jeito.
+
+Nome, grupo, alvo e causa vêm de fora — a causa de um monitor push é
+escrita por quem bate no UpWatch —, então não viram menção em massa nem
+formatação. O que você escreve no próprio `template`, como um link para o
+runbook, passa intacto em todos os canais.
+
+- **Discord:** o aviso vai com `allowed_mentions` vazio, e um `@everyone`
+  na causa chega como texto, sem pingar ninguém. O Markdown desses campos
+  é escapado com barra invertida (`` \ * _ ~ ` | > # - [ ] ( ) ``), e
+  `[Reautentique aqui](https://…)` chega como texto, não como link
+  disfarçado. Um endereço solto (`https://…`) fica como está, porque o
+  Discord faz o link pelo texto cru e o escape o quebraria.
+- **Slack:** `<`, `>` e `&` são escapados, e `<!channel>` ou um link
+  disfarçado chegam como texto.
+- **Teams:** menção só existe quando o cartão a declara, e o UpWatch não
+  declara nenhuma. O Markdown é escapado como no Discord (mais `+`), no
+  título, na frase, na causa e no alvo, e as chaves também: um
+  `{{DATE(...)}}` ou `{{TIME(...)}}` na causa chega como texto, sem virar
+  data. O horário que o próprio cartão mostra continua no fuso de quem lê.
 
 Os campos avançados também estão na interface, em Ajustes → Canais de
 aviso, atrás de "cabeçalhos e formato do corpo".

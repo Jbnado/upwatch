@@ -22,6 +22,19 @@ info:
     O segredo de um token aparece **apenas** na resposta que o cria. Depois
     disso só o prefixo é exposto, e nada permite reconstruí-lo.
 
+    ## Corpo e origem
+
+    Toda requisição com corpo JSON precisa declarar
+    `Content-Type: application/json`; sem isso a resposta é 415, com o
+    corpo de erro de sempre. A exceção é `/push`, que aceita o sinal na
+    query e ignora corpo de outro tipo.
+
+    Requisições que mudam estado (POST, PUT, PATCH, DELETE) autenticadas
+    pelo cookie de sessão, e também login e primeiro acesso, são recusadas
+    com 403 quando o navegador indica outra origem (`Sec-Fetch-Site` ou
+    `Origin`). Clientes fora do navegador não mandam esses cabeçalhos e não
+    são afetados; o token Bearer não passa por essa conferência.
+
     ## Retenção
 
     Batidas cruas vivem poucos dias; o histórico longo é servido por
@@ -246,6 +259,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/auth/login:
     post:
@@ -288,6 +302,7 @@ paths:
               schema: { $ref: "#/components/schemas/LoginResult" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "429": { $ref: "#/components/responses/LoginTooManyRequests" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/auth/login/2fa:
     post:
@@ -326,6 +341,7 @@ paths:
               schema: { $ref: "#/components/schemas/LoginResult" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "429": { $ref: "#/components/responses/LoginTooManyRequests" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/auth/logout:
     post:
@@ -413,6 +429,7 @@ paths:
                   uri: { type: string }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
         "429":
           description: Tentativas demais; aguarde antes de tentar novamente
           content:
@@ -444,6 +461,7 @@ paths:
               schema: { $ref: "#/components/schemas/RecoveryCodes" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/auth/2fa/recovery-codes:
     post:
@@ -471,6 +489,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/auth/2fa/disable:
     post:
@@ -494,6 +513,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/auth/password:
     post:
@@ -524,6 +544,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/auth/tokens:
     get:
@@ -572,6 +593,7 @@ paths:
                       token:
                         type: string
                         description: O segredo; não é recuperável depois
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/auth/tokens/{id}:
     delete:
@@ -642,6 +664,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/users/{id}:
     put:
@@ -687,6 +710,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
     delete:
       tags: [auth]
       summary: Remove uma conta
@@ -801,6 +825,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/monitors/{id}:
     get:
@@ -835,6 +860,7 @@ paths:
               schema: { $ref: "#/components/schemas/Monitor" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
     delete:
       tags: [monitors]
       summary: Remove o monitor e todo o seu histórico
@@ -884,6 +910,7 @@ paths:
                     items: { $ref: "#/components/schemas/Monitor" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/monitors/{id}/incidents/{incidentID}/ack:
     post:
@@ -926,6 +953,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/monitors/{id}/children/{childID}:
     delete:
@@ -1058,7 +1086,12 @@ paths:
     get:
       tags: [data]
       summary: Exporta as batidas do período
-      description: A resposta é enviada em fluxo; períodos longos não são materializados em memória.
+      description: |
+        A resposta é enviada em fluxo; períodos longos não são materializados em memória.
+
+        No CSV, as colunas de texto (probe_id e message) que começam com
+        =, +, -, @, tabulação ou retorno de carro ganham um apóstrofo na
+        frente, para a planilha não as ler como fórmula. O JSON sai cru.
       parameters:
         - $ref: "#/components/parameters/PathID"
         - $ref: "#/components/parameters/From"
@@ -1240,6 +1273,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/channels/{id}:
     get:
@@ -1288,6 +1322,7 @@ paths:
               schema: { $ref: "#/components/schemas/Channel" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
     delete:
       tags: [alerts]
       summary: Remove um canal e seus vínculos
@@ -1327,6 +1362,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/channels/{id}/test:
     post:
@@ -1506,6 +1542,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/groups/summary:
     get:
@@ -1569,6 +1606,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
     delete:
       tags: [groups]
       summary: Apaga um grupo vazio
@@ -1844,6 +1882,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/status-pages/{id}:
     get:
@@ -1892,6 +1931,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
     delete:
       tags: [status-pages]
       summary: Remove a página
@@ -1950,6 +1990,7 @@ paths:
               schema: { $ref: "#/components/schemas/StatusPageGroup" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/status-pages/{id}/groups/{groupID}:
     put:
@@ -1972,6 +2013,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
     delete:
       tags: [status-pages]
       summary: Desfaz o agrupamento
@@ -2016,6 +2058,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
     delete:
       tags: [status-pages]
       summary: Despublica um monitor da página
@@ -2085,6 +2128,7 @@ paths:
               schema: { $ref: "#/components/schemas/Announcement" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/announcements/{id}:
     get:
@@ -2128,6 +2172,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
     delete:
       tags: [status-pages]
       summary: Remove um relato
@@ -2167,6 +2212,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/maintenance-windows:
     get:
@@ -2214,6 +2260,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/maintenance-windows/{id}:
     get:
@@ -2252,6 +2299,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
     delete:
       tags: [maintenance]
       summary: Apaga uma janela de manutenção
@@ -2388,6 +2436,13 @@ components:
       description: Fim do período (RFC 3339). Padrão&#58; agora.
 
   responses:
+    UnsupportedMediaType:
+      description: |
+        O corpo veio sem `Content-Type: application/json`. Parâmetros como
+        `; charset=utf-8` são aceitos.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     Forbidden:
       description: |
         A conta está autenticada, mas não tem permissão. Devolvido a um
@@ -2462,7 +2517,9 @@ components:
                 - unauthorized
                 - not_found
                 - conflict
+                - forbidden
                 - too_many_requests
+                - unsupported_media_type
                 - internal_error
             message: { type: string }
             field:
@@ -3040,7 +3097,14 @@ components:
         headers:
           type: object
           additionalProperties: { type: string }
-          description: Cabeçalhos extras, para destinos que exigem token próprio
+          description: |
+            Cabeçalhos extras, para destinos que exigem token próprio.
+            Com cabeçalho, a url precisa ser https (ou loopback): por http
+            eles atravessariam a rede em claro. Recusado ao criar e ao
+            editar; um canal gravado antes da regra continua entregando.
+            Nenhum canal segue redirecionamento - a resposta 3xx é falha
+            definitiva da entrega, para os cabeçalhos não irem a outro
+            host.
         template:
           type: string
           description: |
@@ -3052,6 +3116,13 @@ components:
             do monitor nunca está ao alcance do modelo - ela guarda
             senhas e tokens -, e um modelo que tenta ler campo
             inexistente, como .Monitor.Config, é recusado no cadastro.
+
+            Limites, conferidos no cadastro - até 8 KiB; range só sobre
+            .Monitor.Tags e sem range aninhado; sem define, template e
+            block; saída e cada texto de print, printf, html, js e
+            urlquery até 64 KiB; printf sem largura ou precisão acima de
+            1000 nem vinda de argumento. Na entrega, o modelo que passa de
+            64 KiB dá lugar à frase padrão.
         body_template:
           description: |
             Forma do corpo inteiro, e não só da frase. Só no canal

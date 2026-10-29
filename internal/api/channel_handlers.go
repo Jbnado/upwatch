@@ -484,7 +484,7 @@ func validateChannel(w http.ResponseWriter, c domain.Channel) bool {
 		writeStoreError(w, err)
 		return false
 	}
-	if _, err := notifier.Build(c.Type, c.Config); err != nil {
+	if err := notifier.Validate(c.Type, c.Config); err != nil {
 		writeFieldError(w, "config", err.Error())
 		return false
 	}

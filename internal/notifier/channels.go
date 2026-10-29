@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	neturl "net/url"
+	"regexp"
 	"strings"
 	"text/template"
 )
@@ -85,6 +87,31 @@ func (w *webhook) Send(ctx context.Context, n Notification) error {
 	})
 }
 
+// cabecalhoSemTLS recusa cabeçalho próprio em destino http.
+//
+// Os cabeçalhos existem para autenticar contra o destino, e por http
+// atravessam a rede em claro: quem estiver no caminho passa a publicar no
+// lugar do UpWatch. É a mesma regra do token do ntfy, com a mesma exceção
+// do loopback, que não sai da máquina.
+func cabecalhoSemTLS(raw json.RawMessage) error {
+	var cfg webhookConfig
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return fmt.Errorf("notifier: configuração inválida: %w", err)
+	}
+	if len(cfg.Headers) == 0 {
+		return nil
+	}
+	u, err := neturl.Parse(strings.TrimSpace(cfg.URL))
+	if err != nil {
+		return fmt.Errorf("notifier: a url do canal não é um endereço válido")
+	}
+	if strings.EqualFold(u.Scheme, "https") || loopback(u.Hostname()) {
+		return nil
+	}
+	return fmt.Errorf("notifier: com cabeçalhos, a url do canal precisa de https; " +
+		"por http eles atravessariam a rede em claro")
+}
+
 // recusarMapeamento barra o mapeamento nos canais de formato fixo.
 //
 // O corpo do Discord e do Slack é ditado pelo destino: um objeto com a
@@ -130,6 +157,7 @@ func (d *discord) Send(ctx context.Context, n Notification) error {
 	// O alvo entra como segunda linha em vez de virar campo estruturado:
 	// a notificação é lida no celular, e um cartão com metadados exige
 	// mais toques para chegar à mesma informação.
+	n = discordEscapeOutside(n)
 	conteudo := renderWith(d.tmpl, n)
 	if n.Monitor.Target != "" {
 		conteudo += "\n" + n.Monitor.Target
@@ -143,6 +171,62 @@ func (d *discord) Send(ctx context.Context, n Notification) error {
 		// payload diz que nada é permitido.
 		"allowed_mentions": map[string][]string{"parse": {}},
 	})
+}
+
+// markdownEscaper põe barra invertida antes do que o Markdown do Discord
+// e do Teams lê como formatação: ênfase, código, spoiler, citação,
+// título, lista e link. Os de começo de linha (#, -, >) são escapados em
+// qualquer posição, porque a causa pode trazer quebras de linha e o que
+// vem depois de cada uma é começo de linha.
+var markdownEscaper = escaperDe(markdownEspeciais)
+
+// markdownEspeciais são os caracteres que o markdownEscaper escapa.
+const markdownEspeciais = "\\*_~`|>#-[]()"
+
+// escaperDe põe barra invertida antes de cada caractere dado.
+func escaperDe(especiais string) *strings.Replacer {
+	pares := make([]string, 0, 2*len(especiais))
+	for _, c := range especiais {
+		pares = append(pares, string(c), `\`+string(c))
+	}
+	return strings.NewReplacer(pares...)
+}
+
+// palavra é um trecho sem espaço do texto, a unidade em que o Discord
+// reconhece um endereço.
+var palavra = regexp.MustCompile(`\S+`)
+
+// discordEscape escapa o Markdown de um texto que vem de fora.
+//
+// O endereço solto fica como está: o Discord o transforma em link pelo
+// texto cru, com as barras invertidas dentro, e um alvo como
+// https://api-interna.exemplo/saude viraria um link quebrado. Deixá-lo
+// intacto não abre brecha — o Discord engole a palavra inteira como um
+// link cujo texto é o próprio endereço, e o link disfarçado precisa do
+// colchete no começo, que aí é escapado.
+func discordEscape(s string) string {
+	return palavra.ReplaceAllStringFunc(s, func(p string) string {
+		minusc := strings.ToLower(p)
+		if strings.HasPrefix(minusc, "https://") || strings.HasPrefix(minusc, "http://") {
+			return p
+		}
+		return markdownEscaper.Replace(p)
+	})
+}
+
+// discordEscapeOutside escapa o texto que vem de fora antes de montar a
+// mensagem, como o Slack faz com o dele.
+//
+// "[Reautentique aqui](https://outro-lugar)" na causa de um push viraria
+// um link disfarçado dentro do alerta, e asteriscos ou um "#" no começo
+// da linha mudariam a cara do aviso. O modelo do canal fica de fora: quem
+// o escreve pode querer um link para o runbook.
+func discordEscapeOutside(n Notification) Notification {
+	n.Monitor.Name = discordEscape(n.Monitor.Name)
+	n.Monitor.Target = discordEscape(n.Monitor.Target)
+	n.Message = discordEscape(n.Message)
+	n.Group = discordEscape(n.Group)
+	return n
 }
 
 // ---------- Slack ----------
