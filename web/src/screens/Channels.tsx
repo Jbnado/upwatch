@@ -512,6 +512,7 @@ const MARCADORES: [string, string][] = [
   ["$message", "causa observada, quando houver"],
   ["$at", "instante da mudança"],
   ["$duration_seconds", "duração do estado anterior, como número"],
+  ["$group", "caminho do grupo, vazio sem grupo"],
   ["$text", "a frase pronta do aviso"],
 ];
 

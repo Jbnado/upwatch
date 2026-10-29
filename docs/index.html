@@ -643,8 +643,9 @@ docker compose -f compose.postgres.yaml up -d</code></pre>
         Sem configuração extra, o corpo é um envelope JSON com todos os
         campos do evento: <code>monitor</code>, <code>target</code>,
         <code>status</code>, <code>previous_status</code>,
-        <code>message</code>, <code>at</code> e
-        <code>duration_seconds</code>.
+        <code>message</code>, <code>at</code>,
+        <code>duration_seconds</code> e <code>group</code>, o caminho do
+        grupo do monitor.
       </p>
 
       <h3>Quando o destino já existe, a forma é dele</h3>

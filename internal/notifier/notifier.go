@@ -36,6 +36,10 @@ type Notification struct {
 	// Message é a causa observada, quando houver. É o que decide se
 	// alguém precisa levantar da cadeira.
 	Message string
+	// Group é o caminho do grupo do monitor ("RPA / prod"), vazio sem
+	// grupo. Monitores costumam se chamar só "api" ou "front", e é o
+	// grupo que diz qual sistema caiu.
+	Group string
 }
 
 // Status é o estado que passou a valer, em texto.
@@ -116,6 +120,13 @@ func Types() []string {
 // aconteceu e há quanto tempo — nessa ordem, sem preâmbulo.
 func Render(n Notification) string {
 	nome := n.Monitor.Name
+	// O grupo vem entre parênteses depois do nome, e não antes: o começo
+	// da frase continua sendo o monitor, que é o que a notificação do
+	// celular mostra cortada. Sem grupo a frase é a de sempre, para não
+	// quebrar filtro escrito contra ela.
+	if n.Group != "" {
+		nome += " (" + n.Group + ")"
+	}
 
 	switch n.Event.Kind {
 	case domain.ChangeDown:
@@ -208,6 +219,7 @@ type templateMonitor struct {
 // templateData é o que um modelo próprio enxerga.
 type templateData struct {
 	Monitor  templateMonitor
+	Group    string
 	Status   string
 	Message  string
 	Duration string
@@ -221,6 +233,7 @@ func newTemplateData(n Notification, texto string) templateData {
 			ID: n.Monitor.ID, Name: n.Monitor.Name, Target: n.Monitor.Target,
 			Type: n.Monitor.Type.String(), Tags: append([]string(nil), n.Monitor.Tags...),
 		},
+		Group:  n.Group,
 		Status: n.Status(), Message: n.Message,
 		Duration: humanDuration(n.Event.Duration), At: n.Event.At, Text: texto,
 	}
@@ -231,8 +244,9 @@ var exemploModelo = templateData{
 	Monitor: templateMonitor{
 		ID: 1, Name: "api", Target: "https://api.exemplo.com", Type: "http", Tags: []string{"producao"},
 	},
+	Group:  "RPA / prod",
 	Status: "down", Message: "status 502", Duration: "5 min",
-	At: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Text: "api está fora do ar: status 502",
+	At: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Text: "api (RPA / prod) está fora do ar: status 502",
 }
 
 // compileTemplate prepara o modelo do canal, se houver.
