@@ -53,6 +53,15 @@ type Options struct {
 	// com eles a topologia interna.
 	MetricsToken string
 
+	// SetupToken é exigido no POST /setup enquanto a instalação não tem
+	// conta. Quem sobe o processo o define (UPWATCH_SETUP_TOKEN) ou recebe
+	// um gerado no log.
+	//
+	// Vazio fecha o assistente em vez de abri-lo: a API montada sem token
+	// é um passo esquecido, e o esquecimento não pode entregar a instância
+	// a quem chegar primeiro.
+	SetupToken string
+
 	// PublicURL é o endereço externo da instalação, como
 	// "https://status.exemplo.com".
 	//
@@ -96,6 +105,7 @@ type API struct {
 	sessionTTL    time.Duration
 	publicURL     string
 	metricsToken  string
+	setupToken    string
 	version       string
 
 	resolver                  Resolver
@@ -107,6 +117,9 @@ type API struct {
 
 	// pushLimit segura o /push, que não tem login.
 	pushLimit *rateLimiter
+	// setupLimit segura o POST /setup, onde se tenta o token de
+	// configuração.
+	setupLimit *rateLimiter
 
 	// policies é a política de escopo de cada rota, declarada ao registrá-la.
 	policies map[string]scopePolicy
@@ -137,6 +150,7 @@ func New(opts Options) http.Handler {
 		sessionTTL:    opts.SessionTTL,
 		publicURL:     opts.PublicURL,
 		metricsToken:  opts.MetricsToken,
+		setupToken:    opts.SetupToken,
 		version:       opts.Version,
 		counters:      opts.Counters,
 		resolver:      opts.Resolver,
@@ -144,6 +158,7 @@ func New(opts Options) http.Handler {
 		allowScopedPrivateTargets: opts.AllowScopedPrivateTargets,
 		events:                    newEventHub(),
 		pushLimit:                 newRateLimiter(opts.Clock, pushBurst, pushPerSecond),
+		setupLimit:                newRateLimiter(opts.Clock, setupBurst, setupPerSecond),
 		policies:                  map[string]scopePolicy{},
 	}
 	return a.routes()
@@ -170,8 +185,10 @@ func (a *API) routes() http.Handler {
 		t.handle(http.MethodGet, "/openapi.yaml", policyPublic, a.handleOpenAPI)
 
 		// Assistente de primeiro acesso; ele mesmo recusa a segunda chamada.
+		// O POST exige o token de configuração e é limitado por origem,
+		// para o token não ser adivinhado por tentativa.
 		t.handle(http.MethodGet, "/setup", policyPublic, a.handleSetupStatus)
-		t.handle(http.MethodPost, "/setup", policyPublic, a.handleSetup)
+		t.on(r.With(a.setupLimit.limit)).handle(http.MethodPost, "/setup", policyPublic, a.handleSetup)
 
 		t.handle(http.MethodPost, "/auth/login", policyPublic, a.handleLogin)
 

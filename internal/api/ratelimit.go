@@ -27,6 +27,13 @@ const (
 	pushBurst     = 300
 	pushPerSecond = 5
 
+	// Limite do POST /setup por origem. O token gerado não se adivinha,
+	// mas o escolhido à mão em UPWATCH_SETUP_TOKEN pode ser fraco; com dez
+	// tentativas de rajada e uma a cada meio minuto depois, o dono que
+	// errou a cópia termina sem esperar, e um chute vira dias por milhar.
+	setupBurst     = 10
+	setupPerSecond = 1.0 / 30
+
 	// maxTrackedClients limita a memória do limitador. Passado o teto, os
 	// baldes cheios — de quem não está gastando nada — são esquecidos.
 	maxTrackedClients = 10_000

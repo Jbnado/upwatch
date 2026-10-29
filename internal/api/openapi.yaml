@@ -179,6 +179,19 @@ paths:
         Só funciona enquanto não existir nenhuma conta. O assistente não é
         autenticado, e mantê-lo disponível deixaria qualquer visitante
         criar uma conta e tomar a instalação.
+
+        Exige o token de configuração em `setup_token`, para a instância
+        recém-publicada não ser tomada por quem chegar antes do dono. O
+        token é o valor de `UPWATCH_SETUP_TOKEN` (ou do arquivo em
+        `UPWATCH_SETUP_TOKEN_FILE`); sem a variável, o processo gera um a
+        cada subida e o escreve só no log, uma vez. A comparação é em
+        tempo constante.
+
+        Instalação que já tem conta responde 409 antes de olhar o token&#58;
+        ele deixa de valer quando a conta passa a existir.
+
+        Limitado por origem, para o token não ser adivinhado por
+        tentativa&#58; o limite vale também para o token certo.
       security: []
       requestBody:
         required: true
@@ -186,10 +199,16 @@ paths:
           application/json:
             schema:
               type: object
-              required: [username, password]
+              required: [username, password, setup_token]
               properties:
                 username: { type: string, maxLength: 64 }
                 password: { type: string, minLength: 12, maxLength: 72 }
+                setup_token:
+                  type: string
+                  writeOnly: true
+                  description: |
+                    Token de configuração; está no log do servidor ou em
+                    `UPWATCH_SETUP_TOKEN`.
       responses:
         "201":
           description: Conta criada
@@ -197,8 +216,26 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/User" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "401":
+          description: |
+            Token de configuração ausente ou inválido; o erro aponta o campo
+            `setup_token`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "409":
           description: A instalação já possui uma conta
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          description: |
+            Tentativas demais da mesma origem. O limite é por endereço da
+            conexão; atrás de proxy reverso, todos dividem o do proxy.
+          headers:
+            Retry-After:
+              schema: { type: integer }
+              description: Segundos até a próxima tentativa valer
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }

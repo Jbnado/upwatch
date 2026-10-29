@@ -32,6 +32,7 @@ var sensitiveOptions = []struct {
 	{"DB_DSN", "postgres://upwatch:s3nh4@db:5432/upwatch", func(c config.Config) string { return c.Database.DSN }},
 	{"METRICS_TOKEN", "token-do-prometheus", func(c config.Config) string { return c.MetricsToken }},
 	{"SECRET_KEY", validKey, func(c config.Config) string { return c.SecretKey }},
+	{"SETUP_TOKEN", "token-de-configuracao-dos-testes", func(c config.Config) string { return c.SetupToken }},
 }
 
 // Variável de ambiente aparece em docker inspect, em /proc/<pid>/environ e

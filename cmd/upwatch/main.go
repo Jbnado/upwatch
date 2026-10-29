@@ -205,6 +205,13 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 		slog.Warn(aviso)
 	}
 
+	// Resolvido na subida, antes de a porta abrir: não há janela em que o
+	// assistente responda sem token.
+	setupToken, err := resolveSetupToken(context.Background(), authSvc.NeedsSetup, cfg.SetupToken, slog.Default())
+	if err != nil {
+		return nil, err
+	}
+
 	apiHandler := api.New(api.Options{
 		Store:         st,
 		Auth:          authSvc,
@@ -217,6 +224,7 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 		Counters:      counters,
 		SessionTTL:    cfg.SessionTTL,
 		MetricsToken:  cfg.MetricsToken,
+		SetupToken:    setupToken,
 
 		AllowScopedPrivateTargets: !cfg.RestrictPrivateTargets,
 	})

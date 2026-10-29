@@ -27,6 +27,10 @@ var epoch = time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
 
 const adminPassword = "uma-senha-bem-longa"
 
+// testSetupToken é o token de configuração inicial das instâncias de
+// teste. Valor óbvio de propósito: não protege nada fora da suíte.
+const testSetupToken = "token-de-configuracao-dos-testes"
+
 // TestMain reduz o custo do bcrypt: o custo de produção existe para
 // inviabilizar força bruta, e pagá-lo em cada caso só deixaria a suíte
 // lenta o bastante para as pessoas pararem de rodá-la.
@@ -79,6 +83,8 @@ func newServerWith(t *testing.T, ajuste func(*api.Options)) *server {
 		Checkers: reg,
 		Clock:    fake,
 		Resolver: resolvedorDosTestes,
+
+		SetupToken: testSetupToken,
 	}
 	if ajuste != nil {
 		ajuste(&opts)
@@ -159,7 +165,7 @@ func (s *server) setup(t *testing.T) {
 	t.Helper()
 
 	resp := s.do(t, http.MethodPost, "/api/v1/setup", map[string]any{
-		"username": "admin", "password": adminPassword,
+		"username": "admin", "password": adminPassword, "setup_token": testSetupToken,
 	})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("setup returned %d, want %d: %s", resp.StatusCode, http.StatusCreated, readBody(t, resp))
@@ -238,7 +244,7 @@ func TestSetupCreatesTheInitialAdmin(t *testing.T) {
 	s := newServer(t)
 
 	resp := s.do(t, http.MethodPost, "/api/v1/setup", map[string]any{
-		"username": "admin", "password": adminPassword,
+		"username": "admin", "password": adminPassword, "setup_token": testSetupToken,
 	})
 
 	assertStatus(t, resp, http.StatusCreated)
@@ -265,7 +271,7 @@ func TestSetupRejectsWeakPassword(t *testing.T) {
 	s := newServer(t)
 
 	resp := s.do(t, http.MethodPost, "/api/v1/setup", map[string]any{
-		"username": "admin", "password": "curta",
+		"username": "admin", "password": "curta", "setup_token": testSetupToken,
 	})
 
 	assertStatus(t, resp, http.StatusBadRequest)

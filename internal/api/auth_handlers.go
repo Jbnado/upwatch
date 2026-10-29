@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/Jbnado/upwatch/internal/auth"
 	"github.com/Jbnado/upwatch/internal/domain"
 )
 
@@ -26,10 +27,46 @@ type credentials struct {
 	Password string `json:"password"`
 }
 
+// setupRequest é o corpo do assistente: as credenciais da conta e o
+// token que prova acesso ao servidor.
+type setupRequest struct {
+	Username   string `json:"username"`
+	Password   string `json:"password"`
+	SetupToken string `json:"setup_token"`
+}
+
 // handleSetup cria a conta inicial.
+//
+// A ordem das conferências importa. Instalação já configurada responde
+// 409 antes de olhar o token: assim o token deixa de valer quando a conta
+// passa a existir, e uma instância configurada antes de ele existir (que
+// não tem token nenhum) continua respondendo como sempre.
 func (a *API) handleSetup(w http.ResponseWriter, r *http.Request) {
-	var body credentials
+	var body setupRequest
 	if !decodeJSON(w, r, &body) {
+		return
+	}
+
+	need, err := a.auth.NeedsSetup(r.Context())
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if !need {
+		writeStoreError(w, auth.ErrSetupComplete)
+		return
+	}
+
+	// Token vazio do lado do servidor recusa tudo, inclusive o corpo sem
+	// token: comparar "" com "" abriria o assistente justamente quando
+	// alguém esqueceu de configurá-lo.
+	if a.setupToken == "" || !subtleEqual(body.SetupToken, a.setupToken) {
+		var resp errorBody
+		resp.Error.Code = codeUnauthorized
+		resp.Error.Message = "token de configuração inválido; ele está no log do servidor ou em " +
+			"UPWATCH_SETUP_TOKEN"
+		resp.Error.Field = "setup_token"
+		writeJSON(w, http.StatusUnauthorized, resp)
 		return
 	}
 
