@@ -1041,7 +1041,12 @@ paths:
     get:
       tags: [data]
       summary: Exporta as batidas do período
-      description: A resposta é enviada em fluxo; períodos longos não são materializados em memória.
+      description: |
+        A resposta é enviada em fluxo; períodos longos não são materializados em memória.
+
+        No CSV, as colunas de texto (probe_id e message) que começam com
+        =, +, -, @, tabulação ou retorno de carro ganham um apóstrofo na
+        frente, para a planilha não as ler como fórmula. O JSON sai cru.
       parameters:
         - $ref: "#/components/parameters/PathID"
         - $ref: "#/components/parameters/From"
@@ -3008,7 +3013,14 @@ components:
         headers:
           type: object
           additionalProperties: { type: string }
-          description: Cabeçalhos extras, para destinos que exigem token próprio
+          description: |
+            Cabeçalhos extras, para destinos que exigem token próprio.
+            Com cabeçalho, a url precisa ser https (ou loopback): por http
+            eles atravessariam a rede em claro. Recusado ao criar e ao
+            editar; um canal gravado antes da regra continua entregando.
+            Nenhum canal segue redirecionamento - a resposta 3xx é falha
+            definitiva da entrega, para os cabeçalhos não irem a outro
+            host.
         template:
           type: string
           description: |
@@ -3020,6 +3032,13 @@ components:
             do monitor nunca está ao alcance do modelo - ela guarda
             senhas e tokens -, e um modelo que tenta ler campo
             inexistente, como .Monitor.Config, é recusado no cadastro.
+
+            Limites, conferidos no cadastro - até 8 KiB; range só sobre
+            .Monitor.Tags e sem range aninhado; sem define, template e
+            block; saída e cada texto de print, printf, html, js e
+            urlquery até 64 KiB; printf sem largura ou precisão acima de
+            1000 nem vinda de argumento. Na entrega, o modelo que passa de
+            64 KiB dá lugar à frase padrão.
         body_template:
           description: |
             Forma do corpo inteiro, e não só da frase. Só no canal
