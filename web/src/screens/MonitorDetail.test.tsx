@@ -85,6 +85,7 @@ const QUEDA: Problem = {
   since: new Date(Date.now() - 12 * 60_000).toISOString(),
   cause: "connection refused",
   last_check_at: "2026-10-28T11:43:00Z",
+  dependents: 0,
 };
 
 const FALHA: MonitorEvent = {

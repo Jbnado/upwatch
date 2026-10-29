@@ -216,6 +216,15 @@ function ProblemRow({ problem: p }: { problem: Problem }) {
       <span className="flex min-w-0 flex-wrap items-baseline gap-x-2 pl-[15px] sm:pl-0">
         <span className="truncate text-body font-medium text-ink">{p.name}</span>
         <span className={`text-body ${PROBLEM_TONE[p.status]}`}>{problemWord(p.status, p.type)}</span>
+        {p.dependents > 0 && (
+          // Os dependentes não aparecem na lista: o problema é este. Sem a
+          // conta, quem olha não sabe que as verificações também pararam.
+          <span className="text-small text-ink-3">
+            {p.dependents === 1
+              ? "1 dependente sem sinal"
+              : `${p.dependents} dependentes sem sinal`}
+          </span>
+        )}
       </span>
 
       <span className="tabular flex items-baseline gap-3 whitespace-nowrap text-small text-ink-3">

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { api } from "../api/client";
-import type { Monitor, Status, Summary as SummaryDTO } from "../api/types";
+import type { AffectedBy, Monitor, Status, Summary as SummaryDTO } from "../api/types";
 import { Pulse } from "../components/Pulse";
 import type { PulseSample } from "../components/pulse-bars";
 import { RangePicker } from "../components/RangePicker";
@@ -15,6 +15,7 @@ import {
   StatusDot,
   TextLink,
 } from "../components/ui";
+import { rotuloCalado } from "../lib/dependencies";
 import { ago, latency, uptime } from "../lib/format";
 import { byProblem, crumb, matches, shortName, type StateFilter } from "../lib/groups";
 import { DEFAULT_RANGE, windowFor, type Range } from "../lib/ranges";
@@ -51,6 +52,8 @@ type Reading = {
   p95: number | null;
   /** Instante da última verificação, do servidor. */
   lastCheckAt?: string | null;
+  /** O pai em queda que cala o monitor, quando há. */
+  affectedBy?: AffectedBy;
 };
 
 /** O grupo que a lista mostra; id nulo é "Sem grupo". */
@@ -393,6 +396,13 @@ function Row({
           {monitor.target}
         </span>
         {!monitor.enabled && <span className="eyebrow shrink-0">pausado</span>}
+        {reading.affectedBy && (
+          // A falha não é dele: o pai caiu. Cinza e dizendo quem, para não
+          // parecer mais um vermelho a investigar.
+          <span className="shrink-0 truncate text-micro text-unknown">
+            {rotuloCalado(reading.affectedBy)}
+          </span>
+        )}
         {stale && (
           // Monitor que parou de ser verificado é uma falha própria, não
           // do alvo; sem este aviso ela passaria por "tudo estável".
@@ -596,7 +606,10 @@ function leitura(monitor: Monitor, resumo: SummaryDTO | undefined): Reading {
       status: p.status,
       latencyMs: p.latency_ms,
     })),
-    status: resumo.status,
+    // Calado pelo pai, o monitor não está sendo medido: sem medição, e não
+    // o último estado confirmado, que diria "no ar" sem ninguém conferir.
+    status: resumo.affected_by ? "unknown" : resumo.status,
+    affectedBy: resumo.affected_by,
     uptimePercent: resumo.uptime_percent,
     p95: resumo.latency_p95_ms,
     lastCheckAt: resumo.last_check_at,

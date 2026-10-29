@@ -25,6 +25,10 @@ export type Monitor = {
   confirmation_threshold: number;
   degraded_latency_ms: number;
   config?: Record<string, unknown>;
+  /**
+   * Monitor do qual este depende, como a sonda de quem a verificação
+   * depende. Com o pai fora do ar, este não avisa e a falha vira lacuna.
+   */
   parent_id?: number;
   /** Grupo folha do monitor; null é "Sem grupo". */
   group_id?: number | null;
@@ -49,7 +53,16 @@ export type MonitorInput = {
   tags?: string[];
   /** O PUT sobrescreve: omitir move o monitor para "Sem grupo". */
   group_id?: number | null;
+  /** O PUT sobrescreve: omitir desliga o pai. */
+  parent_id?: number | null;
 };
+
+/**
+ * Ancestral em queda que cala o monitor. id nulo e nome ausente quando a
+ * conta não enxerga o ancestral: o filho mostra que está calado sem
+ * revelar o que existe fora do escopo.
+ */
+export type AffectedBy = { id: number | null; name?: string };
 
 /**
  * Resumo de uma janela, calculado no servidor.
@@ -83,6 +96,11 @@ export type Summary = {
   down: number;
   unknown: number;
   series: SummaryPoint[];
+  /**
+   * Presente quando um ancestral em queda cala o monitor. A tela mostra
+   * "sem sinal — pai fora" no lugar do estado: a falha não é dele.
+   */
+  affected_by?: AffectedBy;
 };
 
 export type SummaryPoint = {
@@ -163,7 +181,9 @@ export type GroupSummary = {
   down: number;
   unknown: number;
   paused: number;
-  /** down + degraded + unknown. */
+  /** Calados por um pai em queda: nem problema, nem no ar. */
+  affected: number;
+  /** down + degraded + unknown, sem os calados. */
   problems: number;
 };
 
@@ -180,6 +200,8 @@ export type Problem = {
   since: string;
   cause: string;
   last_check_at: string | null;
+  /** Monitores calados por esta queda; eles não aparecem na lista. */
+  dependents: number;
 };
 
 /**

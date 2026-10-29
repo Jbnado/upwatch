@@ -26,6 +26,7 @@ function problema(over: Partial<Problem>): Problem {
     since: "2026-10-28T11:31:00Z",
     cause: "connection refused",
     last_check_at: "2026-10-28T11:43:00Z",
+    dependents: 0,
     ...over,
   };
 }
