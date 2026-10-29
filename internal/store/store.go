@@ -167,6 +167,12 @@ type MonitorRepo interface {
 	Delete(ctx context.Context, id int64) error
 	List(ctx context.Context, f MonitorFilter) (Page[domain.Monitor], error)
 
+	// SetParent põe os monitores ids sob o pai (nil desliga), tudo ou
+	// nada: um id ou o pai inexistente devolvem ErrNotFound sem gravar
+	// nenhum. Não mexe no resto da linha, e por isso não recomeça a
+	// espera do push. Ciclos são decisão de quem chama (ParentCycle).
+	SetParent(ctx context.Context, parentID *int64, ids []int64) error
+
 	// FindByPushToken devolve o monitor dono do token de push, ou
 	// ErrNotFound. Token vazio não acha ninguém.
 	//
@@ -254,7 +260,12 @@ type StateRepo interface {
 
 // IncidentFilter seleciona incidentes numa listagem.
 type IncidentFilter struct {
-	Page PageFilter
+	// Limit é o tamanho da página, normalizado como em PageFilter.
+	Limit int
+	// BeforeID pagina para trás: só incidentes com id menor. A lista sai
+	// do mais recente para o mais antigo, e o cursor da página seguinte é
+	// o id do último item desta. Zero começa do mais recente.
+	BeforeID int64
 	// MonitorID zero traz de todos os monitores.
 	MonitorID int64
 	// OnlyOpen restringe aos que ainda não terminaram.

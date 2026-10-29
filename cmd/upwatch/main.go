@@ -170,6 +170,12 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A regra desligada vale também para o monitor marcado antes, com ela
+	// ligada: a marca guarda quem escolheu o destino, e esta chave diz se
+	// isso ainda importa.
+	if !cfg.RestrictPrivateTargets {
+		registry.IgnoreInternalRestriction()
+	}
 
 	// A sentinela evita que perder conectividade dispare alerta sobre
 	// todos os alvos ao mesmo tempo, quando eles seguem no ar.
@@ -205,6 +211,13 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 		slog.Warn(aviso)
 	}
 
+	// Resolvido na subida, antes de a porta abrir: não há janela em que o
+	// assistente responda sem token.
+	setupToken, err := resolveSetupToken(context.Background(), authSvc.NeedsSetup, cfg.SetupToken, slog.Default())
+	if err != nil {
+		return nil, err
+	}
+
 	apiHandler := api.New(api.Options{
 		Store:         st,
 		Auth:          authSvc,
@@ -217,6 +230,7 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 		Counters:      counters,
 		SessionTTL:    cfg.SessionTTL,
 		MetricsToken:  cfg.MetricsToken,
+		SetupToken:    setupToken,
 
 		AllowScopedPrivateTargets: !cfg.RestrictPrivateTargets,
 	})

@@ -813,3 +813,25 @@ func TestPushScheduleExpectsTheRepeatedHourOnceInSaoPaulo(t *testing.T) {
 		t.Errorf("the next day: Status = %v (%s), want the 23:30 run enforced", nextDay.Status, nextDay.Message)
 	}
 }
+
+// O motor segura a falha de um filho até o pai ter tido a chance de
+// perceber a própria queda. Para o push, essa chance só chega depois da
+// janela inteira — intervalo e folga —, e um prazo do tamanho do
+// intervalo soltaria o filho antes de o pai poder dizer qualquer coisa.
+func TestDetectionWindowCoversThePushGrace(t *testing.T) {
+	http := domain.Monitor{Type: domain.MonitorHTTP, Interval: time.Minute}
+	if got := checker.DetectionWindow(http); got != time.Minute {
+		t.Errorf("http window = %v, want the interval", got)
+	}
+
+	push := domain.Monitor{Type: domain.MonitorPush, Interval: time.Minute,
+		Config: json.RawMessage(`{"token":"x","grace_period_seconds":300}`)}
+	if got := checker.DetectionWindow(push); got != 6*time.Minute {
+		t.Errorf("push window = %v, want interval plus explicit grace (6m)", got)
+	}
+
+	push.Config = json.RawMessage(`{"token":"x"}`)
+	if got := checker.DetectionWindow(push); got != 2*time.Minute {
+		t.Errorf("push window = %v, want interval plus implicit grace (2m)", got)
+	}
+}

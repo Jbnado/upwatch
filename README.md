@@ -45,6 +45,13 @@ medição" em vez de "fora do ar". Essa sonda só ganha esse poder depois
 de provar que funciona — uma sonda bloqueada por firewall silenciaria
 todos os alertas para sempre.
 
+**Um aviso por causa, não um por sintoma.** Um monitor pode depender de
+outro — a verificação do Redis, do sinal de vida da sonda que a faz.
+Com o pai fora do ar, a falha do filho não avisa e vira lacuna no
+histórico, e o aviso do pai diz quantos dependentes ficaram calados;
+quando o pai volta, o filho que continuar fora avisa. Pai sem medição
+ou pausado não cala ninguém, e ciclos são recusados no cadastro.
+
 **Avisa** por webhook, Discord, Slack, [e-mail](#e-mail) e [ntfy](#ntfy),
 com um botão de teste em cada canal. Descobrir que o alerta não chega
 durante a queda é descobrir tarde. O webhook genérico aceita cabeçalhos
@@ -118,6 +125,25 @@ docker compose -f compose.postgres.yaml up -d
 A senha do banco, o DSN e a chave dos segredos vão por arquivo (ver
 [Segredos](#segredos)).
 
+### Primeiro acesso
+
+Abra a interface e crie a conta de administração. A tela pede o **token
+de configuração**: sem ele, uma instância recém-publicada na internet
+seria de quem chegasse antes de você. O token está no log do processo,
+numa linha só, escrita uma vez na subida:
+
+```bash
+docker compose logs upwatch | grep token_de_configuracao
+```
+
+Para escolher o valor em vez de ler do log — num deploy automatizado,
+por exemplo —, defina `UPWATCH_SETUP_TOKEN` (ou
+`UPWATCH_SETUP_TOKEN_FILE`); aí ele não vai para o log. O gerado muda a
+cada reinício, e qualquer um deles deixa de valer quando a conta passa a
+existir: instalação já configurada não gera token nem o menciona. O
+`POST /api/v1/setup` compara o token em tempo constante e limita as
+tentativas por origem.
+
 ### Binário
 
 Baixe o executável da página de releases. Ele é estático e não depende de
@@ -147,8 +173,9 @@ configuração nenhuma e uma instalação séria versiona o YAML.
 | `UPWATCH_SECURE_COOKIES` | `false` | Marca o cookie como Secure; ligue ao servir por HTTPS |
 | `UPWATCH_PUBLIC_URL` | vazio | Endereço externo, para o feed da página pública usar URLs absolutas |
 | `UPWATCH_METRICS_TOKEN` | vazio | Exige `Authorization: Bearer <token>` em `/metrics`; vazio deixa aberto enquanto não houver conta restrita; aceita `_FILE` |
+| `UPWATCH_SETUP_TOKEN` | vazio | Token exigido na tela de primeiro acesso; vazio, um aleatório é gerado na subida e escrito só no log; sem efeito depois que a conta existe; aceita `_FILE` (ver [Primeiro acesso](#primeiro-acesso)) |
 | `UPWATCH_SECRET_KEY` | vazio | Chave (base64 de 32 bytes) que cifra as credenciais no banco; vazia, o SQLite usa a gerada ao lado do banco; aceita `_FILE` (ver [Segredos](#segredos)) |
-| `UPWATCH_RESTRICT_PRIVATE_TARGETS` | `true` | Recusa, para contas com acesso restrito a grupos, monitor cujo alvo resolva para a rede interna do servidor |
+| `UPWATCH_RESTRICT_PRIVATE_TARGETS` | `true` | Recusa, para contas com acesso restrito a grupos, monitor cujo alvo resolva para a rede interna do servidor, no cadastro e na conexão |
 
 Durações aceitam sufixo de dias: `90d` é o mesmo que `2160h`.
 
@@ -168,10 +195,23 @@ nome que não resolve — em todo tipo que conecta, inclusive Redis,
 PostgreSQL e MySQL. Contas que alcançam todos os grupos não são
 afetadas, e editar sem mudar o destino escolhido por outra pessoa
 continua permitido. Desligue se a instalação existe justamente para os
-times monitorarem a rede interna. A conferência ainda é só no cadastro:
-o checker não confere na hora de conectar, e um nome que troca de
-endereço depois (DNS rebinding) ou um redirecionamento HTTP para dentro
-passam (issue #59).
+times monitorarem a rede interna.
+
+A conferência do cadastro resolve o nome naquela hora, e por isso o
+checker confere de novo ao conectar, com o endereço efetivamente
+conectado, todo monitor cujo destino foi escolhido por conta restrita:
+um nome que passa a apontar para dentro depois (DNS rebinding) e um
+redirecionamento HTTP para dentro derrubam a verificação com a causa "o
+destino aponta para a rede interna do servidor", sem dizer o endereço.
+Vale para cada salto do redirecionamento e para todos os tipos; no ping,
+o pacote vai ao endereço conferido, e o DNS sem resolvedor configurado
+continua usando o do sistema. Esses monitores ignoram `HTTPS_PROXY`:
+atrás de um proxy é ele quem conecta, e o servidor não saberia para
+onde. O monitor salvo antes desta conferência existir só a recebe quando
+uma conta restrita mudar o destino de novo. Desligar a regra desliga as
+duas conferências, inclusive para o monitor já salvo. A sonda
+(`upwatch-probe`) não faz nenhuma das duas: ela roda dentro da rede
+privada justamente para alcançá-la.
 
 ## Segredos
 
@@ -255,7 +295,8 @@ aponte `UPWATCH_SECRET_KEY_FILE` para a nova antes de subir.
 
 ### Opções sensíveis por arquivo (`_FILE`)
 
-`UPWATCH_DB_DSN`, `UPWATCH_METRICS_TOKEN` e `UPWATCH_SECRET_KEY` aceitam
+`UPWATCH_DB_DSN`, `UPWATCH_METRICS_TOKEN`, `UPWATCH_SECRET_KEY` e
+`UPWATCH_SETUP_TOKEN` aceitam
 também `<NOME>_FILE`, com o caminho de um arquivo cujo conteúdo é o
 valor — a convenção das imagens oficiais, e o que o Docker Swarm, o
 Kubernetes e o Compose montam como secret. Variável de ambiente aparece
@@ -346,22 +387,26 @@ Sem configuração extra, o corpo é este envelope:
 
 ```json
 {
-  "text": "api-de-producao está fora do ar: connection refused",
-  "monitor": "api-de-producao",
+  "text": "api (RPA / prod) está fora do ar: connection refused",
+  "monitor": "api",
   "monitor_id": 7,
   "target": "https://api.exemplo.com",
   "status": "down",
   "previous_status": "up",
   "message": "connection refused",
   "at": "2026-07-30T18:42:11Z",
-  "duration_seconds": 0
+  "duration_seconds": 0,
+  "group": "RPA / prod"
 }
 ```
 
 `status` e `previous_status` são `up`, `down`, `degraded` ou `unknown`.
 `duration_seconds` é quanto durou o estado **anterior**: na queda vem 0, na
 volta vem o tempo que o alvo ficou fora. `message` é a causa observada e
-pode vir vazia.
+pode vir vazia. `group` é o caminho do grupo do monitor (`RPA / prod`), e
+vem vazio para monitor sem grupo — monitores costumam se chamar só `api`
+ou `front`, e é o grupo que diz qual sistema caiu. Pelo mesmo motivo, a
+frase padrão traz o grupo entre parênteses depois do nome.
 
 ### Escolhendo a forma do corpo
 
@@ -392,6 +437,7 @@ marcadores são substituídos:
 | `$message` | Causa observada, quando houver |
 | `$at` | Instante da mudança |
 | `$duration_seconds` | Duração do estado anterior, como número |
+| `$group` | Caminho do grupo (`RPA / prod`), vazio sem grupo |
 | `$text` | A frase pronta do aviso |
 
 Também vale `${nome}`, para quando o marcador encosta em texto que
@@ -417,8 +463,8 @@ corpo deles é ditado pelo destino.
 Em webhook, Discord e Slack, `template` troca a frase padrão por um modelo
 [text/template](https://pkg.go.dev/text/template) do Go, como
 `"{{.Monitor.Name}} => {{.Status}}"`. O modelo enxerga `Monitor` (`ID`,
-`Name`, `Target`, `Type` e `Tags`), `Status`, `Message`, `Duration`, `At` e
-`Text`, a frase pronta. A configuração do monitor fica de fora: ela guarda
+`Name`, `Target`, `Type` e `Tags`), `Group`, `Status`, `Message`,
+`Duration`, `At` e `Text`, a frase pronta. A configuração do monitor fica de fora: ela guarda
 a senha do check HTTP e o token do push, e quem cadastra canal não precisa
 deles para escrever uma frase. Um modelo que tenta ler campo que não está
 na lista, como `.Monitor.Config`, é recusado no cadastro. Os marcadores de
@@ -443,8 +489,8 @@ na prática, estão fora do ar. Os monitores desses tipos entram de verdade:
 - **Redis** envia `PING` (com usuário de ACL, senha e TLS opcionais) e,
   se configurado, acusa quando `used_memory` passa de um limite. Aceita
   também condições sobre comandos de leitura — só `SCARD`, `LLEN`, `GET`,
-  `EXISTS`, `HGET`, `ZCARD`, `DBSIZE` e `INFO`, nunca comando livre. Para
-  vigiar workers do RQ, por exemplo:
+  `EXISTS`, `HGET`, `ZCARD`, `DBSIZE`, `INFO` e `WORKERS`, nunca comando
+  livre. Para vigiar workers do RQ, por exemplo:
 
   ```json
   {"assertions": [
@@ -455,6 +501,30 @@ na prática, estão fora do ar. Os monitores desses tipos entram de verdade:
 
   Sem worker, a causa do alerta diz `SCARD rq:workers:default = 0,
   esperado >= 1`.
+
+  Filas **Bull e BullMQ** não registram worker em chave nenhuma, e a chave
+  `bull:<fila>:stalled-check` não serve: ela expira e só é recriada na
+  checagem seguinte, então some por instantes com o worker de pé. Cada
+  worker dá à sua conexão o nome `<prefixo>:<base64 da fila>` (o BullMQ
+  acrescenta `:w:<nome>` quando o worker tem nome), e `WORKERS` conta essas
+  conexões no `CLIENT LIST`, como o `Queue.getWorkers()` das duas
+  bibliotecas. A chave é o prefixo e a fila, como aparecem nas chaves da
+  fila (`bull:excel-render:wait`):
+
+  ```json
+  {"assertions": [
+    {"command": "WORKERS", "key": "bull:excel-render", "op": "gte", "value": 1},
+    {"command": "LLEN",    "key": "bull:excel-render:wait", "op": "lt", "value": 500}
+  ]}
+  ```
+
+  Sem worker, a causa diz `WORKERS bull:excel-render = 0, esperado >= 1`.
+  Só a contagem sai na causa: o `CLIENT LIST` traz endereço e nome de toda
+  conexão do Redis, e nada disso vai para o alerta. O usuário de ACL
+  precisa de `+client|list`; sem ela, a causa diz isso. Serviço gerenciado
+  que desliga `CLIENT` não suporta a asserção. A fila é o que vem depois do
+  último `:` (o BullMQ não aceita `:` no nome da fila), e a contagem é por
+  conexão: um processo com dois workers da mesma fila conta dois.
 
 - **PostgreSQL e MySQL** abrem sessão e executam uma consulta (padrão
   `SELECT 1`) numa transação somente leitura; a latência é a duração da
@@ -479,7 +549,13 @@ CREATE USER 'upwatch'@'%' IDENTIFIED BY '...';
 ```
 # Redis: só os comandos que o monitor usa
 ACL SETUSER upwatch on >... ~rq:* -@all +ping +info +scard +llen
+# com WORKERS, acrescente
+ACL SETUSER upwatch +client|list
 ```
+
+`CLIENT LIST` mostra ao usuário do monitor o endereço e o nome de todas as
+conexões do Redis; a senha fica guardada no UpWatch, mas é isso que ela
+passa a abrir. Só a contagem chega à causa do alerta.
 
 Ao editar o monitor, deixar a senha em branco mantém a guardada — exceto
 quando o endereço muda ou o TLS fica mais fraco: aí ela precisa ser

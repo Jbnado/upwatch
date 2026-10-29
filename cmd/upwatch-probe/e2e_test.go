@@ -30,6 +30,10 @@ import (
 
 const alpineImage = "alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a"
 
+// e2eSetupToken é o token de configuração inicial do central da ponta a
+// ponta, fixado pela variável para o teste não precisar ler o log.
+const e2eSetupToken = "token-de-configuracao-do-e2e"
+
 type e2e struct {
 	t       *testing.T
 	id      string
@@ -190,6 +194,7 @@ func TestE2EProbeReportsThroughTheCentral(t *testing.T) {
 	e.docker("create", "--name", e.name("central"), "--network", e.network, "--network-alias", "central",
 		"-p", "127.0.0.1::8080",
 		"-e", "UPWATCH_LISTEN=0.0.0.0:8080", "-e", "UPWATCH_DB_DSN=/tmp/upwatch.db",
+		"-e", "UPWATCH_SETUP_TOKEN="+e2eSetupToken,
 		alpineImage, "/upwatch")
 	e.docker("cp", central, e.name("central")+":/upwatch")
 	e.docker("start", e.name("central"))
@@ -204,7 +209,8 @@ func TestE2EProbeReportsThroughTheCentral(t *testing.T) {
 		return code == http.StatusOK
 	})
 	creds := map[string]string{"username": "admin", "password": "senha-longa-do-e2e"}
-	if code, raw := e.request(http.MethodPost, "/api/v1/setup", creds); code != http.StatusCreated {
+	setup := map[string]string{"username": creds["username"], "password": creds["password"], "setup_token": e2eSetupToken}
+	if code, raw := e.request(http.MethodPost, "/api/v1/setup", setup); code != http.StatusCreated {
 		t.Fatalf("setup = %d %s", code, raw)
 	}
 	if code, raw := e.request(http.MethodPost, "/api/v1/auth/login", creds); code != http.StatusOK {

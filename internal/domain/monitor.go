@@ -159,6 +159,20 @@ type Monitor struct {
 	// configuração; vazio fora do push.
 	PushToken string `json:"-"`
 
+	// RestrictInternal faz o checker recusar, no momento da conexão, o
+	// endereço da rede interna do servidor (ver checker.InternalAddr).
+	//
+	// Vale para o monitor cujo destino foi escolhido por conta com acesso
+	// restrito a grupos, com UPWATCH_RESTRICT_PRIVATE_TARGETS ligada. A
+	// conferência do cadastro resolve o nome naquela hora; sem a da
+	// conexão, um nome que passa a apontar para dentro (DNS rebinding) ou
+	// um redirecionamento HTTP para dentro levariam o servidor até lá.
+	//
+	// Quem o define é a API, a partir de quem salvou; nunca vem do corpo
+	// do pedido, e por isso fica fora do JSON. A sonda não o liga: ela
+	// existe para alcançar a rede privada onde roda.
+	RestrictInternal bool `json:"-"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 

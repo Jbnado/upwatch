@@ -59,6 +59,7 @@ func monitoringCases() []conformanceCase {
 		{"MonitorCreateAssignsID", testMonitorCreateAssignsID},
 		{"MonitorCreateSetsTimestamps", testMonitorCreateSetsTimestamps},
 		{"MonitorRoundTripsAllFields", testMonitorRoundTripsAllFields},
+		{"MonitorKeepsTheInternalRestriction", testMonitorKeepsTheInternalRestriction},
 		{"MonitorGetMissingReturnsNotFound", testMonitorGetMissingReturnsNotFound},
 		{"MonitorDuplicateNameReturnsConflict", testMonitorDuplicateNameReturnsConflict},
 		{"MonitorUpdatePersistsChanges", testMonitorUpdatePersistsChanges},
@@ -78,6 +79,8 @@ func monitoringCases() []conformanceCase {
 		{"MonitorListTagFilterIsExact", testMonitorListTagFilterIsExact},
 		{"MonitorListTagFilterEscapesWildcards", testMonitorListTagFilterEscapesWildcards},
 		{"MonitorListCapsLimit", testMonitorListCapsLimit},
+		{"MonitorSetParentLinksMany", testMonitorSetParentLinksMany},
+		{"MonitorSetParentIsAllOrNothing", testMonitorSetParentIsAllOrNothing},
 
 		{"HeartbeatWriteAndQuery", testHeartbeatWriteAndQuery},
 		{"HeartbeatQueryIsHalfOpenRange", testHeartbeatQueryIsHalfOpenRange},
@@ -248,6 +251,59 @@ func testMonitorRoundTripsAllFields(t *testing.T, newStore Factory) {
 	}
 	if len(got.Tags) != 2 || got.Tags[0] != "prod" || got.Tags[1] != "crítico" {
 		t.Errorf("Tags = %v, want [prod crítico]", got.Tags)
+	}
+}
+
+// A marca de alvo restrito é o que faz o checker recusar a rede interna
+// na conexão (issue #59). Um backend que a perdesse na gravação, ou só
+// numa das leituras, deixaria o monitor de conta restrita alcançar
+// 127.0.0.1 sem que nada no cadastro indicasse.
+func testMonitorKeepsTheInternalRestriction(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	m := newMonitor("restrito")
+	m.RestrictInternal = true
+	if err := s.Monitors().Create(ctx, &m); err != nil {
+		t.Fatalf("Create returned unexpected error: %v", err)
+	}
+	free := newMonitor("livre")
+	if err := s.Monitors().Create(ctx, &free); err != nil {
+		t.Fatalf("Create returned unexpected error: %v", err)
+	}
+
+	got, err := s.Monitors().Get(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("Get returned unexpected error: %v", err)
+	}
+	if !got.RestrictInternal {
+		t.Error("Get: RestrictInternal = false, want true")
+	}
+
+	page, err := s.Monitors().List(ctx, store.MonitorFilter{})
+	if err != nil {
+		t.Fatalf("List returned unexpected error: %v", err)
+	}
+	for _, it := range page.Items {
+		if want := it.ID == m.ID; it.RestrictInternal != want {
+			t.Errorf("List: monitor %q RestrictInternal = %v, want %v", it.Name, it.RestrictInternal, want)
+		}
+	}
+
+	got.RestrictInternal = false
+	if err := s.Monitors().Update(ctx, got); err != nil {
+		t.Fatalf("Update returned unexpected error: %v", err)
+	}
+	if got, _ := s.Monitors().Get(ctx, m.ID); got.RestrictInternal {
+		t.Error("after Update to false: RestrictInternal = true")
+	}
+
+	free.RestrictInternal = true
+	if err := s.Monitors().Update(ctx, free); err != nil {
+		t.Fatalf("Update returned unexpected error: %v", err)
+	}
+	if got, _ := s.Monitors().Get(ctx, free.ID); !got.RestrictInternal {
+		t.Error("after Update to true: RestrictInternal = false")
 	}
 }
 
@@ -1712,5 +1768,76 @@ func testConcurrentHeartbeatWrites(t *testing.T, newStore Factory) {
 	}
 	if len(got) != writers*perWriter {
 		t.Errorf("stored %d heartbeats, want %d", len(got), writers*perWriter)
+	}
+}
+
+// Ligar as quatro verificações de uma sonda ao sinal de vida dela é o
+// caso comum, e fazê-lo um a um pela edição completa regravaria a
+// configuração de cada monitor — com o risco de recomeçar a espera do
+// push por uma mudança que não mexeu nela.
+func testMonitorSetParentLinksMany(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	pai := mustCreateMonitor(t, s, "sonda")
+	a := mustCreateMonitor(t, s, "redis")
+	b := mustCreateMonitor(t, s, "postgres")
+
+	antes, err := s.Monitors().Get(ctx, a)
+	if err != nil {
+		t.Fatalf("Get returned unexpected error: %v", err)
+	}
+
+	if err := s.Monitors().SetParent(ctx, &pai, []int64{a, b}); err != nil {
+		t.Fatalf("SetParent returned unexpected error: %v", err)
+	}
+	for _, id := range []int64{a, b} {
+		got, err := s.Monitors().Get(ctx, id)
+		if err != nil {
+			t.Fatalf("Get returned unexpected error: %v", err)
+		}
+		if got.ParentID == nil || *got.ParentID != pai {
+			t.Errorf("monitor %d ParentID = %v, want %d", id, got.ParentID, pai)
+		}
+		if id == a && !got.RearmedAt.Equal(antes.RearmedAt) {
+			t.Errorf("RearmedAt moved from %v to %v; linking a parent changes no wait", antes.RearmedAt, got.RearmedAt)
+		}
+	}
+
+	if err := s.Monitors().SetParent(ctx, nil, []int64{a}); err != nil {
+		t.Fatalf("SetParent(nil) returned unexpected error: %v", err)
+	}
+	got, err := s.Monitors().Get(ctx, a)
+	if err != nil {
+		t.Fatalf("Get returned unexpected error: %v", err)
+	}
+	if got.ParentID != nil {
+		t.Errorf("ParentID = %d after unlinking, want nil", *got.ParentID)
+	}
+}
+
+// Um id que não existe recusa o lote inteiro. Gravar metade deixaria a
+// sonda com parte das verificações ligadas, e quem pediu só saberia
+// lendo monitor por monitor.
+func testMonitorSetParentIsAllOrNothing(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	pai := mustCreateMonitor(t, s, "sonda")
+	a := mustCreateMonitor(t, s, "redis")
+
+	err := s.Monitors().SetParent(ctx, &pai, []int64{a, 9999})
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("SetParent with a missing child returned %v, want ErrNotFound", err)
+	}
+	got, err := s.Monitors().Get(ctx, a)
+	if err != nil {
+		t.Fatalf("Get returned unexpected error: %v", err)
+	}
+	if got.ParentID != nil {
+		t.Errorf("ParentID = %d, want the batch rolled back", *got.ParentID)
+	}
+
+	ausente := int64(9999)
+	if err := s.Monitors().SetParent(ctx, &ausente, []int64{a}); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("SetParent with a missing parent returned %v, want ErrNotFound", err)
 	}
 }

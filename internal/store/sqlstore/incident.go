@@ -149,10 +149,19 @@ func (r *incidentRepo) Current(ctx context.Context, monitorID int64) (domain.Inc
 }
 
 func (r *incidentRepo) List(ctx context.Context, f store.IncidentFilter) (store.Page[domain.Incident], error) {
-	f.Page = f.Page.Normalize()
+	limit := store.PageFilter{Limit: f.Limit}.Normalize().Limit
 
-	conds := []string{"id > ?"}
-	args := []any{f.Page.AfterID}
+	// O cursor corta na direção da ordem: a lista sai em id decrescente,
+	// então a página seguinte é a dos ids menores que o último visto.
+	// Cortar pelos maiores, como antes, devolvia de novo os mais recentes.
+	var (
+		conds []string
+		args  []any
+	)
+	if f.BeforeID > 0 {
+		conds = append(conds, "id < ?")
+		args = append(args, f.BeforeID)
+	}
 
 	if f.MonitorID > 0 {
 		conds = append(conds, "monitor_id = ?")
@@ -165,10 +174,13 @@ func (r *incidentRepo) List(ctx context.Context, f store.IncidentFilter) (store.
 		conds = append(conds, "monitor_id IN (SELECT id FROM monitor WHERE "+cond+")")
 		args = append(args, condArgs...)
 	}
-	args = append(args, f.Page.Limit+1)
+	args = append(args, limit+1)
 
-	q := `SELECT ` + incidentColumns + ` FROM incident WHERE ` +
-		joinAnd(conds) + ` ORDER BY id DESC LIMIT ?`
+	q := `SELECT ` + incidentColumns + ` FROM incident`
+	if len(conds) > 0 {
+		q += ` WHERE ` + joinAnd(conds)
+	}
+	q += ` ORDER BY id DESC LIMIT ?`
 
 	rows, err := r.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -189,8 +201,8 @@ func (r *incidentRepo) List(ctx context.Context, f store.IncidentFilter) (store.
 	}
 
 	page := store.Page[domain.Incident]{Items: items}
-	if len(items) > f.Page.Limit {
-		page.Items = items[:f.Page.Limit]
+	if len(items) > limit {
+		page.Items = items[:limit]
 		page.HasMore = true
 	}
 	return page, nil

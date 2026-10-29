@@ -16,13 +16,11 @@ import (
 type TCPConfig struct{}
 
 // TCP verifica se uma porta aceita conexão.
-type TCP struct {
-	dialer *net.Dialer
-}
+type TCP struct{}
 
 // NewTCP cria o checker TCP.
 func NewTCP() *TCP {
-	return &TCP{dialer: &net.Dialer{}}
+	return &TCP{}
 }
 
 // Type identifica o tipo de monitor atendido.
@@ -59,7 +57,7 @@ func (c *TCP) Check(ctx context.Context, m domain.Monitor) Result {
 	defer cancel()
 
 	start := time.Now()
-	conn, err := c.dialer.DialContext(ctx, "tcp", m.Target)
+	conn, err := dialerFor(m).DialContext(ctx, "tcp", m.Target)
 	latency := time.Since(start).Milliseconds()
 
 	res := Result{
@@ -67,6 +65,10 @@ func (c *TCP) Check(ctx context.Context, m domain.Monitor) Result {
 		Meta:      map[string]string{"host": host, "port": port},
 	}
 
+	if refused, ok := internalRefusal(err); ok {
+		refused.Meta = res.Meta
+		return refused
+	}
 	if err != nil {
 		res.Status = domain.StatusDown
 		res.Message = err.Error()

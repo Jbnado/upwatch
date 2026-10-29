@@ -56,15 +56,19 @@ sonda tem mais um, só dela, para o sinal de vida:
 Crie-os pela interface do central (tipo **push**) e copie o endereço de
 push de cada um (`https://upwatch.exemplo.com/api/v1/push/TOKEN`).
 
-Use o mesmo intervalo da sonda (60s) e, nos monitores das verificações,
-uma folga maior que a do sinal de vida — por exemplo 60s no sinal de vida
-e 180s nas verificações. Assim, quando a sonda para, o primeiro aviso é
-"sonda vm-prod-1 sem sinal", e não uma dúzia de serviços "caídos".
+Use o mesmo intervalo da sonda (60s) e ligue as verificações ao sinal de
+vida: no formulário de cada uma, em **depende de** (o sinal de vida de um
+grupo de sondas aparece sugerido no topo), ou de uma vez pelo detalhe do
+sinal de vida, em **Mais ações → Ligar dependentes**.
 
-> O central ainda não suprime o aviso das verificações quando o sinal de
-> vida da sonda cai (o campo `parent_id` está reservado para isso). Com a
-> folga maior, o aviso da sonda chega antes, mas as verificações também
-> avisam depois, se a sonda continuar fora.
+Ligadas, quando a sonda para, o único aviso é "sonda vm-prod-1 está fora
+do ar", dizendo quantas verificações ficaram sem aviso. As verificações
+aparecem como "sem sinal — sonda vm-prod-1 fora", em cinza, e o intervalo
+vira lacuna no histórico delas, não queda. Quando a sonda volta, a
+verificação que continuar falhando avisa normalmente. Como cada monitor
+percebe o silêncio na própria janela, a falha de uma verificação espera
+o sinal de vida decidir — por até a janela dele mais um intervalo — antes
+de virar aviso.
 
 ## Instalação numa VM, um comando por linha
 
@@ -205,8 +209,8 @@ Opções do `add`:
 | `--interval 60s --timeout 10s --degraded-latency 2s` | todos | |
 
 As asserções de Redis aceitam só comandos de leitura: `SCARD`, `LLEN`,
-`GET`, `EXISTS`, `HGET`, `ZCARD`, `DBSIZE` e `INFO`. Os operadores são
-`==`, `!=`, `<`, `<=`, `>` e `>=`. Exemplos:
+`GET`, `EXISTS`, `HGET`, `ZCARD`, `DBSIZE`, `INFO` e `WORKERS`. Os
+operadores são `==`, `!=`, `<`, `<=`, `>` e `>=`. Exemplos:
 
 ```
 SCARD rq:workers:default >= 1
@@ -214,7 +218,18 @@ LLEN rq:queue:default < 100
 HGET rq:worker:w1 state != 0
 INFO memory used_memory < 1000000000
 DBSIZE > 0
+WORKERS bull:excel-render >= 1
 ```
+
+`WORKERS <prefixo>:<fila>` conta os workers vivos de uma fila Bull ou
+BullMQ. Essas bibliotecas não registram worker em chave nenhuma (e
+`EXISTS bull:<fila>:stalled-check` pisca, porque a chave expira entre uma
+checagem e outra); cada worker dá à sua conexão o nome
+`<prefixo>:<base64 da fila>`, com `:w:<nome>` no fim no BullMQ quando o
+worker tem nome, e a asserção conta essas conexões no `CLIENT LIST`. O
+push leva só a contagem (`WORKERS bull:excel-render = 0, esperado >= 1`),
+nunca endereço ou nome de outras conexões. O usuário precisa de
+`+client|list` na ACL (abaixo).
 
 A senha nunca vai em flag: ficaria no histórico, na gravação do jump
 server e no `ps`. Use `--password-stdin` ou, melhor, um usuário sem senha
@@ -283,6 +298,10 @@ O melhor segredo é o que não abre nada. Crie um usuário só para a sonda:
 ```
 # Redis: só os comandos que a sonda usa, só nas chaves do RQ
 ACL SETUSER upwatch on >SENHA ~rq:* -@all +ping +info +scard +llen
+# com WORKERS (Bull/BullMQ), acrescente; CLIENT LIST não lê chave nenhuma,
+# mas mostra endereço e nome de todas as conexões do Redis
+ACL SETUSER upwatch +client|list
+# e ~bull:* se também vigiar as chaves da fila (LLEN bull:<fila>:wait)
 ```
 
 ```sql

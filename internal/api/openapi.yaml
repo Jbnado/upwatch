@@ -179,6 +179,19 @@ paths:
         Só funciona enquanto não existir nenhuma conta. O assistente não é
         autenticado, e mantê-lo disponível deixaria qualquer visitante
         criar uma conta e tomar a instalação.
+
+        Exige o token de configuração em `setup_token`, para a instância
+        recém-publicada não ser tomada por quem chegar antes do dono. O
+        token é o valor de `UPWATCH_SETUP_TOKEN` (ou do arquivo em
+        `UPWATCH_SETUP_TOKEN_FILE`); sem a variável, o processo gera um a
+        cada subida e o escreve só no log, uma vez. A comparação é em
+        tempo constante.
+
+        Instalação que já tem conta responde 409 antes de olhar o token&#58;
+        ele deixa de valer quando a conta passa a existir.
+
+        Limitado por origem, para o token não ser adivinhado por
+        tentativa&#58; o limite vale também para o token certo.
       security: []
       requestBody:
         required: true
@@ -186,10 +199,16 @@ paths:
           application/json:
             schema:
               type: object
-              required: [username, password]
+              required: [username, password, setup_token]
               properties:
                 username: { type: string, maxLength: 64 }
                 password: { type: string, minLength: 12, maxLength: 72 }
+                setup_token:
+                  type: string
+                  writeOnly: true
+                  description: |
+                    Token de configuração; está no log do servidor ou em
+                    `UPWATCH_SETUP_TOKEN`.
       responses:
         "201":
           description: Conta criada
@@ -197,8 +216,26 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/User" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "401":
+          description: |
+            Token de configuração ausente ou inválido; o erro aponta o campo
+            `setup_token`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "409":
           description: A instalação já possui uma conta
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          description: |
+            Tentativas demais da mesma origem. O limite é por endereço da
+            conexão; atrás de proxy reverso, todos dividem o do proxy.
+          headers:
+            Retry-After:
+              schema: { type: integer }
+              description: Segundos até a próxima tentativa valer
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -548,7 +585,10 @@ paths:
     put:
       tags: [monitors]
       summary: Sobrescreve um monitor
-      description: As mesmas regras de alvo interno e de `parent_id` do cadastro.
+      description: |
+        As mesmas regras de alvo interno e de `parent_id` do cadastro. O
+        pai que depende, direta ou indiretamente, do próprio monitor fecha
+        um ciclo e é recusado com 400 em `parent_id`.
       parameters: [{ $ref: "#/components/parameters/PathID" }]
       requestBody:
         required: true
@@ -569,6 +609,48 @@ paths:
       parameters: [{ $ref: "#/components/parameters/PathID" }]
       responses:
         "204": { description: Monitor removido }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/monitors/{id}/children:
+    post:
+      tags: [monitors]
+      summary: Põe vários monitores sob este (definir pai em lote)
+      description: |
+        O monitor do caminho vira o pai (`parent_id`) de cada monitor da
+        lista. Com o pai em queda confirmada, a falha de um filho é
+        gravada como `unknown` — lacuna no histórico, fora da
+        disponibilidade — e não avisa; quando o pai volta, o filho que
+        continuar fora avisa normalmente. Pai sem medição ou pausado não
+        cala ninguém.
+
+        Tudo ou nada: um filho inexistente ou de fora do escopo responde
+        404, e um que fecharia ciclo (o próprio pai ou um ancestral dele)
+        responde 400, sem gravar nenhum.
+      parameters: [{ $ref: "#/components/parameters/PathID" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [monitor_ids]
+              properties:
+                monitor_ids:
+                  type: array
+                  minItems: 1
+                  items: { type: integer, format: int64 }
+      responses:
+        "200":
+          description: Os monitores, já com o pai novo
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Monitor" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /api/v1/summaries:
@@ -1238,6 +1320,13 @@ paths:
         Uma queda só entra aqui depois de confirmada pelo número de falhas
         seguidas configurado no monitor; oscilação passageira não vira
         incidente.
+
+        Do mais recente para o mais antigo. Paginação para trás, como a da
+        linha do tempo do monitor&#58; passe o `next_cursor` da página
+        anterior em `cursor`. `after_id` e `next_after_id` continuam como
+        nomes obsoletos dos mesmos valores, com o sentido corrigido (antes
+        devolviam sempre a mesma página). `cursor` e `after_id` juntos e
+        diferentes respondem 400.
       parameters:
         - name: monitor_id
           in: query
@@ -1249,9 +1338,17 @@ paths:
         - name: limit
           in: query
           schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+        - name: cursor
+          in: query
+          schema: { type: string }
+          description: O `next_cursor` da página anterior. Opaco.
         - name: after_id
           in: query
+          deprecated: true
           schema: { type: integer, format: int64 }
+          description: |
+            Nome obsoleto de `cursor`&#58; traz os incidentes com id menor.
+            Use `cursor`.
       responses:
         "200":
           description: Incidentes, do mais recente para o mais antigo
@@ -1264,7 +1361,15 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/Incident" }
                   has_more: { type: boolean }
-                  next_after_id: { type: integer, format: int64 }
+                  next_cursor:
+                    type: string
+                    description: Só quando `has_more`; passe em `cursor`.
+                  next_after_id:
+                    type: integer
+                    format: int64
+                    deprecated: true
+                    description: O mesmo valor de `next_cursor`, para quem usa `after_id`.
+        "400": { $ref: "#/components/responses/BadRequest" }
 
   /api/v1/public:
     get:
@@ -1953,7 +2058,13 @@ components:
             password, session ou credential) voltam com o valor "***";
             reenviar "***" mantém o valor guardado.
           additionalProperties: true
-        parent_id: { type: integer, format: int64 }
+        parent_id:
+          type: integer
+          format: int64
+          description: |
+            Monitor do qual este depende, como a sonda de quem a
+            verificação depende. Com o pai em queda confirmada, a falha
+            deste vira lacuna e não avisa. Omitir desliga o pai.
         group_id:
           type: integer
           format: int64
@@ -2255,9 +2366,15 @@ components:
         down: { type: integer }
         unknown: { type: integer }
         paused: { type: integer }
+        affected:
+          type: integer
+          description: |
+            Monitores calados por um pai em queda. Não contam como
+            problema nem como no ar; para o estado do cartão, valem como
+            unknown.
         problems:
           type: integer
-          description: down + degraded + unknown
+          description: down + degraded + unknown (sem os calados pelo pai)
 
     Problem:
       type: object
@@ -2278,6 +2395,11 @@ components:
           type: string
           description: Mensagem da última verificação com falha, ou a causa da queda em curso.
         last_check_at: { type: string, format: date-time, nullable: true }
+        dependents:
+          type: integer
+          description: |
+            Monitores calados por esta queda, entre os que a conta enxerga.
+            Eles não aparecem na lista: o problema é este.
 
     MonitorEvent:
       type: object
@@ -2349,7 +2471,7 @@ components:
             erro aparecer aqui e não durante o incidente.
 
             Campos disponíveis - Monitor (com ID, Name, Target, Type e
-            Tags), Status, Message, Duration, At e Text. A configuração
+            Tags), Group, Status, Message, Duration, At e Text. A configuração
             do monitor nunca está ao alcance do modelo - ela guarda
             senhas e tokens -, e um modelo que tenta ler campo
             inexistente, como .Monitor.Config, é recusado no cadastro.
@@ -2362,7 +2484,7 @@ components:
             Qualquer objeto ou lista JSON. Em qualquer texto dentro
             dele, os marcadores são substituídos - $monitor,
             $monitor_id, $target, $status, $previous_status, $message,
-            $at, $duration_seconds e $text. Também vale ${nome}, e $$
+            $at, $duration_seconds, $group e $text. Também vale ${nome}, e $$
             escreve um cifrão literal.
 
             Sozinho, o marcador entrega o valor com o tipo dele, de
@@ -2509,6 +2631,16 @@ components:
         degraded: { type: integer }
         down: { type: integer }
         unknown: { type: integer }
+        affected_by:
+          type: object
+          description: |
+            Ancestral em queda que cala o monitor; ausente quando nada
+            cala. As falhas do monitor viram lacuna e não avisam enquanto
+            isso durar. Id nulo e nome ausente quando a conta não enxerga
+            o ancestral.
+          properties:
+            id: { type: integer, format: int64, nullable: true }
+            name: { type: string }
         series:
           type: array
           description: |

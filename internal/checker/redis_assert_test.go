@@ -209,7 +209,7 @@ func TestRedisAssertionEvaluateInfoMissingField(t *testing.T) {
 // comando antes de interpretar o resto, para a mensagem falar do comando
 // proibido e não da contagem de argumentos.
 func TestRedisReadCommandFollowsTheClosedList(t *testing.T) {
-	for _, cmd := range []string{"SCARD", "scard", "INFO", "DBSIZE"} {
+	for _, cmd := range []string{"SCARD", "scard", "INFO", "DBSIZE", "WORKERS"} {
 		if !checker.RedisReadCommand(cmd) {
 			t.Errorf("RedisReadCommand(%q) = false", cmd)
 		}
@@ -218,5 +218,107 @@ func TestRedisReadCommandFollowsTheClosedList(t *testing.T) {
 		if checker.RedisReadCommand(cmd) {
 			t.Errorf("RedisReadCommand(%q) = true", cmd)
 		}
+	}
+}
+
+// O Bull e o BullMQ não registram worker em chave nenhuma; a única marca
+// de um worker vivo é o nome que a conexão dele recebe com CLIENT SETNAME.
+// WORKERS conta essas conexões, e prefixo e fila vão juntos na chave,
+// como aparecem nas chaves da própria fila (bull:excel-render:wait).
+func TestRedisAssertionWorkersValidation(t *testing.T) {
+	for _, a := range []checker.RedisAssertion{
+		{Command: "WORKERS", Key: "bull:excel-render", Op: "gte", Value: 1},
+		{Command: "workers", Key: "bull:excel-render", Op: "gte", Value: 1},
+		// Prefixo com dois-pontos ({app}:bull) é comum em cluster; a fila
+		// é o que vem depois do último, como no BullMQ, que recusa
+		// dois-pontos no nome da fila.
+		{Command: "WORKERS", Key: "{app}:bull:emails", Op: "gte", Value: 2},
+		{Command: "WORKERS", Key: "bull:minha fila", Op: "gte", Value: 1},
+	} {
+		if err := a.Validate(); err != nil {
+			t.Errorf("Validate(%+v) returned unexpected error: %v", a, err)
+		}
+	}
+
+	for name, a := range map[string]checker.RedisAssertion{
+		"sem chave":     {Command: "WORKERS", Op: "gte", Value: 1},
+		"sem prefixo":   {Command: "WORKERS", Key: "excel-render", Op: "gte", Value: 1},
+		"prefixo vazio": {Command: "WORKERS", Key: ":excel-render", Op: "gte", Value: 1},
+		"fila vazia":    {Command: "WORKERS", Key: "bull:", Op: "gte", Value: 1},
+		"com campo":     {Command: "WORKERS", Key: "bull:q", Field: "f", Op: "gte", Value: 1},
+		// O prefixo vai cru no nome da conexão, e CLIENT SETNAME recusa
+		// espaço e caractere de controle: a asserção nunca casaria e
+		// ficaria eternamente em zero. A fila vai em base64 e não tem
+		// essa restrição.
+		"prefixo com espaço": {Command: "WORKERS", Key: "meu app:fila", Op: "gte", Value: 1},
+		"prefixo com acento": {Command: "WORKERS", Key: "filá:fila", Op: "gte", Value: 1},
+	} {
+		if err := a.Validate(); err == nil {
+			t.Errorf("%s: Validate accepted %+v", name, a)
+		}
+	}
+}
+
+// A chave não vai ao Redis: o comando é sempre CLIENT LIST, sem argumento
+// tirado do cadastro, e a contagem acontece do lado de cá.
+func TestRedisAssertionWorkersArgs(t *testing.T) {
+	a := checker.RedisAssertion{Command: "WORKERS", Key: "bull:excel-render"}
+
+	if got, want := a.Args(), []any{"CLIENT", "LIST"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Args = %v, want %v", got, want)
+	}
+}
+
+// Saída de CLIENT LIST com o que um Redis de produção costuma ter: os
+// workers da fila vigiada nas duas bibliotecas, mais conexões que não
+// podem entrar na conta. "ZXhjZWwtcmVuZGVy" é base64("excel-render").
+const clientListWithWorkers = "" +
+	// Bull v3: o nome é exatamente <prefixo>:<base64 da fila>.
+	"id=3 addr=10.0.0.5:51000 laddr=10.0.0.2:6379 fd=8 name=bull:ZXhjZWwtcmVuZGVy age=90 idle=0 flags=b db=0 cmd=brpoplpush\n" +
+	// BullMQ sem nome de worker: igual ao Bull.
+	"id=4 addr=10.0.0.6:51001 laddr=10.0.0.2:6379 fd=9 name=bull:ZXhjZWwtcmVuZGVy age=80 idle=0 flags=b db=0 cmd=bzpopmin\n" +
+	// BullMQ com nome de worker: o sufixo :w:<nome>.
+	"id=5 addr=10.0.0.7:51002 laddr=10.0.0.2:6379 fd=10 name=bull:ZXhjZWwtcmVuZGVy:w:render-1 age=70 idle=0 flags=b db=0 cmd=bzpopmin\n" +
+	// QueueEvents do BullMQ escuta a fila, mas não processa nada.
+	"id=6 addr=10.0.0.8:51003 laddr=10.0.0.2:6379 fd=11 name=bull:ZXhjZWwtcmVuZGVy:qe age=60 idle=0 flags=N db=0 cmd=xread\n" +
+	// Outra fila cujo base64 começa igual: "excel-render-pdf". O Bull v3
+	// compara por prefixo e contaria este; aqui não pode.
+	"id=7 addr=10.0.0.9:51004 laddr=10.0.0.2:6379 fd=12 name=bull:ZXhjZWwtcmVuZGVyLXBkZg== age=50 idle=0 flags=b db=0 cmd=brpoplpush\n" +
+	// Mesma fila com outro prefixo.
+	"id=8 addr=10.0.0.10:51005 laddr=10.0.0.2:6379 fd=13 name=staging:ZXhjZWwtcmVuZGVy age=40 idle=0 flags=b db=0 cmd=bzpopmin\n" +
+	// A própria conexão do monitor, sem nome.
+	"id=9 addr=10.0.0.11:51006 laddr=10.0.0.2:6379 fd=14 name= age=0 idle=0 flags=N db=0 cmd=client|list\n"
+
+func TestRedisAssertionWorkersCountsBullAndBullMQ(t *testing.T) {
+	a := checker.RedisAssertion{Command: "WORKERS", Key: "bull:excel-render", Op: "eq", Value: 3}
+
+	if got := a.Evaluate(clientListWithWorkers); got != "" {
+		t.Errorf("Evaluate = %q, want the three workers counted", got)
+	}
+}
+
+// A causa vai para o push da sonda e para o alerta. CLIENT LIST traz
+// endereço e nome de toda conexão do Redis — de outros sistemas também —
+// e nada disso pode sair dali; só a contagem.
+func TestRedisAssertionWorkersCauseCarriesOnlyTheCount(t *testing.T) {
+	a := checker.RedisAssertion{Command: "WORKERS", Key: "bull:excel-render", Op: "gte", Value: 5}
+
+	got := a.Evaluate(clientListWithWorkers)
+
+	if want := "WORKERS bull:excel-render = 3, esperado >= 5"; got != want {
+		t.Errorf("Evaluate = %q, want %q", got, want)
+	}
+	for _, leak := range []string{"10.0.0", "ZXhjZWwtcmVuZGVy", "render-1", "staging"} {
+		if strings.Contains(got, leak) {
+			t.Errorf("Evaluate = %q leaks %q from CLIENT LIST", got, leak)
+		}
+	}
+}
+
+func TestRedisAssertionWorkersNoneAlive(t *testing.T) {
+	a := checker.RedisAssertion{Command: "WORKERS", Key: "bull:fila-parada", Op: "gte", Value: 1}
+
+	if want, got := "WORKERS bull:fila-parada = 0, esperado >= 1", a.Evaluate(clientListWithWorkers); got != want {
+		t.Errorf("Evaluate = %q, want %q", got, want)
 	}
 }

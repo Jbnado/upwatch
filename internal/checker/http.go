@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -91,6 +92,12 @@ type HTTP struct {
 	secure   *http.Transport
 	insecure *http.Transport
 
+	// Os mesmos dois para monitores com RestrictInternal. Pool à parte:
+	// uma conexão aberta sem a conferência não pode ser reaproveitada por
+	// um monitor que exige a conferência.
+	restrictedSecure   *http.Transport
+	restrictedInsecure *http.Transport
+
 	// assertions guarda as asserções JSON já interpretadas por monitor,
 	// junto da configuração de onde vieram: editar o monitor troca a
 	// configuração e invalida a entrada.
@@ -109,7 +116,32 @@ func NewHTTP() *HTTP {
 	insecure := http.DefaultTransport.(*http.Transport).Clone()
 	insecure.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // opção explícita por monitor
 
-	return &HTTP{secure: secure, insecure: insecure, assertions: map[int64]cachedAssertions{}}
+	return &HTTP{
+		secure: secure, insecure: insecure,
+		restrictedSecure:   restrictedTransport(secure),
+		restrictedInsecure: restrictedTransport(insecure),
+		assertions:         map[int64]cachedAssertions{},
+	}
+}
+
+// restrictedTransport deriva o transporte dos monitores com
+// RestrictInternal.
+//
+// A conferência fica no dialer, e não na política de redirecionamento:
+// cada salto é uma conexão nova e passa por ela com o endereço que vai ser
+// de fato conectado, enquanto conferir a URL do salto resolveria o nome
+// uma vez para conferir e outra para conectar.
+//
+// Sem proxy: atrás de um, quem conecta ao destino é o proxy, e o servidor
+// não teria como saber para onde. Monitor restrito vai direto, ou a regra
+// viraria enfeite em toda instalação com HTTPS_PROXY.
+func restrictedTransport(base *http.Transport) *http.Transport {
+	t := base.Clone()
+	t.Proxy = nil
+	t.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return dialerFor(domain.Monitor{RestrictInternal: true}).DialContext(ctx, network, addr)
+	}
+	return t
 }
 
 // Type identifica o tipo de monitor atendido.
@@ -177,8 +209,11 @@ func (h *HTTP) Check(ctx context.Context, m domain.Monitor) Result {
 	}
 
 	start := time.Now()
-	resp, err := h.client(cfg).Do(req)
+	resp, err := h.client(cfg, m.RestrictInternal).Do(req)
 	latency := time.Since(start).Milliseconds()
+	if refused, ok := internalRefusal(err); ok {
+		return refused
+	}
 	if err != nil {
 		res := down("%v", err)
 		res.LatencyMS = latency
@@ -255,9 +290,14 @@ func (h *HTTP) assertionsFor(m domain.Monitor) ([]compiledAssertion, error) {
 
 // client monta um cliente com o timeout e a política de redirecionamento
 // do monitor, reaproveitando o transporte compartilhado.
-func (h *HTTP) client(cfg HTTPConfig) *http.Client {
+func (h *HTTP) client(cfg HTTPConfig, restrict bool) *http.Client {
 	transport := h.secure
-	if cfg.SkipTLSVerify {
+	switch {
+	case restrict && cfg.SkipTLSVerify:
+		transport = h.restrictedInsecure
+	case restrict:
+		transport = h.restrictedSecure
+	case cfg.SkipTLSVerify:
 		transport = h.insecure
 	}
 

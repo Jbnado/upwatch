@@ -259,6 +259,10 @@ type groupSummary struct {
 	Unknown  int    `json:"unknown"`
 	// Paused não conta como problema: pausar é decisão de alguém.
 	Paused int `json:"paused"`
+	// Affected é o monitor calado por um pai em queda. Não conta como
+	// problema — o problema é o pai, que já conta — nem como no ar, porque
+	// ninguém o está medindo agora.
+	Affected int `json:"affected"`
 	// Problems é fora do ar + degradado + sem medição, a palavra do cartão
 	// ("2 problemas").
 	Problems int `json:"problems"`
@@ -266,10 +270,17 @@ type groupSummary struct {
 	statuses []domain.Status
 }
 
-func (g *groupSummary) add(m domain.Monitor, s domain.Status) {
+func (g *groupSummary) add(m domain.Monitor, s domain.Status, calado bool) {
 	g.Total++
 	if !m.Enabled {
 		g.Paused++
+		return
+	}
+	if calado {
+		// Sem medição para o pior estado do cartão: o grupo só de filhos
+		// calados fica cinza, e não verde.
+		g.Affected++
+		g.statuses = append(g.statuses, domain.StatusUnknown)
 		return
 	}
 	g.statuses = append(g.statuses, s)
@@ -324,6 +335,11 @@ func (a *API) handleGroupSummary(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	calados, err := a.silenced(r.Context(), estados)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
 
 	cartoes := map[int64]*groupSummary{}
 	var ordem []*groupSummary
@@ -339,16 +355,17 @@ func (a *API) handleGroupSummary(w http.ResponseWriter, r *http.Request) {
 
 	for _, m := range monitores {
 		s := estados[m.ID].Status
+		_, calado := calados[m.ID]
 		if m.GroupID == nil {
-			semGrupo.add(m, s)
+			semGrupo.add(m, s, calado)
 			continue
 		}
 		if c, ok := cartoes[*m.GroupID]; ok {
-			c.add(m, s)
+			c.add(m, s, calado)
 		}
 		if g, ok := v.groups.Get(*m.GroupID); ok && g.ParentID != nil {
 			if pai, ok := cartoes[*g.ParentID]; ok {
-				pai.add(m, s)
+				pai.add(m, s, calado)
 			}
 		}
 	}
@@ -383,6 +400,10 @@ type problem struct {
 	// queda em curso.
 	Cause       string     `json:"cause"`
 	LastCheckAt *time.Time `json:"last_check_at"`
+	// Dependents é quantos monitores ativos, entre os que a conta
+	// enxerga, estão calados por esta queda e por isso não aparecem na
+	// lista.
+	Dependents int `json:"dependents"`
 
 	rank int
 }
@@ -410,9 +431,22 @@ func (a *API) handleProblems(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	// O filho calado pelo pai não é problema dele: a lista mostra o pai,
+	// com a conta de quantos ficaram sem sinal por causa dele.
+	calados, err := a.silenced(ctx, estados)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	dependentes := map[int64]int{}
+	for _, m := range monitores {
+		if pai, ok := calados[m.ID]; ok {
+			dependentes[pai.ID]++
+		}
+	}
 	abertos, err := a.store.Incidents().List(ctx, store.IncidentFilter{
 		OnlyOpen: true, Groups: v.monitorSelection(),
-		Page: store.PageFilter{Limit: store.MaxPageSize},
+		Limit: store.MaxPageSize,
 	})
 	if err != nil {
 		writeStoreError(w, err)
@@ -439,12 +473,13 @@ func (a *API) handleProblems(w http.ResponseWriter, r *http.Request) {
 	items := []problem{}
 	for _, m := range monitores {
 		estado := estados[m.ID]
-		if estado.Status == domain.StatusUp {
+		if _, calado := calados[m.ID]; calado || estado.Status == domain.StatusUp {
 			continue
 		}
 		p := problem{
 			MonitorID: m.ID, Name: m.Name, Type: m.Type.String(), GroupID: m.GroupID,
 			Status: estado.Status.String(), Since: estado.Since, rank: domain.ProblemRank(estado.Status),
+			Dependents: dependentes[m.ID],
 		}
 		if m.GroupID != nil {
 			p.GroupPath = v.groups.Path(*m.GroupID)

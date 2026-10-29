@@ -7,6 +7,7 @@ import {
   type ChannelInput,
   type ChannelType,
   type CreatedToken,
+  type CursorPage,
   type EventPage,
   type Group,
   type GroupSummary,
@@ -81,10 +82,10 @@ export const api = {
 
   needsSetup: () => request<{ needs_setup: boolean }>("/setup"),
 
-  createAdmin: (username: string, password: string) =>
+  createAdmin: (username: string, password: string, setupToken: string) =>
     request<User>("/setup", {
       method: "POST",
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ username, password, setup_token: setupToken }),
     }),
 
   login: (username: string, password: string) =>
@@ -129,6 +130,17 @@ export const api = {
     request<Monitor>(`/monitors/${id}`, { method: "PUT", body: JSON.stringify(input) }),
 
   deleteMonitor: (id: number) => request<void>(`/monitors/${id}`, { method: "DELETE" }),
+
+  /**
+   * setChildren põe vários monitores sob este de uma vez — "definir pai"
+   * em lote. Tudo ou nada: o servidor recusa o lote inteiro se algum
+   * fechar ciclo.
+   */
+  setChildren: (id: number, monitorIds: number[]) =>
+    request<{ items: Monitor[] }>(`/monitors/${id}/children`, {
+      method: "POST",
+      body: JSON.stringify({ monitor_ids: monitorIds }),
+    }),
 
   // ---------- dados ----------
 
@@ -203,8 +215,9 @@ export const api = {
 
   // ---------- incidentes ----------
 
-  incidents: (params: { monitor_id?: number; open?: string; limit?: number } = {}) =>
-    request<Page<Incident>>(`/incidents${query(params)}`),
+  incidents: (
+    params: { monitor_id?: number; open?: string; limit?: number; cursor?: string } = {},
+  ) => request<CursorPage<Incident>>(`/incidents${query(params)}`),
 
   // ---------- contas ----------
 

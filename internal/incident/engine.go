@@ -3,9 +3,12 @@ package incident
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
+	"github.com/Jbnado/upwatch/internal/checker"
 	"github.com/Jbnado/upwatch/internal/domain"
 	"github.com/Jbnado/upwatch/internal/metrics"
 	"github.com/Jbnado/upwatch/internal/notifier"
@@ -37,6 +40,15 @@ type Engine struct {
 	mu       sync.RWMutex
 	monitors map[int64]domain.Monitor
 	states   map[int64]domain.MonitorState
+
+	// aliveAt é o instante da última observação nova com resposta de cada
+	// monitor, e failingSince o começo da sequência de quedas observada.
+	// É o que permite perguntar "o pai deu sinal de vida depois de o filho
+	// começar a falhar?" (ver screen). Ficam só em memória: depois de um
+	// reinício a pergunta fica sem resposta até o pai falar de novo, e a
+	// retenção tem prazo para isso.
+	aliveAt      map[int64]time.Time
+	failingSince map[int64]time.Time
 }
 
 // NewEngine cria o motor.
@@ -51,6 +63,9 @@ func NewEngine(next Sink, s store.MetadataStore, d Dispatcher, counters *metrics
 		counters: counters,
 		monitors: map[int64]domain.Monitor{},
 		states:   map[int64]domain.MonitorState{},
+
+		aliveAt:      map[int64]time.Time{},
+		failingSince: map[int64]time.Time{},
 	}
 }
 
@@ -86,6 +101,8 @@ func (e *Engine) Remove(id int64) {
 	e.mu.Lock()
 	delete(e.monitors, id)
 	delete(e.states, id)
+	delete(e.aliveAt, id)
+	delete(e.failingSince, id)
 	e.mu.Unlock()
 }
 
@@ -94,6 +111,11 @@ func (e *Engine) Remove(id int64) {
 // O encaminhamento acontece primeiro: gravar a medição é o caminho
 // crítico, e uma falha ao decidir sobre alerta não pode custar o dado.
 func (e *Engine) Submit(ctx context.Context, hb domain.Heartbeat) error {
+	// A triagem vem antes da gravação porque decide o que é gravado: a
+	// falha que não é do monitor vai para o histórico como lacuna. É só
+	// memória, sem caminho de erro que custe o dado.
+	hb = e.screen(hb)
+
 	err := e.next.Submit(ctx, hb)
 
 	// O motor vê toda batida a caminho do banco, então é aqui que a
@@ -150,6 +172,144 @@ func (e *Engine) evaluate(ctx context.Context, hb domain.Heartbeat) {
 		e.record(ctx, monitor, evento, hb.Message)
 		e.notify(ctx, monitor, evento, hb.Message)
 	}
+}
+
+// screen decide se a falha do monitor é dele mesmo.
+//
+// Com um ancestral em queda confirmada, não é: a falha vira "sem
+// medição", com o nome do ancestral e a causa original na mensagem. O
+// motor não conta observação sem medição, então o filho não avisa nem
+// abre incidente; e a disponibilidade a ignora, então o intervalo fica
+// como lacuna, e não como queda de um serviço que pode ter continuado de
+// pé. É a mesma saída da sentinela de rede, pelo mesmo motivo.
+//
+// Antes disso há uma corrida. Pai e filhos param juntos — a VM da sonda
+// perdeu a saída —, mas cada um percebe na própria janela, e o filho
+// costuma perceber primeiro. Por isso a falha do filho também fica retida
+// enquanto o pai não decidiu: enquanto houver queda dele por confirmar,
+// ou enquanto ele não tiver dado sinal de vida desde que o filho começou
+// a falhar. A retenção tem prazo (holdLimit), para um pai que não diz
+// nada não calar o filho para sempre; e não vale para pai sem medição,
+// que nunca decidiria.
+func (e *Engine) screen(hb domain.Heartbeat) domain.Heartbeat {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	e.track(hb)
+	if hb.Status != domain.StatusDown {
+		return hb
+	}
+	m, ok := e.monitors[hb.MonitorID]
+	if !ok || m.ParentID == nil {
+		return hb
+	}
+
+	if pai, ok := domain.DownAncestor(m, e.lookup, e.stateOf); ok {
+		return discard(hb, fmt.Sprintf("sem sinal — %s fora do ar; resultado descartado (falha original: %s)",
+			pai.Name, hb.Message))
+	}
+	if pai, ok := e.undecidedParent(m, hb.Timestamp); ok {
+		return discard(hb, fmt.Sprintf("aguardando %s mostrar que está no ar; resultado retido (falha original: %s)",
+			pai.Name, hb.Message))
+	}
+	return hb
+}
+
+// track lembra o último sinal de vida e o começo da sequência de falhas.
+//
+// A batida repetida não é sinal de vida: é o mesmo sinal de push relido,
+// e um pai que parou de reportar continuaria "vivo" até a janela fechar.
+// Sem medição não muda nada, como na máquina de confirmação.
+func (e *Engine) track(hb domain.Heartbeat) {
+	switch {
+	case hb.Status.Responsive():
+		delete(e.failingSince, hb.MonitorID)
+		if !hb.Repeated {
+			e.aliveAt[hb.MonitorID] = hb.Timestamp
+		}
+	case hb.Status == domain.StatusDown:
+		if _, ok := e.failingSince[hb.MonitorID]; !ok {
+			e.failingSince[hb.MonitorID] = hb.Timestamp
+		}
+	}
+}
+
+// undecidedParent devolve o pai que ainda pode estar caindo junto.
+func (e *Engine) undecidedParent(m domain.Monitor, at time.Time) (domain.Monitor, bool) {
+	pai, ok := e.nearestEnabledParent(m)
+	if !ok {
+		return domain.Monitor{}, false
+	}
+	estado := e.states[pai.ID]
+	if !estado.Status.Responsive() {
+		return domain.Monitor{}, false
+	}
+	if estado.Candidate == domain.StatusDown && estado.Consecutive > 0 {
+		return pai, true
+	}
+
+	desde := e.failingSince[m.ID]
+	if vivo, ok := e.aliveAt[pai.ID]; ok && !vivo.Before(desde) {
+		return domain.Monitor{}, false
+	}
+	return pai, at.Sub(desde) < holdLimit(pai)
+}
+
+// holdLimit é quanto a falha do filho espera o pai: o tempo que o pai
+// leva para perceber a própria queda, mais uma verificação dele.
+func holdLimit(pai domain.Monitor) time.Duration {
+	return checker.DetectionWindow(pai) + pai.Interval
+}
+
+// nearestEnabledParent sobe até o primeiro ancestral ativo. O pausado não
+// verifica nada, então não teria como decidir.
+func (e *Engine) nearestEnabledParent(m domain.Monitor) (domain.Monitor, bool) {
+	vistos := map[int64]bool{m.ID: true}
+	for p := m.ParentID; p != nil && !vistos[*p]; {
+		vistos[*p] = true
+		pai, ok := e.monitors[*p]
+		if !ok {
+			return domain.Monitor{}, false
+		}
+		if pai.Enabled {
+			return pai, true
+		}
+		p = pai.ParentID
+	}
+	return domain.Monitor{}, false
+}
+
+// discard troca a falha por "sem medição", com o motivo na mensagem.
+func discard(hb domain.Heartbeat, msg string) domain.Heartbeat {
+	hb.Status = domain.StatusUnknown
+	hb.Message = msg
+	return hb
+}
+
+// lookup e stateOf servem a domain.DownAncestor. Quem chama já segura mu.
+func (e *Engine) lookup(id int64) (domain.Monitor, bool) {
+	m, ok := e.monitors[id]
+	return m, ok
+}
+
+func (e *Engine) stateOf(id int64) domain.MonitorState { return e.states[id] }
+
+// dependents conta os monitores ativos calados por esta queda: os que
+// têm o monitor como ancestral em queda mais próximo.
+func (e *Engine) dependents(id int64) int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	n := 0
+	for _, m := range e.monitors {
+		if !m.Enabled || m.ID == id {
+			continue
+		}
+		if pai, ok := domain.DownAncestor(m, e.lookup, e.stateOf); ok && pai.ID == id {
+			n++
+		}
+	}
+	return n
 }
 
 // record mantém o histórico de incidentes e de mudanças de estado em dia.
@@ -212,11 +372,18 @@ func (e *Engine) notify(ctx context.Context, m domain.Monitor, evt Event, cause 
 		destinos = append(destinos, n)
 	}
 
-	e.dispatch.Enqueue(notifier.Notification{
+	aviso := notifier.Notification{
 		Monitor: m,
 		Event:   evt,
 		Message: cause,
-	}, destinos)
+		Group:   e.groupPath(ctx, m),
+	}
+	if evt.Kind == KindDown {
+		// Um aviso só no lugar de vários: quem recebe precisa saber que
+		// ele vale pelos dependentes que ficaram calados.
+		aviso.Dependents = e.dependents(m.ID)
+	}
+	e.dispatch.Enqueue(aviso, destinos)
 }
 
 // StateOf devolve o estado confirmado em memória, para inspeção.

@@ -85,7 +85,7 @@ func TestSemMapeamentoOCorpoNaoMuda(t *testing.T) {
 
 	for _, campo := range []string{
 		"text", "monitor", "monitor_id", "target",
-		"status", "previous_status", "message", "at", "duration_seconds",
+		"status", "previous_status", "message", "at", "duration_seconds", "group",
 	} {
 		if _, ok := corpo[campo]; !ok {
 			t.Errorf("o envelope padrão perdeu o campo %q", campo)

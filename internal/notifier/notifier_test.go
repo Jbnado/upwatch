@@ -237,6 +237,25 @@ func TestRenderDescribesAnOutage(t *testing.T) {
 	}
 }
 
+// O aviso do pai vale pelos dependentes calados. Sem dizer quantos, quem
+// recebe um aviso só da sonda não sabe que as verificações dela também
+// estão sem sinal, e vai procurar os avisos delas que nunca chegam.
+func TestRenderCountsSilencedDependents(t *testing.T) {
+	n := outage()
+	if texto := notifier.Render(n); strings.Contains(texto, "dependente") {
+		t.Errorf("an outage without dependents mentions them: %s", texto)
+	}
+
+	n.Dependents = 1
+	if texto := notifier.Render(n); !strings.Contains(texto, "1 monitor dependente sem aviso") {
+		t.Errorf("the rendered text omits the single dependent: %s", texto)
+	}
+	n.Dependents = 4
+	if texto := notifier.Render(n); !strings.Contains(texto, "4 monitores dependentes sem aviso") {
+		t.Errorf("the rendered text omits the dependents count: %s", texto)
+	}
+}
+
 func TestRenderDescribesARecoveryWithDuration(t *testing.T) {
 	texto := notifier.Render(recovery(2*time.Hour + 5*time.Minute))
 

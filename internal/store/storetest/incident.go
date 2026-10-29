@@ -29,6 +29,8 @@ func incidentCases() []conformanceCase {
 		{"IncidentReopensAfterResolution", testIncidentReopensAfterResolution},
 		{"IncidentListFiltersByMonitor", testIncidentListFiltersByMonitor},
 		{"IncidentListFiltersOpenOnly", testIncidentListFiltersOpenOnly},
+		{"IncidentListPagesThroughEverything", testIncidentListPagesThroughEverything},
+		{"IncidentListPagesWithinTheFilter", testIncidentListPagesWithinTheFilter},
 		{"IncidentCascadesOnMonitorDelete", testIncidentCascadesOnMonitorDelete},
 
 		{"ChannelCRUD", testChannelCRUD},
@@ -286,6 +288,112 @@ func testIncidentListFiltersByMonitor(t *testing.T, newStore Factory) {
 	}
 	if len(page.Items) != 1 || page.Items[0].MonitorID != meu {
 		t.Errorf("List returned %v, want only the incidents of monitor %d", page.Items, meu)
+	}
+}
+
+// mustRecordIncidents abre e encerra n quedas seguidas do monitor e
+// devolve os ids na ordem da listagem, da mais recente para a mais antiga.
+func mustRecordIncidents(t *testing.T, s store.Store, monitorID int64, n int) []int64 {
+	t.Helper()
+	ctx := context.Background()
+
+	ids := make([]int64, n)
+	for k := range n {
+		inicio := epoch.Add(time.Duration(k) * time.Hour)
+		i := domain.Incident{MonitorID: monitorID, StartedAt: inicio}
+		if err := s.Incidents().Open(ctx, &i); err != nil {
+			t.Fatalf("Open returned unexpected error: %v", err)
+		}
+		if err := s.Incidents().Resolve(ctx, monitorID, inicio.Add(time.Minute)); err != nil {
+			t.Fatalf("Resolve returned unexpected error: %v", err)
+		}
+		ids[n-1-k] = i.ID
+	}
+	return ids
+}
+
+// collectIncidentPages percorre a listagem página a página, seguindo o
+// cursor como um cliente da API, e devolve os ids na ordem em que vieram.
+//
+// O teto de voltas existe porque o defeito que este teste pega é um laço:
+// o cursor apontava de novo para a primeira página, e sem teto o teste
+// travaria em vez de falhar.
+func collectIncidentPages(t *testing.T, s store.Store, f store.IncidentFilter) []int64 {
+	t.Helper()
+
+	var got []int64
+	for voltas := 0; ; voltas++ {
+		if voltas > 20 {
+			t.Fatalf("still paging after %d pages, ids so far %v: the cursor does not advance", voltas, got)
+		}
+		page, err := s.Incidents().List(context.Background(), f)
+		if err != nil {
+			t.Fatalf("List returned unexpected error: %v", err)
+		}
+		if len(page.Items) > f.Limit {
+			t.Fatalf("page has %d items, more than the limit %d", len(page.Items), f.Limit)
+		}
+		for _, i := range page.Items {
+			got = append(got, i.ID)
+		}
+		if !page.HasMore {
+			return got
+		}
+		if len(page.Items) == 0 {
+			t.Fatal("HasMore is true on an empty page")
+		}
+		f.BeforeID = page.Items[len(page.Items)-1].ID
+	}
+}
+
+func sameIDs(a, b []int64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k := range a {
+		if a[k] != b[k] {
+			return false
+		}
+	}
+	return true
+}
+
+// Quem consulta o histórico por páginas precisa passar da primeira. A
+// listagem vem do mais recente para o mais antigo, então o cursor aponta
+// para trás: a página seguinte traz os ids menores que o último visto.
+// Com o corte para o lado errado, a segunda página repetia a primeira e
+// o cliente ficava em laço sem nunca ver o resto.
+func testIncidentListPagesThroughEverything(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	id := mustCreateMonitor(t, s, "api")
+	want := mustRecordIncidents(t, s, id, 7)
+
+	got := collectIncidentPages(t, s, store.IncidentFilter{Limit: 3})
+
+	if !sameIDs(got, want) {
+		t.Errorf("paging returned %v, want every incident once, newest first: %v", got, want)
+	}
+}
+
+// O cursor corta só a posição; o filtro continua valendo em todas as
+// páginas. Senão a segunda página traria quedas de outro monitor, que
+// numa conta com escopo seriam justamente as que ela não pode ver.
+func testIncidentListPagesWithinTheFilter(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	meu := mustCreateMonitor(t, s, "meu")
+	outro := mustCreateMonitor(t, s, "outro")
+
+	// Intercalados, para o cursor cair entre ids do outro monitor.
+	var want []int64
+	for range 5 {
+		want = append(mustRecordIncidents(t, s, meu, 1), want...)
+		mustRecordIncidents(t, s, outro, 1)
+	}
+
+	got := collectIncidentPages(t, s, store.IncidentFilter{MonitorID: meu, Limit: 2})
+
+	if !sameIDs(got, want) {
+		t.Errorf("paging monitor %d returned %v, want %v", meu, got, want)
 	}
 }
 

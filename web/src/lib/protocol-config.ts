@@ -21,7 +21,16 @@ export function ehProtocolo(tipo: MonitorType): tipo is TipoProtocolo {
 }
 
 /** Comandos de leitura aceitos nas asserções, espelhando o servidor. */
-export const COMANDOS_REDIS = ["SCARD", "LLEN", "GET", "EXISTS", "HGET", "ZCARD", "DBSIZE", "INFO"];
+export const COMANDOS_REDIS = ["SCARD", "LLEN", "GET", "EXISTS", "HGET", "ZCARD", "DBSIZE", "INFO", "WORKERS"];
+
+/**
+ * Exemplo de chave no formato do comando. Em WORKERS a "chave" é o
+ * prefixo e o nome da fila Bull/BullMQ, que o servidor transforma no nome
+ * que a biblioteca dá à conexão do worker.
+ */
+export function exemploDeChave(comando: string): string {
+  return comando === "WORKERS" ? "bull:minha-fila" : "rq:workers:default";
+}
 
 export const OPERADORES: { value: string; label: string }[] = [
   { value: "gte", label: ">=" },
@@ -172,6 +181,9 @@ function montarAssercao(a: Assercao): Record<string, unknown> | string {
   if (pede.chave) {
     if (!a.chave.trim()) return `${a.comando} precisa de uma chave.`;
     saida.key = a.chave.trim();
+  }
+  if (a.comando === "WORKERS" && !/^.+:[^:]+$/.test(a.chave.trim())) {
+    return "WORKERS precisa do prefixo e da fila, como bull:minha-fila.";
   }
   if (pede.secao) {
     if (!a.secao.trim()) return "INFO precisa de uma seção, como memory.";

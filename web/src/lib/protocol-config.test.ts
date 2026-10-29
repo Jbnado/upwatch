@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  COMANDOS_REDIS,
   ehProtocolo,
+  exemploDeChave,
   lerProtocolo,
   montarProtocolo,
   protocoloVazio,
@@ -170,5 +172,41 @@ describe("lerProtocolo", () => {
     };
 
     expect(montarProtocolo("postgres", lerProtocolo("postgres", config)).config).toEqual(config);
+  });
+});
+
+describe("montarProtocolo — WORKERS", () => {
+  // O Bull e o BullMQ não registram worker em chave nenhuma; WORKERS conta
+  // as conexões que eles nomeiam. Sem o comando na lista, quem vigia fila
+  // Bull pela interface fica com EXISTS no stalled-check, que pisca.
+  it("oferece WORKERS entre os comandos", () => {
+    expect(COMANDOS_REDIS).toContain("WORKERS");
+  });
+
+  it("manda prefixo e fila juntos na chave", () => {
+    const r = montarProtocolo("redis", {
+      ...protocoloVazio(),
+      assercoes: [assercao({ comando: "WORKERS", chave: "bull:excel-render", op: "gte", valor: "1" })],
+    });
+
+    expect(r.erro).toBeUndefined();
+    expect(r.config?.assertions).toEqual([{ command: "WORKERS", key: "bull:excel-render", op: "gte", value: 1 }]);
+  });
+
+  // Só o nome da fila não dá para montar o nome da conexão do worker; o
+  // servidor recusaria, e o erro aqui aparece embaixo do campo certo.
+  it("recusa WORKERS sem o prefixo", () => {
+    const r = montarProtocolo("redis", {
+      ...protocoloVazio(),
+      assercoes: [assercao({ comando: "WORKERS", chave: "excel-render", valor: "1" })],
+    });
+
+    expect(r.erro?.campo).toBe("assercoes");
+    expect(r.erro?.msg).toContain("bull:");
+  });
+
+  it("sugere a chave no formato de cada comando", () => {
+    expect(exemploDeChave("WORKERS")).toBe("bull:minha-fila");
+    expect(exemploDeChave("SCARD")).toBe("rq:workers:default");
   });
 });

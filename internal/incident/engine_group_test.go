@@ -70,3 +70,50 @@ func TestEngineRecordsTransitionsWithCause(t *testing.T) {
 		t.Errorf("the recovery transition = %+v, want down → up", volta)
 	}
 }
+
+// O aviso leva o caminho do grupo do monitor. Monitores se chamam "api" e
+// "front" dentro de grupos, e sem o grupo o aviso não diz qual caiu.
+func TestEngineNotificationCarriesTheGroupPath(t *testing.T) {
+	f := newEngine(t)
+	ctx := context.Background()
+
+	sistema := domain.Group{Name: "RPA", Slug: "rpa"}
+	if err := f.store.Groups().Create(ctx, &sistema); err != nil {
+		t.Fatal(err)
+	}
+	ambiente := domain.Group{Name: "prod", Slug: "prod", ParentID: &sistema.ID}
+	if err := f.store.Groups().Create(ctx, &ambiente); err != nil {
+		t.Fatal(err)
+	}
+	f.monitor.GroupID = &ambiente.ID
+	if err := f.store.Monitors().Update(ctx, f.monitor); err != nil {
+		t.Fatal(err)
+	}
+	f.engine.Upsert(f.monitor)
+	f.linkChannel(t)
+
+	f.observe(t, repeatStatus(threshold, domain.StatusDown)...)
+
+	enviados := f.dispatch.all()
+	if len(enviados) != 1 {
+		t.Fatalf("sent %d notifications, want 1", len(enviados))
+	}
+	if enviados[0].Group != "RPA / prod" {
+		t.Errorf("Group = %q, want \"RPA / prod\"", enviados[0].Group)
+	}
+}
+
+func TestEngineNotificationWithoutGroupHasEmptyPath(t *testing.T) {
+	f := newEngine(t)
+	f.linkChannel(t)
+
+	f.observe(t, repeatStatus(threshold, domain.StatusDown)...)
+
+	enviados := f.dispatch.all()
+	if len(enviados) != 1 {
+		t.Fatalf("sent %d notifications, want 1", len(enviados))
+	}
+	if enviados[0].Group != "" {
+		t.Errorf("Group = %q, want vazio para monitor sem grupo", enviados[0].Group)
+	}
+}

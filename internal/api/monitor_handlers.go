@@ -223,6 +223,7 @@ func (a *API) handleCreateMonitor(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	m.RestrictInternal = a.restrictInternal(viewerFrom(r), m, nil)
 
 	if err := a.store.Monitors().Create(r.Context(), &m); err != nil {
 		writeStoreError(w, err)
@@ -275,11 +276,18 @@ func (a *API) handleUpdateMonitor(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	// Só a edição pode fechar um ciclo: o monitor novo ainda não tem
+	// filhos que o pai escolhido pudesse ser.
+	if err := a.checkParentCycle(r.Context(), m); err != nil {
+		writeStoreError(w, err)
+		return
+	}
 	anterior := monitorFrom(r)
 	if err := a.checkTargetReach(r.Context(), viewerFrom(r), m, &anterior); err != nil {
 		writeStoreError(w, err)
 		return
 	}
+	m.RestrictInternal = a.restrictInternal(viewerFrom(r), m, &anterior)
 
 	if err := a.store.Monitors().Update(r.Context(), m); err != nil {
 		writeStoreError(w, err)

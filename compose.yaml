@@ -44,6 +44,13 @@ services:
       # pouco, porque quem copia o volume leva as duas. Leve-a para fora
       # do volume e aponte para ela (ver "Segredos" no README):
       # UPWATCH_SECRET_KEY_FILE: /run/secrets/upwatch_secret_key
+
+      # A tela de primeiro acesso pede um token, para a instância recém-
+      # publicada não ser tomada por quem chegar antes de você. Sem esta
+      # variável, o UpWatch gera um a cada subida e o mostra só no log
+      # (docker compose logs upwatch). Depois que a conta existe, o token
+      # deixa de valer.
+      # UPWATCH_SETUP_TOKEN_FILE: /run/secrets/upwatch_setup_token
     # Sem privilégio nenhum: o processo não precisa de root, e a imagem
     # já roda como usuário sem privilégio.
     security_opt:

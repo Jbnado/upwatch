@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -168,6 +169,18 @@ func (c *Redis) Check(ctx context.Context, m domain.Monitor) Result {
 		}
 	}
 
+	if m.RestrictInternal {
+		// O dialer próprio substitui o do go-redis, que fazia também o
+		// TLS; por isso o handshake vem junto.
+		opts.Dialer = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			d := dialerFor(m)
+			if opts.TLSConfig == nil {
+				return d.DialContext(ctx, network, addr)
+			}
+			return (&tls.Dialer{NetDialer: d, Config: opts.TLSConfig}).DialContext(ctx, network, addr)
+		}
+	}
+
 	client := redis.NewClient(opts)
 	defer client.Close()
 
@@ -176,6 +189,11 @@ func (c *Redis) Check(ctx context.Context, m domain.Monitor) Result {
 	start := time.Now()
 	err = client.Ping(ctx).Err()
 	latency := time.Since(start).Milliseconds()
+	if refused, ok := internalRefusal(err); ok {
+		refused.Message = "PING: " + refused.Message
+		refused.Meta = meta
+		return refused
+	}
 	if err != nil {
 		return Result{
 			Status:  domain.StatusDown,
@@ -193,7 +211,7 @@ func (c *Redis) Check(ctx context.Context, m domain.Monitor) Result {
 			return Result{
 				Status:    domain.StatusDown,
 				LatencyMS: latency,
-				Message:   scrubSecret(fmt.Sprintf("%s: %v", a.label(), err), cfg.Password),
+				Message:   scrubSecret(a.explain(err), cfg.Password),
 				Meta:      meta,
 			}
 		}

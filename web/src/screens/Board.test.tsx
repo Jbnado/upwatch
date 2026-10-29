@@ -109,6 +109,21 @@ describe("Board num grupo", () => {
     expect(nomes()).toEqual(["bff"]);
   });
 
+  it("mostra o calado pelo pai em cinza, dizendo quem caiu, e não como problema próprio", async () => {
+    // Caso real: a VM da sonda perdeu a saída, e as verificações dela
+    // apareciam vermelhas como se cada serviço tivesse caído.
+    const calado = { ...resumo(3, "down"), affected_by: { id: 9, name: "sonda vm-01" } };
+    vi.mocked(api.summaries).mockResolvedValue({
+      items: [resumo(1, "up"), resumo(2, "up"), calado, resumo(4, "up"), resumo(5, "down")],
+      from: "",
+      to: "",
+    });
+    render(<Board podeEscrever={false} group={{ id: 3, path: "RPA / prod" }} />);
+
+    expect(await screen.findByText("sem sinal — sonda vm-01 fora")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /fora do ar/ })).not.toBeInTheDocument();
+  });
+
   it("não oferece filtro de estado que não tem ninguém", async () => {
     render(<Board podeEscrever={false} group={{ id: 3, path: "RPA / prod" }} />);
     await screen.findByText("bff");

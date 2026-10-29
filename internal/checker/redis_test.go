@@ -360,3 +360,69 @@ func TestRedisCheckNeverLeaksThePasswordInTheCause(t *testing.T) {
 		t.Errorf("Message = %q, want the rest of the cause preserved", res.Message)
 	}
 }
+
+// WORKERS depende de CLIENT LIST, que fica fora do usuário de ACL feito
+// só para leitura de chaves. Sem uma causa que diga isso, o operador vê
+// "NOPERM" no alerta, acha que o worker caiu e vai olhar o lugar errado.
+func TestRedisCheckWorkersExplainsACLRefusal(t *testing.T) {
+	srv := startFakeRedis(t, func(cmd []string) string {
+		if cmd[0] == "CLIENT" {
+			return "-NOPERM User upwatch has no permissions to run the 'client|list' command\r\n"
+		}
+		return ""
+	})
+
+	res := checker.NewRedis().Check(context.Background(), redisMonitor(srv.addr,
+		`{"assertions":[{"command":"WORKERS","key":"bull:excel-render","op":"gte","value":1}]}`))
+
+	if res.Status != domain.StatusDown {
+		t.Fatalf("Status = %v, want down", res.Status)
+	}
+	for _, want := range []string{"WORKERS bull:excel-render", "ACL", "+client|list"} {
+		if !strings.Contains(res.Message, want) {
+			t.Errorf("Message = %q, want it to mention %q", res.Message, want)
+		}
+	}
+}
+
+// Serviços gerenciados que desligam CLIENT (ou o renomeiam) respondem
+// "unknown command"; a causa precisa dizer que a asserção não funciona
+// ali, e não parecer uma queda.
+func TestRedisCheckWorkersExplainsClientListUnavailable(t *testing.T) {
+	srv := startFakeRedis(t, func(cmd []string) string {
+		if cmd[0] == "CLIENT" {
+			return "-ERR unknown command 'CLIENT', with args beginning with: 'LIST' \r\n"
+		}
+		return ""
+	})
+
+	res := checker.NewRedis().Check(context.Background(), redisMonitor(srv.addr,
+		`{"assertions":[{"command":"WORKERS","key":"bull:excel-render","op":"gte","value":1}]}`))
+
+	if res.Status != domain.StatusDown || !strings.Contains(res.Message, "CLIENT LIST") ||
+		!strings.Contains(res.Message, "não está disponível") {
+		t.Errorf("got %v %q, want down saying CLIENT LIST is unavailable", res.Status, res.Message)
+	}
+}
+
+func TestRedisCheckWorkersSendsClientList(t *testing.T) {
+	srv := startFakeRedis(t, func(cmd []string) string {
+		if cmd[0] == "CLIENT" {
+			body := "id=3 addr=10.0.0.5:51000 fd=8 name=bull:ZXhjZWwtcmVuZGVy age=9 idle=0 flags=b db=0 cmd=brpoplpush\n"
+			return fmt.Sprintf("$%d\r\n%s\r\n", len(body), body)
+		}
+		return ""
+	})
+
+	res := checker.NewRedis().Check(context.Background(), redisMonitor(srv.addr,
+		`{"assertions":[{"command":"WORKERS","key":"bull:excel-render","op":"gte","value":1}]}`))
+
+	if res.Status != domain.StatusUp {
+		t.Fatalf("Status = %v (%s), want up", res.Status, res.Message)
+	}
+	for _, c := range srv.commands() {
+		if c[0] == "CLIENT" && strings.Join(c, " ") != "CLIENT LIST" {
+			t.Errorf("sent %v, want exactly CLIENT LIST", c)
+		}
+	}
+}

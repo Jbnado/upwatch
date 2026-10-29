@@ -214,6 +214,11 @@ func (c *Postgres) Check(ctx context.Context, m domain.Monitor) Result {
 	if err != nil {
 		return fail("configuração", err)
 	}
+	if m.RestrictInternal {
+		// Vale também para o pedido de cancelamento, que o pgx abre por
+		// esta mesma função.
+		cc.DialFunc = dialerFor(m).DialContext
+	}
 	conn, err := pgx.ConnectConfig(ctx, cc)
 	if err != nil {
 		return fail("conexão", err)
