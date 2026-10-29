@@ -118,16 +118,18 @@ func (s *Service) CompleteLogin(ctx context.Context, challenge, code string) (st
 		}
 		return "", err
 	}
-	if s.locked(u.Username) {
-		return "", ErrTooManyAttempts
+	att, err := s.attempts.reserve(u.Username)
+	if err != nil {
+		return "", err
 	}
+	defer att.release()
 
 	ok, err := s.checkSecondFactor(ctx, u.ID, code)
 	if err != nil {
 		return "", err
 	}
 	if !ok {
-		s.recordFailure(u.Username)
+		att.fail()
 		return "", ErrInvalidCode
 	}
 
@@ -140,7 +142,7 @@ func (s *Service) CompleteLogin(ctx context.Context, challenge, code string) (st
 		}
 		return "", err
 	}
-	s.clearFailures(u.Username)
+	att.succeed()
 	return s.openSession(ctx, u.ID)
 }
 
@@ -343,11 +345,13 @@ func (s *Service) proveAccount(ctx context.Context, userID int64, password, code
 	if !u.TOTPEnabled {
 		return ErrTOTPNotEnabled
 	}
-	if s.locked(u.Username) {
-		return ErrTooManyAttempts
+	att, err := s.attempts.reserve(u.Username)
+	if err != nil {
+		return err
 	}
+	defer att.release()
 	if !u.CheckPassword(password) {
-		s.recordFailure(u.Username)
+		att.fail()
 		return ErrInvalidCredentials
 	}
 	ok, err := s.checkSecondFactor(ctx, userID, code)
@@ -355,10 +359,10 @@ func (s *Service) proveAccount(ctx context.Context, userID int64, password, code
 		return err
 	}
 	if !ok {
-		s.recordFailure(u.Username)
+		att.fail()
 		return ErrInvalidCode
 	}
-	s.clearFailures(u.Username)
+	att.succeed()
 	return nil
 }
 

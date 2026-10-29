@@ -22,8 +22,9 @@ const (
 	// senha forte cujo final é simplesmente ignorado.
 	maxPasswordLength = 72
 
-	// maxUsernameLength limita o nome de usuário.
-	maxUsernameLength = 64
+	// MaxUsernameLength limita o nome de usuário. Exportado porque o login
+	// recusa, antes de qualquer conferência, o nome que passa disso.
+	MaxUsernameLength = 64
 
 	// tokenPrefixLength é quanto do segredo aparece na listagem, o
 	// suficiente para o operador reconhecer qual token revogar.
@@ -63,8 +64,8 @@ func (u User) Validate() error {
 	if name == "" {
 		return invalid("username", "não pode ser vazio")
 	}
-	if len(name) > maxUsernameLength {
-		return invalid("username", fmt.Sprintf("não pode passar de %d caracteres", maxUsernameLength))
+	if len(name) > MaxUsernameLength {
+		return invalid("username", fmt.Sprintf("não pode passar de %d caracteres", MaxUsernameLength))
 	}
 	if !u.Role.Valid() {
 		return invalid("role", "papel desconhecido")
