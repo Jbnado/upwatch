@@ -106,7 +106,8 @@ func decodeState(statusName, candidateName string, consecutive int, sinceMS int6
 
 type incidentRepo struct{ db *db }
 
-const incidentColumns = `id, monitor_id, started_at, resolved_at, cause`
+const incidentColumns = `id, monitor_id, started_at, resolved_at, cause,
+	reminded_at, acknowledged_at, acknowledged_by, ack_note`
 
 func (r *incidentRepo) Open(ctx context.Context, i *domain.Incident) error {
 	id, err := r.db.insertID(ctx, `
@@ -146,6 +147,64 @@ func (r *incidentRepo) Current(ctx context.Context, monitorID int64) (domain.Inc
 		return domain.Incident{}, fmt.Errorf("incidente do monitor %d: %w", monitorID, store.ErrNotFound)
 	}
 	return i, err
+}
+
+func (r *incidentRepo) Get(ctx context.Context, id int64) (domain.Incident, error) {
+	row := r.db.QueryRowContext(ctx, `SELECT `+incidentColumns+` FROM incident WHERE id = ?`, id)
+
+	i, err := scanIncident(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Incident{}, fmt.Errorf("incidente %d: %w", id, store.ErrNotFound)
+	}
+	return i, err
+}
+
+// Acknowledge grava o reconhecimento numa instrução condicional: dois
+// cliques simultâneos não sobrescrevem um ao outro, e o incidente que
+// encerrou no meio do pedido não é reconhecido depois de acabar.
+func (r *incidentRepo) Acknowledge(ctx context.Context, id int64, ack domain.Acknowledgement) (domain.Incident, error) {
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE incident SET acknowledged_at = ?, acknowledged_by = ?, ack_note = ?
+		WHERE id = ? AND resolved_at IS NULL AND acknowledged_at IS NULL`,
+		toMillis(ack.At), ack.By, ack.Note, id)
+	if err != nil {
+		return domain.Incident{}, fmt.Errorf("sqlstore: reconhecendo incidente %d: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return domain.Incident{}, fmt.Errorf("sqlstore: reconhecendo incidente %d: %w", id, err)
+	}
+
+	i, err := r.Get(ctx, id)
+	if err != nil {
+		return domain.Incident{}, err
+	}
+	if n == 0 {
+		return i, fmt.Errorf("incidente %d encerrado ou já reconhecido: %w", id, store.ErrConflict)
+	}
+	return i, nil
+}
+
+func (r *incidentRepo) MarkReminded(ctx context.Context, id int64, previous *time.Time, at time.Time) (bool, error) {
+	q := `UPDATE incident SET reminded_at = ?
+		WHERE id = ? AND resolved_at IS NULL AND acknowledged_at IS NULL AND `
+	args := []any{toMillis(at), id}
+	if previous == nil {
+		q += `reminded_at IS NULL`
+	} else {
+		q += `reminded_at = ?`
+		args = append(args, toMillis(*previous))
+	}
+
+	res, err := r.db.ExecContext(ctx, q, args...)
+	if err != nil {
+		return false, fmt.Errorf("sqlstore: registrando lembrete do incidente %d: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("sqlstore: registrando lembrete do incidente %d: %w", id, err)
+	}
+	return n == 1, nil
 }
 
 func (r *incidentRepo) List(ctx context.Context, f store.IncidentFilter) (store.Page[domain.Incident], error) {
@@ -213,8 +272,13 @@ func scanIncident(sc scanner) (domain.Incident, error) {
 		i          domain.Incident
 		startedMS  int64
 		resolvedMS sql.NullInt64
+		remindedMS sql.NullInt64
+		ackMS      sql.NullInt64
+		ackBy      sql.NullString
+		ackNote    sql.NullString
 	)
-	if err := sc.Scan(&i.ID, &i.MonitorID, &startedMS, &resolvedMS, &i.Cause); err != nil {
+	if err := sc.Scan(&i.ID, &i.MonitorID, &startedMS, &resolvedMS, &i.Cause,
+		&remindedMS, &ackMS, &ackBy, &ackNote); err != nil {
 		return domain.Incident{}, err
 	}
 
@@ -222,6 +286,15 @@ func scanIncident(sc scanner) (domain.Incident, error) {
 	if resolvedMS.Valid {
 		at := fromMillis(resolvedMS.Int64)
 		i.ResolvedAt = &at
+	}
+	if remindedMS.Valid {
+		at := fromMillis(remindedMS.Int64)
+		i.RemindedAt = &at
+	}
+	if ackMS.Valid {
+		i.Acknowledgement = &domain.Acknowledgement{
+			By: ackBy.String, At: fromMillis(ackMS.Int64), Note: ackNote.String,
+		}
 	}
 	return i, nil
 }

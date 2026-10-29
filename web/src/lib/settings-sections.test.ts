@@ -30,6 +30,7 @@ describe("menu dos ajustes", () => {
       "grupos",
       "contas",
       "canais",
+      "manutencao",
       "paginas",
       "tokens",
       "senha",
@@ -37,7 +38,7 @@ describe("menu dos ajustes", () => {
   });
 
   it("tira canais e páginas de estado de quem administra só alguns grupos", () => {
-    // Canal e página pública valem para todos os grupos, e o servidor
+    // Canal, manutenção e página pública valem para todos os grupos, e o servidor
     // recusa a escrita deles a quem não alcança todos. Token não: ele é
     // da própria conta e herda o escopo dela, então o servidor o emite.
     expect(ids(conta("admin", false))).toEqual(["grupos", "contas", "tokens", "senha"]);

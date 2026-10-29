@@ -8,17 +8,25 @@ import type { User } from "../api/types";
  * ou ofereceria o que ela recusa.
  */
 
-export type SectionId = "grupos" | "contas" | "canais" | "paginas" | "tokens" | "senha";
+export type SectionId = "grupos" | "contas" | "canais" | "manutencao" | "paginas" | "tokens" | "senha";
 
-export const SECTION_IDS: SectionId[] = ["grupos", "contas", "canais", "paginas", "tokens", "senha"];
+export const SECTION_IDS: SectionId[] = [
+  "grupos",
+  "contas",
+  "canais",
+  "manutencao",
+  "paginas",
+  "tokens",
+  "senha",
+];
 
 /**
  * O que a seção exige, espelhando o servidor:
  * - "conta": qualquer um, mesmo observador (trocar a própria senha);
  * - "admin": administrador, recortado pelo escopo dele;
- * - "total": administrador que alcança todos os grupos. Canal e página
- *   pública valem para todos os grupos, e a escrita deles é recusada a
- *   quem não os alcança.
+ * - "total": administrador que alcança todos os grupos. Canal, janela de
+ *   manutenção e página pública valem para todos os grupos, e a escrita
+ *   deles é recusada a quem não os alcança.
  */
 type Requirement = "conta" | "admin" | "total";
 
@@ -32,7 +40,13 @@ const MENU: { title: string; items: SectionDef[] }[] = [
       { id: "contas", label: "Contas e acesso", requires: "admin" },
     ],
   },
-  { title: "Avisos", items: [{ id: "canais", label: "Canais", requires: "total" }] },
+  {
+    title: "Avisos",
+    items: [
+      { id: "canais", label: "Canais", requires: "total" },
+      { id: "manutencao", label: "Manutenção", requires: "total" },
+    ],
+  },
   { title: "Publicar", items: [{ id: "paginas", label: "Páginas de estado", requires: "total" }] },
   // Token é da própria conta e herda o escopo dela: o servidor o emite a
   // qualquer administrador, restrito ou não.

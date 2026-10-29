@@ -383,6 +383,21 @@ type incidentResponse struct {
 	DurationSeconds int        `json:"duration_seconds"`
 	Cause           string     `json:"cause,omitempty"`
 	Open            bool       `json:"open"`
+	// Acknowledgement é quem disse estar olhando a queda, quando e com que
+	// nota. Nulo quando ninguém disse.
+	Acknowledgement *domain.Acknowledgement `json:"acknowledgement"`
+	// RemindedAt é o último lembrete enviado sobre a queda.
+	RemindedAt *time.Time `json:"reminded_at,omitempty"`
+}
+
+func toIncidentResponse(i domain.Incident, agora time.Time) incidentResponse {
+	return incidentResponse{
+		ID: i.ID, MonitorID: i.MonitorID,
+		StartedAt: i.StartedAt, ResolvedAt: i.ResolvedAt,
+		DurationSeconds: int(i.Duration(agora).Seconds()),
+		Cause:           i.Cause, Open: i.Open(),
+		Acknowledgement: i.Acknowledgement, RemindedAt: i.RemindedAt,
+	}
 }
 
 // handleListIncidents devolve o histórico de quedas.
@@ -419,12 +434,7 @@ func (a *API) handleListIncidents(w http.ResponseWriter, r *http.Request) {
 	agora := a.clock.Now()
 	items := make([]incidentResponse, 0, len(page.Items))
 	for _, i := range page.Items {
-		items = append(items, incidentResponse{
-			ID: i.ID, MonitorID: i.MonitorID,
-			StartedAt: i.StartedAt, ResolvedAt: i.ResolvedAt,
-			DurationSeconds: int(i.Duration(agora).Seconds()),
-			Cause:           i.Cause, Open: i.Open(),
-		})
+		items = append(items, toIncidentResponse(i, agora))
 	}
 
 	body := map[string]any{"items": items, "has_more": page.HasMore}

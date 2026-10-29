@@ -26,6 +26,10 @@ type Options struct {
 	// cadastro passar a ser verificado sem esperar reinício.
 	Scheduler MonitorSink
 
+	// Maintenance é avisado a cada janela de manutenção gravada. Nulo
+	// dispensa o aviso.
+	Maintenance MaintenanceReloader
+
 	// SecureCookies marca o cookie de sessão como Secure. Fica desligado
 	// por padrão porque muitas instalações caseiras servem em HTTP puro na
 	// rede local, e um cookie Secure ali simplesmente não seria enviado —
@@ -101,6 +105,8 @@ type API struct {
 	clock     clock.Clock
 	scheduler MonitorSink
 
+	maintenance MaintenanceReloader
+
 	secureCookies bool
 	sessionTTL    time.Duration
 	publicURL     string
@@ -146,6 +152,7 @@ func New(opts Options) http.Handler {
 		checkers:      opts.Checkers,
 		clock:         opts.Clock,
 		scheduler:     opts.Scheduler,
+		maintenance:   opts.Maintenance,
 		secureCookies: opts.SecureCookies,
 		sessionTTL:    opts.SessionTTL,
 		publicURL:     opts.PublicURL,
@@ -268,6 +275,9 @@ func (a *API) routes() http.Handler {
 			t.handle(http.MethodGet, "/announcements", policyFiltered, a.handleListAnnouncements)
 			t.handle(http.MethodGet, "/announcements/{id}", policyFiltered, a.handleGetAnnouncement)
 
+			t.handle(http.MethodGet, "/maintenance-windows", policyFiltered, a.handleListMaintenance)
+			t.handle(http.MethodGet, "/maintenance-windows/{id}", policyFiltered, a.handleGetMaintenance)
+
 			t.handle(http.MethodGet, "/events", policyStream, a.handleEvents)
 		})
 
@@ -299,6 +309,8 @@ func (a *API) routes() http.Handler {
 			// "Definir pai" para vários monitores de uma vez: o {id} é o
 			// pai, e cada filho é conferido contra o escopo no handler.
 			t.handle(http.MethodPost, "/monitors/{id}/children", policyMonitor, a.handleSetChildren)
+			// "Estou vendo": cala os lembretes daquela queda.
+			t.handle(http.MethodPost, "/monitors/{id}/incidents/{incidentID}/ack", policyMonitor, a.handleAcknowledgeIncident)
 			t.handle(http.MethodDelete, "/monitors/{id}/children/{childID}", policyMonitor, a.handleUnlinkChild)
 
 			t.handle(http.MethodPut, "/monitors/{id}/channels/{channelID}", policyFullScope|policyMonitor, a.handleLinkChannel)
@@ -346,6 +358,14 @@ func (a *API) routes() http.Handler {
 			t.handle(http.MethodPut, "/announcements/{id}", policyFullScope, a.handleUpdateAnnouncement)
 			t.handle(http.MethodDelete, "/announcements/{id}", policyFullScope, a.handleDeleteAnnouncement)
 			t.handle(http.MethodPost, "/announcements/{id}/updates", policyFullScope, a.handlePublishUpdate)
+
+			// Janelas de manutenção calam avisos de quem estiver no alvo,
+			// então só quem alcança tudo as declara (ver maintenance_handlers).
+			t.handle(http.MethodPost, "/maintenance-windows", policyFullScope, a.handleCreateMaintenance)
+			t.handle(http.MethodPut, "/maintenance-windows/{id}", policyFullScope, a.handleUpdateMaintenance)
+			t.handle(http.MethodDelete, "/maintenance-windows/{id}", policyFullScope, a.handleDeleteMaintenance)
+			// Encerrar antes do previsto, sem apagar o que a janela registrou.
+			t.handle(http.MethodPost, "/maintenance-windows/{id}/end", policyFullScope, a.handleEndMaintenance)
 		})
 	})
 

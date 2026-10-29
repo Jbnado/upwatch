@@ -49,6 +49,10 @@ type Engine struct {
 	// retenção tem prazo para isso.
 	aliveAt      map[int64]time.Time
 	failingSince map[int64]time.Time
+
+	// maintenance responde se o monitor está numa janela de manutenção.
+	// Nulo é nenhuma janela (ver WithMaintenance).
+	maintenance Maintenance
 }
 
 // NewEngine cria o motor.
@@ -191,11 +195,17 @@ func (e *Engine) evaluate(ctx context.Context, hb domain.Heartbeat) {
 // a falhar. A retenção tem prazo (holdLimit), para um pai que não diz
 // nada não calar o filho para sempre; e não vale para pai sem medição,
 // que nunca decidiria.
+//
+// A janela de manutenção vem antes de tudo isso (ver inMaintenance).
 func (e *Engine) screen(hb domain.Heartbeat) domain.Heartbeat {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	e.track(hb)
+	if w, ok := e.inMaintenance(hb); ok {
+		return discard(hb, fmt.Sprintf("em manutenção — %s; resultado descartado (falha original: %s)",
+			w.Title, originalCause(hb)))
+	}
 	if hb.Status != domain.StatusDown {
 		return hb
 	}

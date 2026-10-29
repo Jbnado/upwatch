@@ -25,6 +25,7 @@ import (
 	"github.com/Jbnado/upwatch/internal/config"
 	"github.com/Jbnado/upwatch/internal/domain"
 	"github.com/Jbnado/upwatch/internal/incident"
+	janelas "github.com/Jbnado/upwatch/internal/maintenance"
 	"github.com/Jbnado/upwatch/internal/metrics"
 	"github.com/Jbnado/upwatch/internal/notifier"
 	"github.com/Jbnado/upwatch/internal/rollup"
@@ -125,6 +126,8 @@ type application struct {
 	writer    *store.BatchWriter
 	scheduler *scheduler.Scheduler
 	incidents *incident.Engine
+	reminders *incident.Reminders
+	calendar  *janelas.Calendar
 	alerts    *notifier.Dispatcher
 	rollups   *rollup.Worker
 	auth      *auth.Service
@@ -196,6 +199,11 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 	// nem o escritor de alertas.
 	engine := incident.NewEngine(writer, st, alerts, counters)
 
+	// As janelas de manutenção ficam em memória, como os monitores: o
+	// motor pergunta a cada batida.
+	calendar := janelas.New(st)
+	engine.WithMaintenance(calendar)
+
 	sched := scheduler.New(registry, engine, scheduler.Options{
 		Workers: cfg.Workers,
 		Clock:   real,
@@ -224,6 +232,7 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 		Checkers:      registry,
 		Clock:         real,
 		Scheduler:     monitorFanout{sched, engine},
+		Maintenance:   calendar,
 		SecureCookies: cfg.SecureCookies,
 		PublicURL:     cfg.PublicURL,
 		Version:       version,
@@ -240,7 +249,12 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 		writer:    writer,
 		scheduler: sched,
 		incidents: engine,
-		alerts:    alerts,
+		reminders: incident.NewReminders(engine, incident.ReminderOptions{
+			Clock:   real,
+			Default: cfg.ReminderInterval,
+		}),
+		calendar: calendar,
+		alerts:   alerts,
 		rollups: rollup.NewWorker(st, rollup.Options{
 			Interval:  cfg.RollupInterval,
 			Retention: cfg.RetentionPolicy(),
@@ -262,6 +276,11 @@ func (a *application) run(ctx context.Context, cfg config.Config) error {
 	if err := a.incidents.Load(ctx); err != nil {
 		return fmt.Errorf("carregando estado dos monitores: %w", err)
 	}
+	// Antes da primeira batida, pelo mesmo motivo: subir no meio de uma
+	// manutenção não pode avisar até a primeira releitura.
+	if err := a.calendar.Reload(ctx); err != nil {
+		return fmt.Errorf("carregando janelas de manutenção: %w", err)
+	}
 
 	var wg sync.WaitGroup
 	spawn := func(name string, fn func(context.Context)) {
@@ -277,6 +296,8 @@ func (a *application) run(ctx context.Context, cfg config.Config) error {
 	spawn("scheduler", a.scheduler.Run)
 	spawn("rollup", a.rollups.Run)
 	spawn("alertas", a.alerts.Run)
+	spawn("lembretes", a.reminders.Run)
+	spawn("manutencao", a.calendar.Run)
 	spawn("sessoes", a.sweepSessions)
 
 	server := &http.Server{

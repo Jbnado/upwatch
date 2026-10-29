@@ -16,7 +16,7 @@ import (
 
 type groupRepo struct{ db *db }
 
-const groupColumns = `id, name, slug, parent_id, created_at, updated_at`
+const groupColumns = `id, name, slug, parent_id, created_at, updated_at, reminder_interval_ms`
 
 // Create grava o grupo, recusando um terceiro nível.
 //
@@ -32,10 +32,11 @@ func (r *groupRepo) Create(ctx context.Context, g *domain.Group) error {
 			return err
 		}
 		id, err := t.insertID(ctx, `
-			INSERT INTO monitor_group (name, slug, parent_id, created_at, updated_at)
-			SELECT ?, ?, ?, ?, ?
+			INSERT INTO monitor_group (name, slug, parent_id, created_at, updated_at, reminder_interval_ms)
+			SELECT ?, ?, ?, ?, ?, ?
 			WHERE `+parentIsTopLevel,
-			g.Name, g.Slug, g.ParentID, toMillis(now), toMillis(now), g.ParentID, g.ParentID, int64(0))
+			g.Name, g.Slug, g.ParentID, toMillis(now), toMillis(now), durationMillis(g.ReminderInterval),
+			g.ParentID, g.ParentID, int64(0))
 		if errors.Is(err, sql.ErrNoRows) {
 			return errThirdLevel
 		}
@@ -108,11 +109,12 @@ func (r *groupRepo) Update(ctx context.Context, g domain.Group) error {
 			return err
 		}
 		res, err := t.ExecContext(ctx, `
-			UPDATE monitor_group SET name = ?, slug = ?, parent_id = ?, updated_at = ?
+			UPDATE monitor_group SET name = ?, slug = ?, parent_id = ?, updated_at = ?,
+				reminder_interval_ms = ?
 			WHERE id = ? AND `+parentIsTopLevel+`
 			  AND (CAST(? AS BIGINT) IS NULL OR NOT EXISTS (
 				SELECT 1 FROM monitor_group filho WHERE filho.parent_id = ?))`,
-			g.Name, g.Slug, g.ParentID, toMillis(now), g.ID,
+			g.Name, g.Slug, g.ParentID, toMillis(now), durationMillis(g.ReminderInterval), g.ID,
 			g.ParentID, g.ParentID, g.ID, g.ParentID, g.ID)
 		if err != nil {
 			return translateGroupErr(err)
@@ -189,12 +191,13 @@ func (r *groupRepo) List(ctx context.Context) ([]domain.Group, error) {
 
 func scanGroup(sc scanner) (domain.Group, error) {
 	var (
-		g         domain.Group
-		parentID  sql.NullInt64
-		createdMS int64
-		updatedMS int64
+		g          domain.Group
+		parentID   sql.NullInt64
+		createdMS  int64
+		updatedMS  int64
+		reminderMS sql.NullInt64
 	)
-	if err := sc.Scan(&g.ID, &g.Name, &g.Slug, &parentID, &createdMS, &updatedMS); err != nil {
+	if err := sc.Scan(&g.ID, &g.Name, &g.Slug, &parentID, &createdMS, &updatedMS, &reminderMS); err != nil {
 		return domain.Group{}, err
 	}
 	if parentID.Valid {
@@ -203,6 +206,7 @@ func scanGroup(sc scanner) (domain.Group, error) {
 	}
 	g.CreatedAt = fromMillis(createdMS)
 	g.UpdatedAt = fromMillis(updatedMS)
+	g.ReminderInterval = durationFromMillis(reminderMS)
 	return g, nil
 }
 

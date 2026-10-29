@@ -78,6 +78,10 @@ func (w *webhook) Send(ctx context.Context, n Notification) error {
 		// Sempre presente, vazio sem grupo: um campo que some conforme o
 		// monitor reprova validação de esquema do outro lado.
 		"group": n.Group,
+		// Campo novo, e não status diferente: no lembrete o status segue
+		// "down", e quem só olha os campos antigos continua lendo uma queda
+		// aberta, como de fato é.
+		"event": n.Kind(),
 	})
 }
 

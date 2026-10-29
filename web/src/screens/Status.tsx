@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
-import { ApiError, type PublicAnnouncement, type PublicDay, type PublicView } from "../api/types";
+import {
+  ApiError,
+  type PublicAnnouncement,
+  type PublicDay,
+  type PublicMaintenance,
+  type PublicView,
+} from "../api/types";
 import { Loading } from "../components/ui";
 import { latency, uptime } from "../lib/format";
 
@@ -108,6 +114,8 @@ export function Status({ slug }: { slug?: string }) {
 
       <Ativos announcements={view.announcements} />
 
+      <Manutencoes maintenances={view.maintenances ?? []} />
+
       <section className="flex flex-col gap-6">
         {view.groups.map((grupo, i) => (
           <div key={grupo.name || `sem-grupo-${i}`} className="flex flex-col gap-3">
@@ -122,6 +130,7 @@ export function Status({ slug }: { slug?: string }) {
                   latencyP95={m.latency_p95_ms}
                   history={m.history}
                   windowDays={view.window_days}
+                  maintenance={m.maintenance ?? false}
                 />
               ))}
             </div>
@@ -149,13 +158,23 @@ export function Status({ slug }: { slug?: string }) {
  */
 function Banner({ view }: { view: PublicView }) {
   const abertos = view.announcements.filter((a) => a.phase !== "resolved");
-  const tudoBem = view.status === "up" && abertos.length === 0;
+  // Manutenção em curso fala mais alto que "sem medição" — a lacuna é
+  // dela —, mas não que uma queda de verdade em outro componente.
+  const emManutencao =
+    abertos.length === 0 && view.status !== "down" && (view.maintenances ?? []).some((m) => m.active);
+  const tudoBem = view.status === "up" && abertos.length === 0 && !emManutencao;
 
   // O veredito, não a manchete. O título do incidente já aparece logo
   // abaixo, com a linha do tempo — repeti-lo aqui gastaria a maior
   // tipografia da página numa informação duplicada.
-  const texto = veredito(view.status, view.impact, abertos.length > 0);
-  const cor = abertos.length > 0 ? IMPACTO_CLASSE[view.impact] : ESTADO_COR[view.status];
+  const texto = emManutencao
+    ? "Manutenção em andamento"
+    : veredito(view.status, view.impact, abertos.length > 0);
+  const cor = emManutencao
+    ? "text-maint"
+    : abertos.length > 0
+      ? IMPACTO_CLASSE[view.impact]
+      : ESTADO_COR[view.status];
 
   return (
     <section
@@ -222,6 +241,44 @@ function Ativos({ announcements }: { announcements: PublicAnnouncement[] }) {
   );
 }
 
+/**
+ * Manutencoes anuncia a janela em curso e as que vêm nos próximos dias.
+ *
+ * Antes dos componentes, como o relato aberto: quem abre a página no meio
+ * do deploy precisa ler "manutenção programada" antes de ver a lacuna na
+ * barra e concluir que caiu.
+ */
+function Manutencoes({ maintenances }: { maintenances: PublicMaintenance[] }) {
+  if (maintenances.length === 0) return null;
+
+  return (
+    <section className="flex flex-col gap-3">
+      <h2 className="eyebrow">manutenção programada</h2>
+      {maintenances.map((m) => (
+        <article
+          key={m.title + m.starts_at}
+          className={`flex flex-col gap-1.5 rounded-sm border p-4 ${
+            m.active ? "border-maint/50 bg-maint-dim" : "border-line-strong bg-surface"
+          }`}
+        >
+          <h3 className="text-lead font-medium text-ink">
+            {m.title}
+            {m.active && <span className="ml-2 text-small font-medium text-maint">em andamento</span>}
+          </h3>
+          <p className="text-small text-ink-3">
+            {m.components.join(", ")}
+            <span className="mx-1.5">·</span>
+            <span className="tabular">
+              {carimboCurto(m.starts_at)} – {carimboCurto(m.ends_at)}
+            </span>
+          </p>
+          {m.message && <p className="text-body text-ink-2">{m.message}</p>}
+        </article>
+      ))}
+    </section>
+  );
+}
+
 function Componente({
   name,
   status,
@@ -229,6 +286,7 @@ function Componente({
   latencyP95,
   history,
   windowDays,
+  maintenance,
 }: {
   name: string;
   status: string;
@@ -236,6 +294,7 @@ function Componente({
   latencyP95?: number;
   history: PublicDay[];
   windowDays: number;
+  maintenance: boolean;
 }) {
   return (
     <div className="flex flex-col gap-2 border-b border-line py-3 last:border-b-0">
@@ -245,9 +304,13 @@ function Componente({
           {latencyP95 !== undefined && (
             <span className="tabular text-small text-ink-3">{latency(latencyP95)}</span>
           )}
-          <span className={`text-small font-medium ${ESTADO_COR[status] ?? "text-ink-3"}`}>
-            {ESTADO_LABEL[status] ?? "Sem medição"}
-          </span>
+          {maintenance ? (
+            <span className="text-small font-medium text-maint">Em manutenção</span>
+          ) : (
+            <span className={`text-small font-medium ${ESTADO_COR[status] ?? "text-ink-3"}`}>
+              {ESTADO_LABEL[status] ?? "Sem medição"}
+            </span>
+          )}
         </span>
       </div>
 

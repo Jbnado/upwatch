@@ -52,6 +52,24 @@ histórico, e o aviso do pai diz quantos dependentes ficaram calados;
 quando o pai volta, o filho que continuar fora avisa. Pai sem medição
 ou pausado não cala ninguém, e ciclos são recusados no cadastro.
 
+**Lembra enquanto ninguém olhou.** O aviso de queda sai uma vez, na
+transição; a das duas da manhã se perde. Com lembrete ligado, a queda
+que segue aberta volta a avisar a cada intervalo, dizendo há quanto tempo
+dura — até alguém apertar "Estou vendo" no detalhe do monitor (ou chamar
+a API). O reconhecimento registra quem e quando, aparece no painel e no
+histórico de quedas, e cala os lembretes só daquela queda; o aviso de
+volta sai normalmente. O intervalo se escolhe no monitor, no ambiente ou
+no sistema (o mais específico vence; zero desliga), e o padrão da
+instalação é `UPWATCH_REMINDER_INTERVAL`, desligado. O filho calado pelo
+pai não lembra sozinho: o lembrete do pai diz quantos dependentes estão
+calados. Reconhecer é escrita, então observador não reconhece.
+
+**Sabe que o deploy das 19h vai derrubar a API.** Uma
+[janela de manutenção](#janelas-de-manutenção) cala os avisos de um
+monitor, de um grupo inteiro ou dos dois, uma vez ou toda semana, sem
+desligar nada: as verificações continuam e o histórico registra a
+manutenção, que não conta como queda na disponibilidade.
+
 **Avisa** por webhook, Discord, Slack, [e-mail](#e-mail) e [ntfy](#ntfy),
 com um botão de teste em cada canal. Descobrir que o alerta não chega
 durante a queda é descobrir tarde. O webhook genérico aceita cabeçalhos
@@ -177,6 +195,7 @@ configuração nenhuma e uma instalação séria versiona o YAML.
 | `UPWATCH_ROLLUP_INTERVAL` | `5m` | De quanto em quanto a agregação roda |
 | `UPWATCH_WORKERS` | `50` | Teto de verificações simultâneas |
 | `UPWATCH_SESSION_TTL` | `168h` | Validade da sessão da interface |
+| `UPWATCH_REMINDER_INTERVAL` | `0` | De quanto em quanto uma queda aberta e não reconhecida é relembrada, para monitor e grupo sem intervalo próprio; `0` desliga, e o mínimo é `5m` |
 | `UPWATCH_SECURE_COOKIES` | `false` | Marca o cookie como Secure; ligue ao servir por HTTPS |
 | `UPWATCH_PUBLIC_URL` | vazio | Endereço externo, para o feed da página pública usar URLs absolutas |
 | `UPWATCH_METRICS_TOKEN` | vazio | Exige `Authorization: Bearer <token>` em `/metrics`; vazio deixa aberto enquanto não houver conta restrita; aceita `_FILE` |
@@ -403,7 +422,8 @@ Sem configuração extra, o corpo é este envelope:
   "message": "connection refused",
   "at": "2026-07-30T18:42:11Z",
   "duration_seconds": 0,
-  "group": "RPA / prod"
+  "group": "RPA / prod",
+  "event": "transition"
 }
 ```
 
@@ -414,6 +434,14 @@ pode vir vazia. `group` é o caminho do grupo do monitor (`RPA / prod`), e
 vem vazio para monitor sem grupo — monitores costumam se chamar só `api`
 ou `front`, e é o grupo que diz qual sistema caiu. Pelo mesmo motivo, a
 frase padrão traz o grupo entre parênteses depois do nome.
+
+`event` diz o que o aviso conta: `transition` é a mudança de estado, e
+`reminder` é o [lembrete](#o-que-ele-faz) de uma queda que segue aberta.
+No lembrete os outros campos continuam os da queda — mesmo `monitor_id`,
+`status` e `previous_status` iguais a `down` —, `at` é o instante do
+lembrete e `duration_seconds` é há quanto tempo a queda dura. Quem abre
+chamado a partir do webhook trata o `reminder` como repetição do chamado
+aberto, e não como queda nova.
 
 ### Escolhendo a forma do corpo
 
@@ -445,6 +473,7 @@ marcadores são substituídos:
 | `$at` | Instante da mudança |
 | `$duration_seconds` | Duração do estado anterior, como número |
 | `$group` | Caminho do grupo (`RPA / prod`), vazio sem grupo |
+| `$event` | `transition` ou `reminder` |
 | `$text` | A frase pronta do aviso |
 
 Também vale `${nome}`, para quando o marcador encosta em texto que
@@ -682,6 +711,48 @@ obrigar você a renomeá-lo nem a entregar sua convenção de nomes.
 Há também um feed Atom em `/api/v1/public/<slug>/feed.atom`, para
 acompanhar sem cadastrar e-mail e para ligar num canal de chat sem que o
 UpWatch precise saber falar com aquele canal.
+
+## Janelas de manutenção
+
+Em Ajustes → Manutenção, ou pela API em `/api/v1/maintenance-windows`.
+Declare "RPA/prod em manutenção hoje das 19h às 19h30" e o deploy não
+acende o aviso do time inteiro.
+
+Dentro da janela:
+
+- as verificações continuam e são gravadas; a falha vira "sem medição"
+  com o motivo na mensagem (`em manutenção — deploy do RPA; resultado
+  descartado (falha original: …)`), e é assim que aparece nos eventos do
+  monitor;
+- não abre incidente nem avisa, nem por queda nem por degradação;
+- a disponibilidade não conta o intervalo como queda;
+- a página pública mostra "manutenção" no componente afetado, com o
+  título e o texto da janela, e anuncia a janela que começa nos próximos
+  sete dias.
+
+**Alvo.** Monitores e grupos, à vontade. A janela num sistema vale para
+todos os ambientes dele — `RPA` cobre `RPA/hml` e `RPA/prod`, inclusive
+monitores criados depois. E vale para os dependentes: com o pai em
+manutenção, a queda do filho é a do pai, e fica calada também.
+
+**Recorrência.** Avulsa, diária ou semanal, no fuso da janela: "todo
+domingo, 02h–03h" continua às 2h depois da troca de horário de verão. A
+avulsa dura no máximo 31 dias — uma janela esquecida é o monitor
+desligado que ninguém religou —, e a recorrente precisa ser mais curta
+que o intervalo da repetição.
+
+**Quando a janela acaba com o alvo fora.** Ele avisa, uma vez, depois das
+confirmações de sempre, como uma queda nova. A queda confirmada antes de
+a janela começar já tinha avisado; a volta dela, mesmo no meio da
+janela, também avisa.
+
+**Encerrar antes do previsto** (`POST /api/v1/maintenance-windows/<id>/end`)
+para de silenciar na hora, e cancela as próximas ocorrências da
+recorrente. Apagar a janela também, mas encerrar mantém o registro.
+
+Declarar janela exige acesso a todos os grupos, como canal e relato: ela
+cala avisos, e numa conta restrita calaria o pager do time vizinho.
+Quem tem escopo vê as janelas que tocam os grupos dele.
 
 ## Prometheus
 
