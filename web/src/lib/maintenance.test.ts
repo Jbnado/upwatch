@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Group, MaintenanceWindow, Monitor } from "../api/types";
-import { alvos, doCampo, ordenar, padraoAgora, paraCampo, quando } from "./maintenance";
+import { alvos, alvosDaSelecao, doCampo, ordenar, padraoAgora, paraCampo, quando, selecaoDosAlvos } from "./maintenance";
+import { buildServiceTree } from "./service-tree";
 
 function janela(parcial: Partial<MaintenanceWindow>): MaintenanceWindow {
   return {
@@ -82,5 +83,43 @@ describe("janelas de manutenção", () => {
     const monitores = [monitor(7, "erp", 12)];
     const j = janela({ group_ids: [10, 12, 99], monitor_ids: [7, 98] });
     expect(alvos(j, grupos, monitores)).toEqual(["RPA (todos os ambientes)", "RPA / prod", "erp · RPA / prod"]);
+  });
+});
+
+describe("alvos pela árvore", () => {
+  // RPA → {hml: [8], prod: [7, 9]}, e um avulso sem grupo.
+  const grupos = [grupo(10, "RPA"), grupo(11, "RPA / hml", 10), grupo(12, "RPA / prod", 10), grupo(13, "RPA / dr", 10)];
+  const monitores = [monitor(7, "api", 12), monitor(9, "erp", 12), monitor(8, "api", 11), monitor(5, "solto", null)];
+  const arvore = buildServiceTree(grupos, monitores);
+
+  it("grava o ambiente inteiro como grupo, e o resto como monitor", () => {
+    // O grupo cobre o monitor cadastrado amanhã no RPA/prod; a lista dos
+    // monitores de hoje não cobriria.
+    expect(alvosDaSelecao(arvore, new Set([7, 9, 5]))).toEqual({
+      group_ids: [12],
+      monitor_ids: [5],
+    });
+  });
+
+  it("grava o sistema inteiro como o sistema, sem repetir os ambientes", () => {
+    expect(alvosDaSelecao(arvore, new Set([7, 9, 8]))).toEqual({ group_ids: [10], monitor_ids: [] });
+  });
+
+  it("grava monitor avulso quando o ambiente está só em parte", () => {
+    expect(alvosDaSelecao(arvore, new Set([7]))).toEqual({ group_ids: [], monitor_ids: [7] });
+  });
+
+  it("volta da janela para a árvore sem perder o grupo que ela não mostra", () => {
+    // RPA/dr não tem monitor, então não aparece na árvore — mas continua
+    // alvo da janela, e salvar de novo não pode tirá-lo.
+    const { marcados, preservados } = selecaoDosAlvos({ group_ids: [12, 13], monitor_ids: [5] }, arvore);
+    expect([...marcados].sort()).toEqual([5, 7, 9]);
+    expect(preservados).toEqual([13]);
+    expect(alvosDaSelecao(arvore, marcados, preservados)).toEqual({ group_ids: [12, 13], monitor_ids: [5] });
+  });
+
+  it("marca os ambientes do sistema alvo", () => {
+    const { marcados } = selecaoDosAlvos({ group_ids: [10], monitor_ids: [] }, arvore);
+    expect([...marcados].sort()).toEqual([7, 8, 9]);
   });
 });

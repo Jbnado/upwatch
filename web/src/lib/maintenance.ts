@@ -1,4 +1,5 @@
 import type { Group, MaintenanceWindow, Monitor, Recurrence } from "../api/types";
+import { subtreeIds, type ServiceNode } from "./service-tree";
 
 /**
  * O que a tela de manutenção calcula para escrever cada janela.
@@ -111,4 +112,74 @@ export function alvos(j: MaintenanceWindow, grupos: Group[], monitores: Monitor[
     out.push(g ? `${m.name} · ${g.path}` : m.name);
   }
   return out;
+}
+
+/**
+ * Da árvore para os alvos, e de volta.
+ *
+ * A árvore de monitores marca monitores; a janela grava grupos e
+ * monitores. O grupo inteiro marcado vira o grupo como alvo — e então
+ * cobre também o monitor cadastrado amanhã nele, que é o que se quer de
+ * "RPA/prod em manutenção". O que sobra marcado fora de grupo inteiro vai
+ * como monitor avulso. É de propósito o contrário da página pública, onde
+ * marcar o grupo marca só o que ele tem agora.
+ */
+export function alvosDaSelecao(
+  arvore: ServiceNode[],
+  marcados: Set<number>,
+  /** Grupos já alvo que a árvore não mostra, como o ambiente vazio. */
+  preservados: number[] = [],
+): { group_ids: number[]; monitor_ids: number[] } {
+  const grupos = new Set(preservados);
+  const cobertos = new Set<number>();
+
+  const visitar = (n: ServiceNode) => {
+    const id = grupoDoNo(n);
+    if (id !== null) {
+      const ids = subtreeIds(n);
+      if (ids.length > 0 && ids.every((m) => marcados.has(m))) {
+        grupos.add(id);
+        ids.forEach((m) => cobertos.add(m));
+        return;
+      }
+    }
+    n.children.forEach(visitar);
+  };
+  arvore.forEach(visitar);
+
+  const monitor_ids = [...marcados].filter((m) => !cobertos.has(m)).sort((a, b) => a - b);
+  return { group_ids: [...grupos].sort((a, b) => a - b), monitor_ids };
+}
+
+/**
+ * selecaoDosAlvos marca na árvore o que a janela cobre hoje: os monitores
+ * avulsos e todos os dos grupos alvo, ambientes inclusive. Os grupos alvo
+ * que a árvore não mostra voltam à parte, para editar a janela não os
+ * perder em silêncio.
+ */
+export function selecaoDosAlvos(
+  j: Pick<MaintenanceWindow, "group_ids" | "monitor_ids">,
+  arvore: ServiceNode[],
+): { marcados: Set<number>; preservados: number[] } {
+  const marcados = new Set(j.monitor_ids);
+  const vistos = new Set<number>();
+  const alvo = new Set(j.group_ids);
+
+  const visitar = (n: ServiceNode, dentro: boolean) => {
+    const id = grupoDoNo(n);
+    if (id !== null) vistos.add(id);
+    const coberto = dentro || (id !== null && alvo.has(id));
+    if (coberto && n.monitorId !== undefined) marcados.add(n.monitorId);
+    n.children.forEach((c) => visitar(c, coberto));
+  };
+  arvore.forEach((n) => visitar(n, false));
+
+  return { marcados, preservados: j.group_ids.filter((id) => !vistos.has(id)) };
+}
+
+/** grupoDoNo é o id do grupo do nó, ou nulo para serviço e "Sem grupo". */
+function grupoDoNo(n: ServiceNode): number | null {
+  if (n.monitorId !== undefined || !n.key.startsWith("g")) return null;
+  const id = Number(n.key.slice(1));
+  return Number.isFinite(id) ? id : null;
 }

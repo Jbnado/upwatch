@@ -11,7 +11,6 @@ import {
 import {
   Alert,
   Button,
-  Checkbox,
   Field,
   FormActions,
   Input,
@@ -25,13 +24,17 @@ import {
   ESTADO_LABEL,
   RECORRENCIA_LABEL,
   alvos,
+  alvosDaSelecao,
   doCampo,
   fusoDoNavegador,
   ordenar,
   padraoAgora,
   paraCampo,
   quando,
+  selecaoDosAlvos,
 } from "../lib/maintenance";
+import { buildServiceTree } from "../lib/service-tree";
+import { MonitorTree } from "../components/MonitorTree";
 
 /**
  * Janelas de manutenção.
@@ -214,10 +217,10 @@ function Linha({
  * recorrente repete o horário: "todo domingo às 2h" é às 2h de quem
  * declarou, mesmo depois da troca de horário de verão.
  *
- * O alvo é escolhido em duas listas simples — grupos e monitores —, e não
- * numa árvore: grupo e monitor são alvos diferentes (o grupo cobre também
- * os monitores criados depois), e a árvore de marcar só sabe marcar
- * monitores.
+ * O alvo é escolhido na árvore de monitores, e a conversão para grupos e
+ * monitores fica em alvosDaSelecao: o grupo inteiro marcado vira o grupo
+ * como alvo. Grupo sem monitor não aparece na árvore e, por ora, não se
+ * escolhe aqui.
  */
 function FormJanela({
   inicial,
@@ -242,32 +245,17 @@ function FormJanela({
   const [inicio, setInicio] = useState(inicial ? paraCampo(inicial.starts_at) : padrao.inicio);
   const [fim, setFim] = useState(inicial ? paraCampo(inicial.ends_at) : padrao.fim);
   const [recorrencia, setRecorrencia] = useState<Recurrence>(inicial?.recurrence ?? "none");
-  const [gruposSel, setGruposSel] = useState(new Set(inicial?.group_ids ?? []));
-  const [monitoresSel, setMonitoresSel] = useState(new Set(inicial?.monitor_ids ?? []));
-  const [busca, setBusca] = useState("");
+  const arvore = useMemo(() => buildServiceTree(grupos, monitores), [grupos, monitores]);
+  const [{ marcados: marcadosIniciais, preservados }] = useState(() =>
+    selecaoDosAlvos(inicial ?? { group_ids: [], monitor_ids: [] }, arvore),
+  );
+  const [marcados, setMarcados] = useState(marcadosIniciais);
   const [enviando, setEnviando] = useState(false);
   const [campoErro, setCampoErro] = useState<{ campo: string; msg: string } | null>(null);
   const [erroGeral, setErroGeral] = useState<string | null>(null);
 
   // O fuso de uma janela já gravada é o dela; a nova nasce no do navegador.
   const fuso = inicial?.time_zone ?? fusoDoNavegador();
-  const porGrupo = useMemo(() => new Map(grupos.map((g) => [g.id, g])), [grupos]);
-
-  const filtrados = useMemo(() => {
-    const termos = busca.toLowerCase().split(/\s+/).filter(Boolean);
-    return monitores
-      .map((m) => ({ m, caminho: m.group_id != null ? porGrupo.get(m.group_id)?.path ?? "" : "" }))
-      .filter(({ m, caminho }) => termos.every((t) => `${m.name} ${caminho}`.toLowerCase().includes(t)))
-      .sort((a, b) => `${a.caminho} ${a.m.name}`.localeCompare(`${b.caminho} ${b.m.name}`));
-  }, [monitores, busca, porGrupo]);
-
-  function alternar(conjunto: Set<number>, id: number, set: (s: Set<number>) => void) {
-    const novo = new Set(conjunto);
-    if (novo.has(id)) novo.delete(id);
-    else novo.add(id);
-    set(novo);
-  }
-
   async function salvar(e: FormEvent) {
     e.preventDefault();
     setCampoErro(null);
@@ -281,8 +269,7 @@ function FormJanela({
         ends_at: doCampo(fim),
         recurrence: recorrencia,
         time_zone: fuso,
-        monitor_ids: [...monitoresSel],
-        group_ids: [...gruposSel],
+        ...alvosDaSelecao(arvore, marcados, preservados),
       });
       await onDone();
     } catch (err) {
@@ -334,42 +321,20 @@ function FormJanela({
       </Field>
 
       <fieldset className="flex flex-col gap-1.5">
-        <legend className="eyebrow mb-1.5">grupos</legend>
-        <span className="text-small text-ink-3">
-          O sistema cobre todos os ambientes dele, inclusive os monitores criados depois.
-        </span>
-        {grupos.length === 0 ? (
-          <span className="text-small text-ink-3">Nenhum grupo cadastrado.</span>
-        ) : (
-          <div className="flex max-h-48 flex-col overflow-y-auto">
-            {grupos.map((g) => (
-              <Checkbox key={g.id} checked={gruposSel.has(g.id)} onChange={() => alternar(gruposSel, g.id, setGruposSel)}>
-                <span className={g.parent_id === null ? "font-medium" : "pl-4"}>{g.path}</span>
-              </Checkbox>
-            ))}
-          </div>
-        )}
-      </fieldset>
-
-      <fieldset className="flex flex-col gap-1.5">
-        <legend className="eyebrow mb-1.5">monitores</legend>
-        <span className="text-small text-ink-3">
-          Os dependentes de um monitor marcado ficam em manutenção junto com ele.
-        </span>
-        <Input
-          value={busca}
-          onChange={(e) => setBusca(e.target.value)}
-          placeholder="buscar monitor"
-          aria-label="buscar monitor"
+        <legend className="eyebrow mb-1.5">em manutenção</legend>
+        <MonitorTree
+          groups={grupos}
+          monitors={monitores}
+          selected={marcados}
+          onChange={setMarcados}
+          note="Grupo inteiro marcado vale também para os monitores criados depois nele. Os dependentes de um monitor marcado ficam em manutenção junto."
         />
-        <div className="flex max-h-48 flex-col overflow-y-auto">
-          {filtrados.map(({ m, caminho }) => (
-            <Checkbox key={m.id} checked={monitoresSel.has(m.id)} onChange={() => alternar(monitoresSel, m.id, setMonitoresSel)}>
-              <span>{m.name}</span>
-              {caminho && <span className="text-small text-ink-3">{caminho}</span>}
-            </Checkbox>
-          ))}
-        </div>
+        {preservados.length > 0 && (
+          <span className="text-small text-ink-3">
+            Também em manutenção, sem monitores hoje:{" "}
+            {preservados.map((id) => grupos.find((g) => g.id === id)?.path ?? `grupo ${id}`).join(", ")}
+          </span>
+        )}
         {erroAlvo && <span className="text-small text-down">{erroAlvo}</span>}
       </fieldset>
 

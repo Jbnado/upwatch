@@ -47,7 +47,7 @@ const monitor = (id: number, name: string, group_id: number | null): Monitor => 
 });
 
 const GRUPOS = [grupo(10, "RPA"), grupo(11, "RPA / hml", 10), grupo(12, "RPA / prod", 10)];
-const MONITORES = [monitor(7, "api", 12), monitor(8, "api", 11)];
+const MONITORES = [monitor(7, "erp", 12), monitor(9, "api", 12), monitor(8, "api", 11)];
 
 function janela(parcial: Partial<MaintenanceWindow>): MaintenanceWindow {
   return {
@@ -83,7 +83,7 @@ describe("Maintenance", () => {
     fireEvent.change(screen.getByPlaceholderText("deploy do RPA"), { target: { value: "deploy das 19h" } });
     fireEvent.change(screen.getByLabelText("início"), { target: { value: "2026-10-29T19:00" } });
     fireEvent.change(screen.getByLabelText("fim"), { target: { value: "2026-10-29T19:30" } });
-    fireEvent.click(await screen.findByRole("checkbox", { name: "RPA / prod" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: /^prod.*RPA/ }));
     fireEvent.click(screen.getByRole("button", { name: "Declarar janela" }));
 
     await waitFor(() => expect(api.createMaintenance).toHaveBeenCalledTimes(1));
@@ -100,15 +100,36 @@ describe("Maintenance", () => {
     });
   });
 
-  it("separa o mesmo nome em ambientes diferentes pela busca", async () => {
+  it("grava monitor avulso quando o ambiente fica só em parte", async () => {
     render(<Maintenance />);
     fireEvent.click(await screen.findByRole("button", { name: "+ Nova janela" }));
-    await screen.findAllByText("api");
 
-    fireEvent.change(screen.getByLabelText("buscar monitor"), { target: { value: "api prod" } });
-    const caixas = screen.getAllByRole("checkbox", { name: /^api/ });
-    expect(caixas).toHaveLength(1);
-    expect(caixas[0]!.closest("label")).toHaveTextContent("RPA / prod");
+    fireEvent.change(screen.getByPlaceholderText("deploy do RPA"), { target: { value: "deploy do erp" } });
+    fireEvent.click(await screen.findByRole("checkbox", { name: /^prod.*RPA/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /^erp.*RPA · prod/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Declarar janela" }));
+
+    await waitFor(() => expect(api.createMaintenance).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.createMaintenance).mock.calls[0]![0]).toMatchObject({
+      group_ids: [],
+      monitor_ids: [9],
+    });
+  });
+
+  it("edita sem perder o grupo alvo e reabre com os monitores dele marcados", async () => {
+    vi.mocked(api.maintenanceWindows).mockResolvedValue({ items: [janela({ group_ids: [10] })] });
+    vi.mocked(api.updateMaintenance).mockResolvedValue(janela({}));
+    render(<Maintenance />);
+
+    const linha = (await screen.findByText("deploy do RPA")).closest("li")!;
+    await within(linha).findByText(/RPA \(todos os ambientes\)/);
+    fireEvent.click(within(linha).getByRole("button", { name: "Editar" }));
+
+    expect(await screen.findByRole("checkbox", { name: /^RPA/ })).toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "Salvar" }));
+
+    await waitFor(() => expect(api.updateMaintenance).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.updateMaintenance).mock.calls[0]![1]).toMatchObject({ group_ids: [10], monitor_ids: [] });
   });
 
   it("encerra a janela em curso antes do previsto", async () => {
