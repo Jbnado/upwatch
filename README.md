@@ -148,7 +148,7 @@ configuração nenhuma e uma instalação séria versiona o YAML.
 | `UPWATCH_PUBLIC_URL` | vazio | Endereço externo, para o feed da página pública usar URLs absolutas |
 | `UPWATCH_METRICS_TOKEN` | vazio | Exige `Authorization: Bearer <token>` em `/metrics`; vazio deixa aberto enquanto não houver conta restrita; aceita `_FILE` |
 | `UPWATCH_SECRET_KEY` | vazio | Chave (base64 de 32 bytes) que cifra as credenciais no banco; vazia, o SQLite usa a gerada ao lado do banco; aceita `_FILE` (ver [Segredos](#segredos)) |
-| `UPWATCH_RESTRICT_PRIVATE_TARGETS` | `true` | Recusa, para contas com acesso restrito a grupos, monitor cujo alvo resolva para a rede interna do servidor |
+| `UPWATCH_RESTRICT_PRIVATE_TARGETS` | `true` | Recusa, para contas com acesso restrito a grupos, monitor cujo alvo resolva para a rede interna do servidor, no cadastro e na conexão |
 
 Durações aceitam sufixo de dias: `90d` é o mesmo que `2160h`.
 
@@ -168,10 +168,23 @@ nome que não resolve — em todo tipo que conecta, inclusive Redis,
 PostgreSQL e MySQL. Contas que alcançam todos os grupos não são
 afetadas, e editar sem mudar o destino escolhido por outra pessoa
 continua permitido. Desligue se a instalação existe justamente para os
-times monitorarem a rede interna. A conferência ainda é só no cadastro:
-o checker não confere na hora de conectar, e um nome que troca de
-endereço depois (DNS rebinding) ou um redirecionamento HTTP para dentro
-passam (issue #59).
+times monitorarem a rede interna.
+
+A conferência do cadastro resolve o nome naquela hora, e por isso o
+checker confere de novo ao conectar, com o endereço efetivamente
+conectado, todo monitor cujo destino foi escolhido por conta restrita:
+um nome que passa a apontar para dentro depois (DNS rebinding) e um
+redirecionamento HTTP para dentro derrubam a verificação com a causa "o
+destino aponta para a rede interna do servidor", sem dizer o endereço.
+Vale para cada salto do redirecionamento e para todos os tipos; no ping,
+o pacote vai ao endereço conferido, e o DNS sem resolvedor configurado
+continua usando o do sistema. Esses monitores ignoram `HTTPS_PROXY`:
+atrás de um proxy é ele quem conecta, e o servidor não saberia para
+onde. O monitor salvo antes desta conferência existir só a recebe quando
+uma conta restrita mudar o destino de novo. Desligar a regra desliga as
+duas conferências, inclusive para o monitor já salvo. A sonda
+(`upwatch-probe`) não faz nenhuma das duas: ela roda dentro da rede
+privada justamente para alcançá-la.
 
 ## Segredos
 
