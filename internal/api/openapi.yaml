@@ -784,9 +784,11 @@ paths:
         Para conta com acesso restrito a grupos, com
         `UPWATCH_RESTRICT_PRIVATE_TARGETS` ligado (o padrão), o destino que
         resolver para loopback, rede privada, enlace local (metadado da
-        nuvem) ou espaço compartilhado de provedor é recusado com 400, e o
-        nome que não resolve também. Na edição, o destino que não mudou não
-        é conferido de novo.
+        nuvem), espaço compartilhado de provedor, faixas reservadas ou
+        endereço IPv6 que embute IPv4 (NAT64, 6to4, SIIT) é recusado com
+        400, e o nome que não resolve também. Na edição, o destino que não
+        mudou não é conferido de novo; mudar a configuração (método,
+        corpo, cabeçalhos, asserções, consulta) é escolher destino.
 
         `parent_id` de fora do escopo responde 404, como o inexistente.
       requestBody:
@@ -828,6 +830,11 @@ paths:
         As mesmas regras de alvo interno e de `parent_id` do cadastro. O
         pai que depende, direta ou indiretamente, do próprio monitor fecha
         um ciclo e é recusado com 400 em `parent_id`.
+
+        Para conta com escopo, o pai gravado que ela não enxerga é mantido
+        quando `parent_id` vem ausente, nulo ou igual a ele. O monitor do
+        qual dependem, direta ou indiretamente, monitores fora do escopo
+        responde 403: só quem alcança todos os grupos o altera.
       parameters: [{ $ref: "#/components/parameters/PathID" }]
       requestBody:
         required: true
@@ -841,14 +848,19 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Monitor" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
     delete:
       tags: [monitors]
       summary: Remove o monitor e todo o seu histórico
+      description: |
+        Para conta com escopo, o monitor do qual dependem monitores fora do
+        escopo responde 403.
       parameters: [{ $ref: "#/components/parameters/PathID" }]
       responses:
         "204": { description: Monitor removido }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /api/v1/monitors/{id}/children:
@@ -2057,6 +2069,10 @@ paths:
     get:
       tags: [status-pages]
       summary: Lista os relatos publicados
+      description: |
+        Para conta com escopo, some o relato que não é global e não cita
+        nenhum componente visível, e do que sobra saem os componentes de
+        fora.
       parameters:
         - name: open
           in: query
@@ -2116,6 +2132,9 @@ paths:
     get:
       tags: [status-pages]
       summary: Relato com a linha do tempo
+      description: |
+        Para conta com escopo, o relato que não é global e não cita nenhum
+        componente visível responde 404, como um id inexistente.
       parameters:
         - $ref: "#/components/parameters/PathID"
       responses:
@@ -2429,8 +2448,9 @@ components:
       description: |
         A conta está autenticada, mas não tem permissão. Devolvido a um
         observador em qualquer rota de escrita, e a quem tem escopo ao
-        alterar canal, página pública ou relato, criar grupo de topo ou
-        conceder mais do que tem. Monitor ou grupo fora do escopo nunca dá
+        alterar canal, página pública ou relato, criar grupo de topo,
+        conceder mais do que tem ou alterar monitor do qual dependem
+        monitores fora do escopo. Monitor ou grupo fora do escopo nunca dá
         403, e sim 404, para não confirmar que existe.
       content:
         application/json:
@@ -2603,7 +2623,9 @@ components:
           description: |
             Monitor do qual este depende, como a sonda de quem a
             verificação depende. Com o pai em queda confirmada, a falha
-            deste vira lacuna e não avisa. Omitir desliga o pai.
+            deste vira lacuna e não avisa. Omitir desliga o pai — exceto,
+            para conta com escopo, o pai gravado que ela não enxerga, que é
+            mantido.
         group_id:
           type: integer
           format: int64
@@ -2718,6 +2740,12 @@ components:
         - type: object
           properties:
             id: { type: integer, format: int64 }
+            parent_id:
+              type: integer
+              format: int64
+              description: |
+                Ausente sem pai, e também quando a conta não enxerga o pai:
+                o id de um monitor fora do escopo não sai.
             created_at: { type: string, format: date-time }
             updated_at: { type: string, format: date-time }
             next_expected_push:

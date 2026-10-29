@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -127,12 +128,19 @@ func (c *DNSChecker) Check(ctx context.Context, m domain.Monitor) Result {
 		return down("consultando %s: %v", server, err)
 	}
 
+	values := answerValues(resp.Answer)
+	count, shown := len(resp.Answer), true
+	if m.RestrictInternal {
+		values, shown = restrictedAnswers(values, qtype, cfg.Resolver == "")
+		count = len(values)
+	}
+
 	res := Result{
 		LatencyMS: latency,
 		Meta: map[string]string{
 			"record_type":  typeName,
 			"resolver":     server,
-			"answer_count": strconv.Itoa(len(resp.Answer)),
+			"answer_count": strconv.Itoa(count),
 		},
 	}
 
@@ -142,8 +150,9 @@ func (c *DNSChecker) Check(ctx context.Context, m domain.Monitor) Result {
 		return res
 	}
 
-	values := answerValues(resp.Answer)
-	res.Meta["answers"] = strings.Join(values, ", ")
+	if shown {
+		res.Meta["answers"] = strings.Join(values, ", ")
+	}
 
 	if len(values) == 0 {
 		// O nome existe mas não tem o registro pedido; para quem depende
@@ -157,11 +166,44 @@ func (c *DNSChecker) Check(ctx context.Context, m domain.Monitor) Result {
 		res.Status = domain.StatusDown
 		res.Message = fmt.Sprintf("resposta %v não contém nenhum dos valores esperados %v",
 			values, cfg.ExpectedValues)
+		if !shown {
+			res.Message = fmt.Sprintf("a resposta não contém nenhum dos valores esperados %v", cfg.ExpectedValues)
+		}
 		return res
 	}
 
 	res.Status = domain.StatusUp
 	return res
+}
+
+// restrictedAnswers recorta a resposta de um monitor restrito, salvo por
+// conta com acesso só a alguns grupos, e diz se os valores podem
+// aparecer na causa e nos detalhes da verificação.
+//
+// Sem resolvedor próprio, o monitor pergunta ao do sistema, que costuma
+// conhecer a zona interna da rede do servidor (db.corp.internal, o
+// metadado da nuvem). Exigir resolvedor externo resolveria, mas a tela
+// não oferece o campo, e o monitor DNS deixaria de existir para essas
+// contas. Em vez disso, o endereço interno sai da resposta como se não
+// tivesse vindo — inclusive para a comparação com os valores esperados,
+// que de outro modo confirmaria um palpite —, e os registros que não são
+// endereço (CNAME, MX, NS, TXT) não aparecem: não há como dizer se
+// apontam para dentro, e um TXT da zona interna pode ser qualquer coisa.
+// A comparação com os valores esperados continua valendo para eles.
+//
+// Com resolvedor escolhido, ele foi conferido no cadastro e na conexão,
+// fica fora da rede do servidor e só conhece o que é público; o recorte
+// do endereço interno vale igual, por coerência com o resto.
+func restrictedAnswers(values []string, qtype uint16, systemResolver bool) ([]string, bool) {
+	out := values[:0:0]
+	for _, v := range values {
+		if ip, err := netip.ParseAddr(v); err == nil && isInternal(ip) {
+			continue
+		}
+		out = append(out, v)
+	}
+	address := qtype == dns.TypeA || qtype == dns.TypeAAAA
+	return out, address || !systemResolver
 }
 
 // systemResolver lê o primeiro servidor configurado no sistema.
@@ -184,10 +226,14 @@ func systemResolver() (string, error) {
 	return net.JoinHostPort(cfg.Servers[0], port), nil
 }
 
+// systemResolverAddr é systemResolver; variável só para o teste apontar
+// "o resolvedor do sistema" para um servidor DNS local.
+var systemResolverAddr = systemResolver
+
 // resolverAddr resolve o endereço do servidor a consultar.
 func (c *DNSChecker) resolverAddr(cfg DNSConfig) (string, error) {
 	if cfg.Resolver == "" {
-		return systemResolver()
+		return systemResolverAddr()
 	}
 	if _, _, err := net.SplitHostPort(cfg.Resolver); err != nil {
 		// Sem porta explícita, assume a padrão em vez de recusar.

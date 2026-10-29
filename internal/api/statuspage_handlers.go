@@ -329,30 +329,35 @@ func (a *API) handleRemoveComponent(w http.ResponseWriter, r *http.Request) {
 
 // ---------- relatos ----------
 
-// trimAnnouncements tira dos relatos os componentes fora do escopo.
+// visibleAnnouncements recorta os relatos pelo escopo, como
+// visibleMaintenance faz com as janelas: some o relato que não é global e
+// não toca nenhum componente visível, e do que sobra saem os componentes
+// de fora.
 //
-// O relato em si é público — sai na página de estado —, mas a lista de
-// ids afetados confirmaria a existência de monitores que a conta não
-// alcança.
-func (a *API) trimAnnouncements(w http.ResponseWriter, r *http.Request, ans []domain.Announcement) bool {
+// O relato global é para a plataforma inteira e aparece a todos. O que
+// fala só de sistemas de outra equipe não: título, impacto e linha do
+// tempo descrevem o que a conta não alcança, e a lista de ids confirmaria
+// monitores que ela nem sabe que existem.
+func (a *API) visibleAnnouncements(r *http.Request, ans []domain.Announcement) ([]domain.Announcement, error) {
 	visiveis, err := a.visibleMonitorIDs(r.Context(), viewerFrom(r))
-	if err != nil {
-		writeStoreError(w, err)
-		return false
+	if err != nil || visiveis == nil {
+		return ans, err
 	}
-	if visiveis == nil {
-		return true
-	}
-	for i := range ans {
+	out := make([]domain.Announcement, 0, len(ans))
+	for _, an := range ans {
 		var dentro []int64
-		for _, id := range ans[i].Components {
+		for _, id := range an.Components {
 			if visiveis[id] {
 				dentro = append(dentro, id)
 			}
 		}
-		ans[i].Components = dentro
+		if !an.Global && len(dentro) == 0 {
+			continue
+		}
+		an.Components = dentro
+		out = append(out, an)
 	}
-	return true
+	return out, nil
 }
 
 type announcementRequest struct {
@@ -385,7 +390,8 @@ func (a *API) handleListAnnouncements(w http.ResponseWriter, r *http.Request) {
 	if page.Items == nil {
 		page.Items = []domain.Announcement{}
 	}
-	if !a.trimAnnouncements(w, r, page.Items) {
+	if page.Items, err = a.visibleAnnouncements(r, page.Items); err != nil {
+		writeStoreError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": page.Items, "has_more": page.HasMore})
@@ -441,6 +447,17 @@ func (a *API) handleGetAnnouncement(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	// O recorte vem antes da linha do tempo: o relato fora do escopo
+	// responde 404, igual ao id inventado, sem nem ler as atualizações.
+	um, err := a.visibleAnnouncements(r, []domain.Announcement{an})
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if len(um) == 0 {
+		writeStoreError(w, errOutOfScope)
+		return
+	}
 	updates, err := a.store.Announcements().Updates(r.Context(), id)
 	if err != nil {
 		writeStoreError(w, err)
@@ -448,10 +465,6 @@ func (a *API) handleGetAnnouncement(w http.ResponseWriter, r *http.Request) {
 	}
 	if updates == nil {
 		updates = []domain.AnnouncementUpdate{}
-	}
-	um := []domain.Announcement{an}
-	if !a.trimAnnouncements(w, r, um) {
-		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"announcement": um[0], "updates": updates})
