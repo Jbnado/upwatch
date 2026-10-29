@@ -1,6 +1,6 @@
 /** Tipos do contrato da API, espelhando internal/api/openapi.yaml. */
 
-import type { ConfigCanal, ConfigEmail, ConfigNtfy } from "../lib/channel-config";
+import type { ConfigCanal, ConfigEditavel, ConfigEmail, ConfigNtfy } from "../lib/channel-config";
 
 export type Status = "up" | "down" | "degraded" | "unknown";
 
@@ -251,9 +251,9 @@ export type CreatedToken = APIToken & { token: string };
 export type ChannelType = "webhook" | "discord" | "slack" | "email" | "ntfy";
 
 /**
- * A configuração nunca vem do servidor: ela contém a URL do webhook, a
+ * A configuração não vem na listagem: ela contém a URL do webhook, a
  * senha do SMTP ou o token do ntfy — credenciais de quem pode publicar no
- * canal.
+ * canal. A edição a recebe sem elas (ChannelDetail).
  */
 export type Channel = {
   id: number;
@@ -263,6 +263,9 @@ export type Channel = {
   created_at: string;
   updated_at: string;
 };
+
+/** O canal com a configuração para editar, que só volta a quem pode salvá-la. */
+export type ChannelDetail = Channel & { config?: ConfigEditavel };
 
 export type ChannelInput = {
   name: string;
