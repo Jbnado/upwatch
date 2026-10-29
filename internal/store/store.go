@@ -326,6 +326,26 @@ type ChannelRepo interface {
 	// avisado precisa morar num lugar só, senão o motor e a tela de canais
 	// passam a discordar sobre quem recebe.
 	Destinations(ctx context.Context, monitorID int64) ([]domain.Channel, error)
+
+	// CreateWithTargets e UpdateWithTargets gravam o canal e trocam o
+	// conjunto de vínculos dele numa transação só: o canal que nasce sem
+	// os vínculos pedidos não avisa ninguém, e quem salvou acha que avisa.
+	// Devolvem ErrNotFound se um grupo ou monitor não existir, sem gravar
+	// nada.
+	CreateWithTargets(ctx context.Context, c *domain.Channel, t ChannelTargets) error
+	UpdateWithTargets(ctx context.Context, c domain.Channel, t ChannelTargets) error
+	// SetTargets troca todos os vínculos do canal pelos dados, de uma vez.
+	SetTargets(ctx context.Context, channelID int64, t ChannelTargets) error
+	// Targets devolve os vínculos diretos de cada canal, recortados pela
+	// seleção (nula traz tudo): grupos da seleção e monitores que estão
+	// neles. Canal sem vínculo na seleção fica fora do mapa.
+	Targets(ctx context.Context, sel *GroupSelection) (map[int64]ChannelTargets, error)
+}
+
+// ChannelTargets é onde um canal está ligado direto, em ordem de id.
+type ChannelTargets struct {
+	GroupIDs   []int64
+	MonitorIDs []int64
 }
 
 // GroupRepo guarda os grupos de monitores.

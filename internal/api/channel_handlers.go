@@ -2,7 +2,9 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 
@@ -21,6 +23,50 @@ type channelRequest struct {
 	// modelo de mensagem.
 	Config  json.RawMessage `json:"config"`
 	Enabled *bool           `json:"enabled,omitempty"`
+	// Targets, quando vem, troca todos os vínculos do canal na mesma
+	// gravação. Ausente na edição mantém os vínculos atuais.
+	Targets *targetsBody `json:"targets,omitempty"`
+}
+
+// targetsBody é onde o canal está ligado direto. Grupo vale para os
+// monitores dele e, no sistema, para os ambientes, inclusive os criados
+// depois; monitor vale só para ele.
+type targetsBody struct {
+	GroupIDs   []int64 `json:"group_ids"`
+	MonitorIDs []int64 `json:"monitor_ids"`
+}
+
+func targetsFrom(t store.ChannelTargets) targetsBody {
+	b := targetsBody{GroupIDs: t.GroupIDs, MonitorIDs: t.MonitorIDs}
+	if b.GroupIDs == nil {
+		b.GroupIDs = []int64{}
+	}
+	if b.MonitorIDs == nil {
+		b.MonitorIDs = []int64{}
+	}
+	return b
+}
+
+// channelItem é o canal com onde ele está ligado, para a lista dizer
+// "3 grupos, 2 monitores" sem uma consulta por canal. Campos explícitos,
+// e não o domain.Channel embutido: o MarshalJSON dele, promovido, engoliria
+// os vínculos.
+type channelItem struct {
+	ID        int64       `json:"id"`
+	Name      string      `json:"name"`
+	Type      string      `json:"type"`
+	Enabled   bool        `json:"enabled"`
+	CreatedAt time.Time   `json:"created_at"`
+	UpdatedAt time.Time   `json:"updated_at"`
+	Targets   targetsBody `json:"targets"`
+}
+
+func newChannelItem(c domain.Channel, t store.ChannelTargets) channelItem {
+	return channelItem{
+		ID: c.ID, Name: c.Name, Type: c.Type, Enabled: c.Enabled,
+		CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt,
+		Targets: targetsFrom(t),
+	}
 }
 
 func (req channelRequest) toDomain() domain.Channel {
@@ -47,10 +93,17 @@ func (a *API) handleListChannels(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	if canais == nil {
-		canais = []domain.Channel{}
+	v := viewerFrom(r)
+	alvos, err := a.store.Channels().Targets(r.Context(), v.monitorSelection())
+	if err != nil {
+		writeStoreError(w, err)
+		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": canais})
+	items := make([]channelItem, 0, len(canais))
+	for _, c := range canais {
+		items = append(items, newChannelItem(c, alvos[c.ID]))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 // handleCreateChannel cadastra um destino de aviso.
@@ -69,11 +122,18 @@ func (a *API) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := a.store.Channels().Create(r.Context(), &c); err != nil {
+	var alvos store.ChannelTargets
+	if req.Targets != nil {
+		var ok bool
+		if alvos, ok = a.resolveTargets(w, r, *req.Targets); !ok {
+			return
+		}
+	}
+	if err := a.store.Channels().CreateWithTargets(r.Context(), &c, alvos); err != nil {
 		writeStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, c)
+	writeJSON(w, http.StatusCreated, newChannelItem(c, alvos))
 }
 
 func (a *API) handleGetChannel(w http.ResponseWriter, r *http.Request) {
@@ -87,14 +147,20 @@ func (a *API) handleGetChannel(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	alvos, err := a.store.Channels().Targets(r.Context(), viewerFrom(r).monitorSelection())
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
 	if !canEditChannels(r) {
-		writeJSON(w, http.StatusOK, c)
+		writeJSON(w, http.StatusOK, newChannelItem(c, alvos[c.ID]))
 		return
 	}
 	writeJSON(w, http.StatusOK, channelEditResponse{
 		ID: c.ID, Name: c.Name, Type: c.Type, Enabled: c.Enabled,
 		Config:    notifier.RedactConfig(c.Type, c.Config),
 		CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt,
+		Targets: targetsFrom(alvos[c.ID]),
 	})
 }
 
@@ -108,6 +174,7 @@ type channelEditResponse struct {
 	Config    json.RawMessage `json:"config,omitempty"`
 	CreatedAt time.Time       `json:"created_at"`
 	UpdatedAt time.Time       `json:"updated_at"`
+	Targets   targetsBody     `json:"targets"`
 }
 
 // canEditChannels diz se a configuração do canal volta nesta leitura: só
@@ -148,11 +215,49 @@ func (a *API) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := a.store.Channels().Update(r.Context(), c); err != nil {
+	if req.Targets == nil {
+		err = a.store.Channels().Update(r.Context(), c)
+	} else {
+		alvos, ok := a.resolveTargets(w, r, *req.Targets)
+		if !ok {
+			return
+		}
+		err = a.store.Channels().UpdateWithTargets(r.Context(), c, alvos)
+	}
+	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, c)
+}
+
+// handleSetChannelTargets troca, de uma vez, todos os grupos e monitores
+// ligados ao canal.
+//
+// Uma requisição para o conjunto, e não uma por vínculo: com uma por
+// vínculo, a falha no meio deixaria o canal com metade do que foi pedido,
+// e a tela não teria como dizer qual metade.
+func (a *API) handleSetChannelTargets(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var req targetsBody
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if !a.channelExists(w, r, id) {
+		return
+	}
+	alvos, ok := a.resolveTargets(w, r, req)
+	if !ok {
+		return
+	}
+	if err := a.store.Channels().SetTargets(r.Context(), id, alvos); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, targetsFrom(alvos))
 }
 
 func (a *API) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
@@ -374,6 +479,58 @@ func validateChannel(w http.ResponseWriter, c domain.Channel) bool {
 		return false
 	}
 	return true
+}
+
+// resolveTargets confere cada grupo e monitor como as rotas de vínculo
+// avulso conferem: o que não existe ou está fora do escopo é 404, com o id
+// na mensagem para a tela dizer qual. Repetidos contam uma vez.
+func (a *API) resolveTargets(w http.ResponseWriter, r *http.Request, b targetsBody) (store.ChannelTargets, bool) {
+	v := viewerFrom(r)
+	grupos, ok := idsUnicos(w, "targets.group_ids", b.GroupIDs)
+	if !ok {
+		return store.ChannelTargets{}, false
+	}
+	monitores, ok := idsUnicos(w, "targets.monitor_ids", b.MonitorIDs)
+	if !ok {
+		return store.ChannelTargets{}, false
+	}
+
+	for _, id := range grupos {
+		if !v.access.Group(id) {
+			writeError(w, http.StatusNotFound, codeNotFound, "grupo %d não encontrado", id)
+			return store.ChannelTargets{}, false
+		}
+	}
+	for _, id := range monitores {
+		m, err := a.store.Monitors().Get(r.Context(), id)
+		if errors.Is(err, store.ErrNotFound) || (err == nil && !v.sees(m)) {
+			writeError(w, http.StatusNotFound, codeNotFound, "monitor %d não encontrado", id)
+			return store.ChannelTargets{}, false
+		}
+		if err != nil {
+			writeStoreError(w, err)
+			return store.ChannelTargets{}, false
+		}
+	}
+	return store.ChannelTargets{GroupIDs: grupos, MonitorIDs: monitores}, true
+}
+
+// idsUnicos devolve os ids em ordem, sem repetidos, recusando os inválidos.
+func idsUnicos(w http.ResponseWriter, campo string, ids []int64) ([]int64, bool) {
+	vistos := make(map[int64]bool, len(ids))
+	out := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			writeFieldError(w, campo, "identificador inválido")
+			return nil, false
+		}
+		if !vistos[id] {
+			vistos[id] = true
+			out = append(out, id)
+		}
+	}
+	slices.Sort(out)
+	return out, true
 }
 
 // channelExists responde 404 ao canal que não existe.

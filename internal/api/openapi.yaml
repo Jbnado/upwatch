@@ -916,10 +916,12 @@ paths:
 
         Para conta com acesso restrito a grupos, só os canais vinculados a
         monitores ou grupos do escopo dela&#58; o nome e o destino de um
-        canal que só avisa sobre os outros já dizem quem existe fora.
+        canal que só avisa sobre os outros já dizem quem existe fora. Pelo
+        mesmo motivo, targets dessa conta traz só os grupos e monitores do
+        escopo dela.
       responses:
         "200":
-          description: Canais cadastrados
+          description: Canais cadastrados, cada um com onde está ligado
           content:
             application/json:
               schema:
@@ -927,7 +929,7 @@ paths:
                 properties:
                   items:
                     type: array
-                    items: { $ref: "#/components/schemas/Channel" }
+                    items: { $ref: "#/components/schemas/ChannelWithTargets" }
     post:
       tags: [alerts]
       summary: Cadastra um destino de aviso
@@ -938,6 +940,10 @@ paths:
 
         Canal é recurso de todos os grupos&#58; criar, alterar, apagar,
         testar e vincular exigem escopo total (403 para os demais).
+
+        Com targets, o canal nasce já ligado aos grupos e monitores dados,
+        na mesma transação&#58; grupo ou monitor inexistente responde 404 e
+        nada é gravado.
       requestBody:
         required: true
         content:
@@ -948,8 +954,13 @@ paths:
           description: Canal criado
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Channel" }
+              schema: { $ref: "#/components/schemas/ChannelWithTargets" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "404":
+          description: Grupo ou monitor de targets não existe
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "409":
           description: Já existe canal com esse nome
           content:
@@ -965,7 +976,7 @@ paths:
 
         Para quem pode editar canais (papel com escrita e acesso a todos
         os grupos), a resposta traz também config, sem credencial, para o
-        formulário de edição. Os demais recebem só o Channel.
+        formulário de edição. Os demais recebem só o canal e targets.
       parameters: [{ $ref: "#/components/parameters/PathID" }]
       responses:
         "200":
@@ -978,7 +989,9 @@ paths:
       tags: [alerts]
       summary: Atualiza um canal
       description: |
-        Os vínculos com monitores e grupos continuam. A credencial que
+        Sem targets, os vínculos com monitores e grupos continuam; com
+        targets, são trocados pelos dados na mesma transação da edição.
+        A credencial que
         não volta no GET é mantida quando não vem: url ausente mantém a
         URL do webhook, password ausente a senha do SMTP, token ausente o
         token do ntfy, e um cabeçalho com o valor "***" o valor guardado.
@@ -1007,6 +1020,38 @@ paths:
       parameters: [{ $ref: "#/components/parameters/PathID" }]
       responses:
         "204": { description: Canal removido }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/channels/{id}/targets:
+    put:
+      tags: [alerts]
+      summary: Troca todos os grupos e monitores ligados ao canal
+      description: |
+        Substitui o conjunto inteiro numa transação&#58; o que não vier
+        deixa de estar ligado. Grupo ligado vale para os monitores dele e,
+        no sistema, para os ambientes, inclusive os criados depois; monitor
+        ligado vale só para ele.
+
+        Exige escopo total, como os vínculos avulsos. Grupo ou monitor que
+        não existe responde 404 com o id na mensagem, e nada muda.
+      parameters: [{ $ref: "#/components/parameters/PathID" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChannelTargets" }
+      responses:
+        "200":
+          description: O conjunto gravado, em ordem e sem repetidos
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChannelTargets" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403":
+          description: A conta não alcança todos os grupos
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /api/v1/channels/{id}/test:
@@ -2467,9 +2512,29 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
-    ChannelDetail:
+    ChannelTargets:
+      type: object
+      description: |
+        Onde o canal está ligado direto. Grupo vale para os monitores dele
+        e, no sistema, para os ambientes, inclusive os criados depois.
+      properties:
+        group_ids:
+          type: array
+          items: { type: integer, format: int64 }
+        monitor_ids:
+          type: array
+          items: { type: integer, format: int64 }
+
+    ChannelWithTargets:
       allOf:
         - $ref: "#/components/schemas/Channel"
+        - type: object
+          properties:
+            targets: { $ref: "#/components/schemas/ChannelTargets" }
+
+    ChannelDetail:
+      allOf:
+        - $ref: "#/components/schemas/ChannelWithTargets"
         - type: object
           properties:
             config:
@@ -2487,6 +2552,11 @@ components:
         name: { type: string, maxLength: 80 }
         type: { type: string, enum: [webhook, discord, slack, email, ntfy] }
         enabled: { type: boolean, default: true }
+        targets:
+          $ref: "#/components/schemas/ChannelTargets"
+          description: |
+            Opcional. Troca todos os vínculos do canal na mesma gravação;
+            ausente na edição mantém os atuais.
         config:
           description: |
             A forma depende de type. webhook, discord e slack usam

@@ -59,8 +59,17 @@ function servicos(monitors: Monitor[], path: string): ServiceNode[] {
   return raiz.map(no);
 }
 
-/** buildServiceTree monta a árvore; grupo sem monitor fica de fora. */
-export function buildServiceTree(groups: Group[], monitors: Monitor[]): ServiceNode[] {
+/**
+ * buildServiceTree monta a árvore. Grupo sem monitor fica de fora, a não
+ * ser com emptyGroups: ligar um canal a um ambiente ainda vazio é o jeito
+ * de o primeiro monitor dele já nascer avisando.
+ */
+export function buildServiceTree(
+  groups: Group[],
+  monitors: Monitor[],
+  { emptyGroups = false }: { emptyGroups?: boolean } = {},
+): ServiceNode[] {
+  const fica = (n: ServiceNode) => emptyGroups || n.children.length > 0;
   const conhecidos = new Set(groups.map((g) => g.id));
   const doGrupo = (id: number) =>
     servicos(
@@ -85,7 +94,7 @@ export function buildServiceTree(groups: Group[], monitors: Monitor[]): ServiceN
         ...groups
           .filter((g) => g.parent_id === s.id)
           .map((g) => ambiente(g, g.name))
-          .filter((n) => n.children.length > 0)
+          .filter(fica)
           .sort(porNome),
         ...doGrupo(s.id),
       ],
@@ -97,7 +106,7 @@ export function buildServiceTree(groups: Group[], monitors: Monitor[]): ServiceN
     .filter((g) => g.parent_id !== null && !conhecidos.has(g.parent_id))
     .map((g) => ambiente(g, crumb(g.path)));
 
-  const topo = [...sistemas, ...soltos].filter((n) => n.children.length > 0).sort(porNome);
+  const topo = [...sistemas, ...soltos].filter(fica).sort(porNome);
 
   const semGrupo = servicos(
     monitors.filter((m) => m.group_id == null || !conhecidos.has(m.group_id)),
@@ -118,6 +127,7 @@ function semAcento(texto: string): string {
  * aparece no nome ou no caminho do grupo, e os grupos que ficaram com
  * algum. "banco rpa prod" acha o banco certo entre os quatro. O pai de um
  * dependente achado continua, para o achado não aparecer fora do lugar.
+ * Grupo vazio, quando a árvore os mostra, é achado pelo caminho dele.
  */
 export function filterServiceTree(nodes: ServiceNode[], query: string): ServiceNode[] {
   const termos = semAcento(query).split(/\s+/).filter(Boolean);
@@ -127,7 +137,7 @@ export function filterServiceTree(nodes: ServiceNode[], query: string): ServiceN
     lista.flatMap((n) => {
       const filhos = filtrar(n.children);
       const achou =
-        n.monitorId !== undefined &&
+        (n.monitorId !== undefined || n.children.length === 0) &&
         termos.every((t) => semAcento(`${n.name} ${n.path}`).includes(t));
       return achou || filhos.length > 0 ? [{ ...n, children: filhos }] : [];
     });

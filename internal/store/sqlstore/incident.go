@@ -233,6 +233,11 @@ type channelRepo struct{ db *db }
 const channelColumns = `id, name, type, config, enabled, created_at, updated_at`
 
 func (r *channelRepo) Create(ctx context.Context, c *domain.Channel) error {
+	return r.db.inTx(ctx, func(t *tx) error { return r.insert(ctx, t, c) })
+}
+
+// insert grava o canal dentro da transação dada.
+func (r *channelRepo) insert(ctx context.Context, t *tx, c *domain.Channel) error {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	c.CreatedAt, c.UpdatedAt = now, now
 
@@ -245,25 +250,21 @@ func (r *channelRepo) Create(ctx context.Context, c *domain.Channel) error {
 		insertConfig = emptyConfig
 	}
 
-	var id int64
-	err := r.db.inTx(ctx, func(t *tx) error {
-		var err error
-		id, err = t.insertID(ctx, `
-			INSERT INTO notification_channel (name, type, config, enabled, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?)`,
-			c.Name, c.Type, insertConfig, boolToInt(c.Enabled), toMillis(now), toMillis(now))
-		if err != nil || insertConfig == config {
-			return err
-		}
+	id, err := t.insertID(ctx, `
+		INSERT INTO notification_channel (name, type, config, enabled, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		c.Name, c.Type, insertConfig, boolToInt(c.Enabled), toMillis(now), toMillis(now))
+	if err != nil {
+		return translateAuthErr(err, "canal")
+	}
+	if insertConfig != config {
 		sealed, err := r.db.sealForWrite(config, fields, channelTable, id)
 		if err != nil {
 			return err
 		}
-		_, err = t.ExecContext(ctx, `UPDATE notification_channel SET config = ? WHERE id = ?`, sealed, id)
-		return err
-	})
-	if err != nil {
-		return translateAuthErr(err, "canal")
+		if _, err := t.ExecContext(ctx, `UPDATE notification_channel SET config = ? WHERE id = ?`, sealed, id); err != nil {
+			return translateAuthErr(err, "canal")
+		}
 	}
 	c.ID = id
 	return nil
@@ -281,13 +282,18 @@ func (r *channelRepo) Get(ctx context.Context, id int64) (domain.Channel, error)
 }
 
 func (r *channelRepo) Update(ctx context.Context, c domain.Channel) error {
+	return r.db.inTx(ctx, func(t *tx) error { return r.update(ctx, t, c) })
+}
+
+// update regrava o canal dentro da transação dada.
+func (r *channelRepo) update(ctx context.Context, t *tx, c domain.Channel) error {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	config, err := r.db.sealForWrite(encodeConfig(c.Config), notifier.SecretFields(c.Type), channelTable, c.ID)
 	if err != nil {
 		return err
 	}
 
-	res, err := r.db.ExecContext(ctx, `
+	res, err := t.ExecContext(ctx, `
 		UPDATE notification_channel
 		SET name = ?, type = ?, config = ?, enabled = ?, updated_at = ?
 		WHERE id = ?`,
