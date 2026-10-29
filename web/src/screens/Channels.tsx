@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client";
-import { ApiError, type Channel, type ChannelType } from "../api/types";
+import { ApiError, type Channel, type ChannelDetail, type ChannelType } from "../api/types";
 import {
   Alert,
   Button,
@@ -17,6 +17,7 @@ import {
   TextLink,
 } from "../components/ui";
 import {
+  lerConfig,
   montarConfig,
   montarConfigEmail,
   montarConfigNtfy,
@@ -78,6 +79,10 @@ const EMAIL_VAZIO: EntradaEmail = {
 
 const NTFY_VAZIO: EntradaNtfy = { servidor: "", topico: "", token: "" };
 
+/** O que o campo de um segredo guardado diz enquanto está em branco. */
+const MANTIDO = "mantido; preencha para trocar";
+const MANTIDA = "mantida; preencha para trocar";
+
 /** channelTypeLabel é o nome do tipo de canal como a interface o escreve. */
 export function channelTypeLabel(type: ChannelType): string {
   return TIPOS[type]?.label ?? type;
@@ -88,6 +93,8 @@ export function Channels() {
   const [erro, setErro] = useState<string | null>(null);
   const [testando, setTestando] = useState<number | null>(null);
   const [resultado, setResultado] = useState<{ id: number; ok: boolean; texto: string } | null>(null);
+  const [editando, setEditando] = useState<ChannelDetail | null>(null);
+  const [abrindo, setAbrindo] = useState<number | null>(null);
 
   async function carregar() {
     const { items } = await api.listChannels();
@@ -113,6 +120,20 @@ export function Channels() {
       });
     } finally {
       setTestando(null);
+    }
+  }
+
+  // A lista não traz a configuração; o formulário precisa dela, então a
+  // edição busca o canal antes de abrir.
+  async function editar(canal: Channel) {
+    setErro(null);
+    setAbrindo(canal.id);
+    try {
+      setEditando(await api.getChannel(canal.id));
+    } catch (e) {
+      setErro(e instanceof ApiError ? e.message : "Não foi possível abrir o canal.");
+    } finally {
+      setAbrindo(null);
     }
   }
 
@@ -161,6 +182,13 @@ export function Channels() {
                   <Button size="sm" onClick={() => testar(canal)} disabled={testando === canal.id}>
                     {testando === canal.id ? "Enviando" : "Testar"}
                   </Button>
+                  <Button
+                    size="sm"
+                    onClick={() => editar(canal)}
+                    disabled={abrindo === canal.id || editando?.id === canal.id}
+                  >
+                    Editar
+                  </Button>
                   <Button size="sm" variant="danger" onClick={() => remover(canal)}>
                     Remover
                   </Button>
@@ -175,6 +203,20 @@ export function Channels() {
                   {resultado.texto}
                 </span>
               )}
+
+              {editando?.id === canal.id && (
+                <ChannelForm
+                  key={canal.id}
+                  canal={editando}
+                  onSaved={async () => {
+                    setErro(null);
+                    setEditando(null);
+                    await carregar();
+                  }}
+                  onError={setErro}
+                  onCancel={() => setEditando(null)}
+                />
+              )}
             </li>
           ))}
         </ul>
@@ -182,8 +224,8 @@ export function Channels() {
 
       <NewItem label="Novo canal">
         {(fechar) => (
-          <NewChannel
-            onCreated={async () => {
+          <ChannelForm
+            onSaved={async () => {
               setErro(null);
               fechar();
               await carregar();
@@ -197,27 +239,48 @@ export function Channels() {
   );
 }
 
-function NewChannel({
-  onCreated,
+/**
+ * ChannelForm cria um canal ou, recebendo canal, edita o que já existe.
+ *
+ * Um formulário só para os dois: com duas cópias, um campo novo entraria
+ * no cadastro e faltaria na edição. Editar é atualizar no lugar, e não
+ * remover e criar de novo, para os vínculos com grupos e monitores
+ * continuarem.
+ *
+ * Na edição os segredos vêm em branco — o servidor não os devolve — e em
+ * branco quer dizer "manter o atual". O tipo fica fixo: trocar de tipo é
+ * trocar a configuração inteira, e nada do que está guardado serviria.
+ */
+export function ChannelForm({
+  canal,
+  onSaved,
   onError,
   onCancel,
 }: {
-  onCreated: () => Promise<void>;
+  canal?: ChannelDetail;
+  onSaved: () => Promise<void>;
   onError: (msg: string) => void;
   onCancel: () => void;
 }) {
-  const [tipo, setTipo] = useState<ChannelType>("discord");
-  const [nome, setNome] = useState("");
+  const editando = canal !== undefined;
+  const [guardado] = useState(() => lerConfig(canal?.config));
+
+  const [tipo, setTipo] = useState<ChannelType>(canal?.type ?? "discord");
+  const [nome, setNome] = useState(canal?.name ?? "");
   const [url, setUrl] = useState("");
-  const [cabecalhos, setCabecalhos] = useState<LinhaCabecalho[]>([{ nome: "", valor: "" }]);
-  const [mapeamento, setMapeamento] = useState("");
-  const [avancado, setAvancado] = useState(false);
-  const [email, setEmail] = useState<EntradaEmail>(EMAIL_VAZIO);
-  const [ntfy, setNtfy] = useState<EntradaNtfy>(NTFY_VAZIO);
+  const [cabecalhos, setCabecalhos] = useState<LinhaCabecalho[]>(guardado.cabecalhos);
+  const [mapeamento, setMapeamento] = useState(guardado.mapeamento);
+  // Aberto quando já há algo ali: fechado, a pessoa não saberia que o
+  // canal manda cabeçalhos ou corpo próprio.
+  const [avancado, setAvancado] = useState(
+    guardado.cabecalhos.length > 1 || guardado.mapeamento !== "",
+  );
+  const [email, setEmail] = useState<EntradaEmail>(editando ? guardado.email : EMAIL_VAZIO);
+  const [ntfy, setNtfy] = useState<EntradaNtfy>(editando ? guardado.ntfy : NTFY_VAZIO);
   const [enviando, setEnviando] = useState(false);
   const [campoErro, setCampoErro] = useState<{ campo: string; msg: string } | null>(null);
 
-  async function criar(e: FormEvent) {
+  async function salvar(e: FormEvent) {
     e.preventDefault();
     setCampoErro(null);
 
@@ -229,7 +292,13 @@ function NewChannel({
         ? montarConfigEmail(email)
         : tipo === "ntfy"
           ? montarConfigNtfy(ntfy)
-          : montarConfig({ url, cabecalhos, mapeamento });
+          : montarConfig({
+              url,
+              cabecalhos,
+              mapeamento,
+              urlGuardada: guardado.guardados.url,
+              template: guardado.template,
+            });
     if (erro) {
       setCampoErro(erro);
       return;
@@ -238,6 +307,18 @@ function NewChannel({
     setEnviando(true);
 
     try {
+      if (canal) {
+        // enabled vai junto: ausente, o servidor liga o canal, e corrigir
+        // a URL religaria um canal desligado de propósito.
+        await api.updateChannel(canal.id, {
+          name: nome,
+          type: tipo,
+          enabled: canal.enabled,
+          config: config!,
+        });
+        await onSaved();
+        return;
+      }
       await api.createChannel({ name: nome, type: tipo, config: config! });
       setNome("");
       setUrl("");
@@ -245,14 +326,14 @@ function NewChannel({
       setMapeamento("");
       setEmail(EMAIL_VAZIO);
       setNtfy(NTFY_VAZIO);
-      await onCreated();
+      await onSaved();
     } catch (e) {
       if (e instanceof ApiError && e.field) {
         setCampoErro({ campo: e.field, msg: e.message });
       } else if (e instanceof ApiError) {
         onError(e.message);
       } else {
-        onError("Não foi possível criar o canal.");
+        onError(editando ? "Não foi possível salvar o canal." : "Não foi possível criar o canal.");
       }
     } finally {
       setEnviando(false);
@@ -263,10 +344,14 @@ function NewChannel({
   const erroDe = (campo: string) => (campoErro?.campo === campo ? campoErro.msg : undefined);
 
   return (
-    <form onSubmit={criar} className="flex flex-col gap-4 rounded-sm border border-line-strong p-4">
+    <form onSubmit={salvar} className="flex flex-col gap-4 rounded-sm border border-line-strong p-4">
       <div className="grid gap-4 sm:grid-cols-[160px_minmax(0,1fr)]">
         <Field label="onde avisar">
-          <Select value={tipo} onChange={(e) => setTipo(e.target.value as ChannelType)}>
+          <Select
+            value={tipo}
+            onChange={(e) => setTipo(e.target.value as ChannelType)}
+            disabled={editando}
+          >
             {(Object.keys(TIPOS) as ChannelType[]).map((t) => (
               <option key={t} value={t}>
                 {TIPOS[t].label}
@@ -291,20 +376,32 @@ function NewChannel({
           <Input
             value={url}
             onChange={(e) => setUrl(e.target.value)}
-            placeholder={info.exemplo}
+            placeholder={guardado.guardados.url ? MANTIDA : info.exemplo}
             className="tabular"
             type="url"
-            required
+            required={!guardado.guardados.url}
           />
         </Field>
       )}
 
       {tipo === "email" && (
-        <CamposEmail valor={email} onChange={setEmail} ajuda={info.ajuda} erroDe={erroDe} />
+        <CamposEmail
+          valor={email}
+          onChange={setEmail}
+          ajuda={info.ajuda}
+          erroDe={erroDe}
+          senhaGuardada={guardado.guardados.senha}
+        />
       )}
 
       {tipo === "ntfy" && (
-        <CamposNtfy valor={ntfy} onChange={setNtfy} ajuda={info.ajuda} erroDe={erroDe} />
+        <CamposNtfy
+          valor={ntfy}
+          onChange={setNtfy}
+          ajuda={info.ajuda}
+          erroDe={erroDe}
+          tokenGuardado={guardado.guardados.token}
+        />
       )}
 
       {/* Só o canal genérico. Discord e Slack têm corpo ditado pelo
@@ -323,7 +420,7 @@ function NewChannel({
       )}
 
       <FormActions
-        submit={enviando ? "Salvando" : "Adicionar canal"}
+        submit={enviando ? "Salvando" : editando ? "Salvar canal" : "Adicionar canal"}
         busy={enviando}
         onCancel={onCancel}
       />
@@ -337,20 +434,22 @@ const PORTA_PADRAO: Record<SegurancaSmtp, string> = { starttls: "587", tls: "465
 /**
  * CamposEmail coleta o servidor SMTP e quem recebe.
  *
- * A senha é campo de senha e não volta do servidor: para trocá-la, o canal
- * é recriado. Mostrar a senha salva exporia a credencial do e-mail
- * corporativo a qualquer um com acesso de leitura.
+ * A senha é campo de senha e não volta do servidor: na edição, em branco
+ * mantém a guardada. Mostrar a senha salva exporia a credencial do e-mail
+ * corporativo a qualquer um com acesso à tela.
  */
 function CamposEmail({
   valor,
   onChange,
   ajuda,
   erroDe,
+  senhaGuardada = false,
 }: {
   valor: EntradaEmail;
   onChange: (v: EntradaEmail) => void;
   ajuda: string;
   erroDe: (campo: string) => string | undefined;
+  senhaGuardada?: boolean;
 }) {
   const muda = (campo: keyof EntradaEmail, v: string) => onChange({ ...valor, [campo]: v });
 
@@ -400,6 +499,7 @@ function CamposEmail({
             onChange={(e) => muda("senha", e.target.value)}
             type="password"
             autoComplete="new-password"
+            placeholder={senhaGuardada ? MANTIDA : undefined}
           />
         </Field>
       </div>
@@ -435,11 +535,13 @@ function CamposNtfy({
   onChange,
   ajuda,
   erroDe,
+  tokenGuardado = false,
 }: {
   valor: EntradaNtfy;
   onChange: (v: EntradaNtfy) => void;
   ajuda: string;
   erroDe: (campo: string) => string | undefined;
+  tokenGuardado?: boolean;
 }) {
   const muda = (campo: keyof EntradaNtfy, v: string) => onChange({ ...valor, [campo]: v });
 
@@ -495,7 +597,7 @@ function CamposNtfy({
           onChange={(e) => muda("token", e.target.value)}
           type="password"
           autoComplete="new-password"
-          placeholder="tk_…"
+          placeholder={tokenGuardado ? MANTIDO : "tk_…"}
         />
       </Field>
     </div>
@@ -546,8 +648,11 @@ function Avancado({
   onMapeamento: (v: string) => void;
   erroMapeamento?: string;
 }) {
-  function alterar(i: number, campo: keyof LinhaCabecalho, valor: string) {
-    const proximo = cabecalhos.map((l, j) => (j === i ? { ...l, [campo]: valor } : l));
+  function alterar(i: number, campo: "nome" | "valor", valor: string) {
+    // Renomeado, o cabeçalho é outro: o valor guardado era do nome antigo.
+    const proximo = cabecalhos.map((l, j) =>
+      j !== i ? l : campo === "nome" ? { ...l, nome: valor, mantido: false } : { ...l, valor },
+    );
 
     // Uma linha vazia sempre sobra no fim, para nunca haver um passo entre
     // querer outro cabeçalho e ter onde digitá-lo.
@@ -591,7 +696,7 @@ function Avancado({
                   <Input
                     value={linha.valor}
                     onChange={(e) => alterar(i, "valor", e.target.value)}
-                    placeholder="Bearer …"
+                    placeholder={linha.mantido ? MANTIDO : "Bearer …"}
                     className="tabular flex-1"
                     aria-label={`valor do cabeçalho ${i + 1}`}
                   />

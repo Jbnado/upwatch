@@ -87,7 +87,35 @@ func (a *API) handleGetChannel(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, c)
+	if !canEditChannels(r) {
+		writeJSON(w, http.StatusOK, c)
+		return
+	}
+	writeJSON(w, http.StatusOK, channelEditResponse{
+		ID: c.ID, Name: c.Name, Type: c.Type, Enabled: c.Enabled,
+		Config:    notifier.RedactConfig(c.Type, c.Config),
+		CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt,
+	})
+}
+
+// channelEditResponse é o canal com a configuração que o formulário de
+// edição precisa, sem credencial (ver notifier.RedactConfig).
+type channelEditResponse struct {
+	ID        int64           `json:"id"`
+	Name      string          `json:"name"`
+	Type      string          `json:"type"`
+	Enabled   bool            `json:"enabled"`
+	Config    json.RawMessage `json:"config,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
+}
+
+// canEditChannels diz se a configuração do canal volta nesta leitura: só
+// para quem pode salvá-la. Mesmo sem credencial, ela traz destinatários,
+// tópico e servidores, que não são da conta de quem só lê.
+func canEditChannels(r *http.Request) bool {
+	u, ok := userFrom(r.Context())
+	return ok && u.Role.CanWrite() && viewerFrom(r).access.All()
 }
 
 func (a *API) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
@@ -103,6 +131,19 @@ func (a *API) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
 
 	c := req.toDomain()
 	c.ID = id
+
+	guardado, err := a.store.Channels().Get(r.Context(), id)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	// A credencial não volta no GET, então a edição chega sem ela.
+	c.Config, err = notifier.CarrySecrets(c.Type, c.Config, guardado.Type, guardado.Config)
+	if err != nil {
+		writeFieldError(w, "config", err.Error())
+		return
+	}
+
 	if !validateChannel(w, c) {
 		return
 	}

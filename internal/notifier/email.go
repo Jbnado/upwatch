@@ -43,8 +43,7 @@ type emailConfig struct {
 	// Security é starttls (padrão), tls ou none.
 	Security string `json:"security,omitempty"`
 	Username string `json:"username,omitempty"`
-	// Password é segredo. Como o resto da configuração, nunca sai pela
-	// API.
+	// Password é segredo e nunca sai pela API.
 	Password string   `json:"password,omitempty"`
 	From     string   `json:"from"`
 	To       []string `json:"to"`

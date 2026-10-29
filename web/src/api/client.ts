@@ -4,6 +4,7 @@ import {
   type AnnouncementUpdate,
   type APIToken,
   type Channel,
+  type ChannelDetail,
   type ChannelInput,
   type ChannelType,
   type CreatedToken,
@@ -190,6 +191,8 @@ export const api = {
   channelTypes: () => request<{ items: ChannelType[] }>("/channel-types"),
 
   listChannels: () => request<{ items: Channel[] }>("/channels"),
+
+  getChannel: (id: number) => request<ChannelDetail>(`/channels/${id}`),
 
   createChannel: (input: ChannelInput) =>
     request<Channel>("/channels", { method: "POST", body: JSON.stringify(input) }),
