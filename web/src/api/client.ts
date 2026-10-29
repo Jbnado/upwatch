@@ -10,6 +10,7 @@ import {
   type CursorPage,
   type EventPage,
   type Group,
+  type GroupInput,
   type GroupSummary,
   type Heartbeat,
   type Incident,
@@ -219,6 +220,17 @@ export const api = {
     params: { monitor_id?: number; open?: string; limit?: number; cursor?: string } = {},
   ) => request<CursorPage<Incident>>(`/incidents${query(params)}`),
 
+  /**
+   * acknowledgeIncident é o "estou vendo": cala os lembretes daquela queda.
+   * Pelo id do incidente, e não "a queda atual", para o reconhecimento não
+   * passar para uma queda nova que a pessoa nem viu.
+   */
+  acknowledgeIncident: (monitorID: number, incidentID: number, note?: string) =>
+    request<Incident>(`/monitors/${monitorID}/incidents/${incidentID}/ack`, {
+      method: "POST",
+      body: JSON.stringify(note ? { note } : {}),
+    }),
+
   // ---------- contas ----------
 
   listUsers: () => request<{ items: User[] }>("/users"),
@@ -236,10 +248,10 @@ export const api = {
 
   listGroups: () => request<{ items: Group[] }>("/groups"),
 
-  createMonitorGroup: (input: { name: string; parent_id?: number }) =>
+  createMonitorGroup: (input: GroupInput) =>
     request<Group>("/groups", { method: "POST", body: JSON.stringify(input) }),
 
-  updateMonitorGroup: (id: number, input: { name: string; parent_id?: number }) =>
+  updateMonitorGroup: (id: number, input: GroupInput) =>
     request<Group>(`/groups/${id}`, { method: "PUT", body: JSON.stringify(input) }),
 
   deleteMonitorGroup: (id: number) => request<void>(`/groups/${id}`, { method: "DELETE" }),

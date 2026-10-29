@@ -27,6 +27,7 @@ vi.mock("../api/client", () => ({
     unlinkChannel: vi.fn(),
     listMonitors: vi.fn(),
     setChildren: vi.fn(),
+    acknowledgeIncident: vi.fn(),
     exportUrl: () => "/export",
   },
 }));
@@ -549,5 +550,64 @@ describe("MonitorDetail: dependências", () => {
 
     await vi.waitFor(() => expect(api.setChildren).toHaveBeenCalledWith(12, expect.arrayContaining([21, 22])));
     expect(vi.mocked(api.setChildren).mock.lastCall?.[1]).toHaveLength(2);
+  });
+});
+
+describe("MonitorDetail: reconhecimento", () => {
+  const ABERTO = {
+    id: 40,
+    monitor_id: 12,
+    started_at: "2026-10-28T11:31:00Z",
+    duration_seconds: 720,
+    cause: "connection refused",
+    open: true,
+    acknowledgement: null,
+  };
+  const ADMIN: User = { ...EU, role: "admin" };
+
+  beforeEach(() => {
+    cenario({ status: "down", problema: QUEDA, eventos: [FALHA] });
+  });
+
+  it("registra o estou vendo pelo id da queda aberta, com a nota", async () => {
+    vi.mocked(api.incidents).mockResolvedValue({ items: [ABERTO], has_more: false });
+    vi.mocked(api.acknowledgeIncident).mockResolvedValue({
+      ...ABERTO,
+      acknowledgement: { by: "ana", at: new Date().toISOString(), note: "reiniciando a fila" },
+    });
+
+    render(<MonitorDetail id={12} tab="eventos" eu={ADMIN} />);
+
+    fireEvent.change(await screen.findByRole("textbox", { name: "nota do reconhecimento" }), {
+      target: { value: "reiniciando a fila" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Estou vendo" }));
+
+    expect(await screen.findByText(/visto por ana há/)).toBeInTheDocument();
+    expect(screen.getByText("reiniciando a fila")).toBeInTheDocument();
+    expect(api.acknowledgeIncident).toHaveBeenCalledWith(12, 40, "reiniciando a fila");
+  });
+
+  it("mostra quem já está olhando, sem oferecer o botão de novo", async () => {
+    vi.mocked(api.incidents).mockResolvedValue({
+      items: [{ ...ABERTO, acknowledgement: { by: "bruno", at: new Date().toISOString() } }],
+      has_more: false,
+    });
+
+    render(<MonitorDetail id={12} tab="eventos" eu={ADMIN} />);
+
+    expect(await screen.findByText(/visto por bruno há/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Estou vendo" })).not.toBeInTheDocument();
+  });
+
+  it("não oferece reconhecer a quem só observa", async () => {
+    // Reconhecer cala o lembrete de todo mundo: o servidor recusa o
+    // observador, e a tela não oferece o que vai ser recusado.
+    vi.mocked(api.incidents).mockResolvedValue({ items: [ABERTO], has_more: false });
+
+    render(<MonitorDetail id={12} tab="eventos" eu={EU} />);
+
+    expect(await screen.findByText(/Ninguém disse ainda/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Estou vendo" })).not.toBeInTheDocument();
   });
 });

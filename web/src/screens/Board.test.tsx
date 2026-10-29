@@ -124,6 +124,18 @@ describe("Board num grupo", () => {
     expect(screen.queryByRole("button", { name: /fora do ar/ })).not.toBeInTheDocument();
   });
 
+  it("diz quem já está olhando a queda", async () => {
+    const visto = { ...resumo(3, "down"), acknowledgement: { by: "ana", at: new Date().toISOString() } };
+    vi.mocked(api.summaries).mockResolvedValue({
+      items: [resumo(1, "up"), resumo(2, "up"), visto, resumo(4, "up"), resumo(5, "down")],
+      from: "",
+      to: "",
+    });
+    render(<Board podeEscrever={false} group={{ id: 3, path: "RPA / prod" }} />);
+
+    expect(await screen.findByText(/visto por ana há/)).toBeInTheDocument();
+  });
+
   it("não oferece filtro de estado que não tem ninguém", async () => {
     render(<Board podeEscrever={false} group={{ id: 3, path: "RPA / prod" }} />);
     await screen.findByText("bff");

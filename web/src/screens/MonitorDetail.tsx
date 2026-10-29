@@ -1,16 +1,17 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client";
-import type {
-  AffectedBy,
-  Channel,
-  Group,
-  Incident,
-  Monitor,
-  MonitorEvent,
-  Problem,
-  Status,
-  Summary as SummaryDTO,
-  User,
+import {
+  ApiError,
+  type AffectedBy,
+  type Channel,
+  type Group,
+  type Incident,
+  type Monitor,
+  type MonitorEvent,
+  type Problem,
+  type Status,
+  type Summary as SummaryDTO,
+  type User,
 } from "../api/types";
 import { channelTypeLabel, MonitorChannels } from "./Channels";
 import { Menu, type MenuItem } from "../components/Menu";
@@ -23,6 +24,7 @@ import {
   Button,
   Checkbox,
   InlineLink,
+  Input,
   Loading,
   Nothing,
   StatusDot,
@@ -42,6 +44,7 @@ import { candidatosAFilho, filhosDe, rotuloCalado } from "../lib/dependencies";
 import { crumb } from "../lib/groups";
 import { maskedPushAddress, pushAddress, pushSignal, pushTokenVisible } from "../lib/push";
 import { DEFAULT_RANGE, windowFor, type Range } from "../lib/ranges";
+import { vistoPor } from "../lib/reminders";
 import { navigate, type MonitorTab } from "../lib/router";
 import { NO_CHANNEL_LINK_HINT, canLinkChannels, channelOrigins } from "../lib/scope";
 
@@ -270,6 +273,9 @@ export function MonitorDetail({
       {monitor.enabled && !calado && atual !== "up" && (
         <StateBox status={atual} problem={problema} streak={sequencia} type={monitor.type} />
       )}
+      {monitor.enabled && !calado && atual === "down" && (
+        <Acknowledge monitorID={monitor.id} administra={administra} rodada={rodada} />
+      )}
       {monitor.enabled && !calado && pendente && (
         <StateBox status={pendente} problem={null} streak={null} type={monitor.type} pending />
       )}
@@ -399,6 +405,98 @@ function StateBox({
       {problem?.cause && <BoxCause raw={problem.cause} />}
       {rodape.length > 0 && <p className="tabular text-small text-ink-2">{rodape.join(" · ")}</p>}
     </section>
+  );
+}
+
+/**
+ * Acknowledge é o "estou vendo" da queda aberta.
+ *
+ * Fica logo abaixo do quadro vermelho porque é a primeira coisa a fazer
+ * ao chegar: dizer aos outros que alguém já está olhando, e parar os
+ * lembretes. Depois de reconhecida, a queda mostra quem e há quanto
+ * tempo — é o que impede a segunda pessoa de mexer no mesmo problema sem
+ * saber.
+ */
+function Acknowledge({
+  monitorID,
+  administra,
+  rodada,
+}: {
+  monitorID: number;
+  administra: boolean;
+  rodada: number;
+}) {
+  const [aberto, setAberto] = useState<Incident | null>(null);
+  const [nota, setNota] = useState("");
+  const [enviando, setEnviando] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+
+  const carregar = useCallback(async () => {
+    const page = await api.incidents({ monitor_id: monitorID, open: "true", limit: 1 });
+    setAberto(page.items[0] ?? null);
+  }, [monitorID]);
+
+  useEffect(() => {
+    void carregar().catch(() => setAberto(null));
+  }, [carregar, rodada]);
+
+  if (!aberto) return null;
+
+  async function reconhecer(e: FormEvent) {
+    e.preventDefault();
+    setEnviando(true);
+    setErro(null);
+    try {
+      setAberto(await api.acknowledgeIncident(monitorID, aberto!.id, nota.trim() || undefined));
+    } catch (e) {
+      // Outra pessoa pode ter reconhecido no meio: a recusa diz quem, e a
+      // releitura mostra o reconhecimento dela no lugar do botão.
+      setErro(e instanceof ApiError ? e.message : "Não foi possível registrar.");
+      await carregar().catch(() => undefined);
+    } finally {
+      setEnviando(false);
+    }
+  }
+
+  const ack = aberto.acknowledgement;
+  if (ack) {
+    return (
+      <section aria-label="reconhecimento" className="flex flex-col gap-0.5 border-l-2 border-line-strong pl-3">
+        <p className="text-small text-ink">{vistoPor(ack)}</p>
+        {ack.note && <p className="text-small text-ink-2">{ack.note}</p>}
+        {erro && <p className="text-small text-ink-3">{erro}</p>}
+      </section>
+    );
+  }
+
+  if (!administra) {
+    return (
+      <p className="text-small text-ink-3">Ninguém disse ainda que está olhando esta queda.</p>
+    );
+  }
+
+  return (
+    <form
+      onSubmit={reconhecer}
+      aria-label="reconhecimento"
+      className="flex flex-wrap items-center gap-2"
+    >
+      <Input
+        aria-label="nota do reconhecimento"
+        placeholder="nota (opcional): o que você está fazendo"
+        value={nota}
+        maxLength={500}
+        onChange={(e) => setNota(e.target.value)}
+        className="min-w-0 flex-1"
+      />
+      <Button type="submit" variant="primary" disabled={enviando}>
+        {enviando ? "Registrando" : "Estou vendo"}
+      </Button>
+      <span className="w-full text-small text-ink-3">
+        Para os lembretes desta queda; o aviso de volta continua saindo.
+      </span>
+      {erro && <span className="w-full text-small text-down">{erro}</span>}
+    </form>
   );
 }
 
@@ -1077,6 +1175,11 @@ function Incidents({ monitorID }: { monitorID: number }) {
               {i.open ? "em curso" : "resolvido"}
             </span>
             {i.cause && <span className="truncate text-small text-ink-2">{i.cause}</span>}
+            {i.acknowledgement && (
+              <span className="shrink-0 text-small text-ink-3" title={i.acknowledgement.note || undefined}>
+                visto por {i.acknowledgement.by}
+              </span>
+            )}
           </span>
 
           {/* Duração à direita numa coluna própria: durante uma conversa
