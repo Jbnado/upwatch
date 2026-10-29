@@ -443,8 +443,8 @@ na prática, estão fora do ar. Os monitores desses tipos entram de verdade:
 - **Redis** envia `PING` (com usuário de ACL, senha e TLS opcionais) e,
   se configurado, acusa quando `used_memory` passa de um limite. Aceita
   também condições sobre comandos de leitura — só `SCARD`, `LLEN`, `GET`,
-  `EXISTS`, `HGET`, `ZCARD`, `DBSIZE` e `INFO`, nunca comando livre. Para
-  vigiar workers do RQ, por exemplo:
+  `EXISTS`, `HGET`, `ZCARD`, `DBSIZE`, `INFO` e `WORKERS`, nunca comando
+  livre. Para vigiar workers do RQ, por exemplo:
 
   ```json
   {"assertions": [
@@ -455,6 +455,30 @@ na prática, estão fora do ar. Os monitores desses tipos entram de verdade:
 
   Sem worker, a causa do alerta diz `SCARD rq:workers:default = 0,
   esperado >= 1`.
+
+  Filas **Bull e BullMQ** não registram worker em chave nenhuma, e a chave
+  `bull:<fila>:stalled-check` não serve: ela expira e só é recriada na
+  checagem seguinte, então some por instantes com o worker de pé. Cada
+  worker dá à sua conexão o nome `<prefixo>:<base64 da fila>` (o BullMQ
+  acrescenta `:w:<nome>` quando o worker tem nome), e `WORKERS` conta essas
+  conexões no `CLIENT LIST`, como o `Queue.getWorkers()` das duas
+  bibliotecas. A chave é o prefixo e a fila, como aparecem nas chaves da
+  fila (`bull:excel-render:wait`):
+
+  ```json
+  {"assertions": [
+    {"command": "WORKERS", "key": "bull:excel-render", "op": "gte", "value": 1},
+    {"command": "LLEN",    "key": "bull:excel-render:wait", "op": "lt", "value": 500}
+  ]}
+  ```
+
+  Sem worker, a causa diz `WORKERS bull:excel-render = 0, esperado >= 1`.
+  Só a contagem sai na causa: o `CLIENT LIST` traz endereço e nome de toda
+  conexão do Redis, e nada disso vai para o alerta. O usuário de ACL
+  precisa de `+client|list`; sem ela, a causa diz isso. Serviço gerenciado
+  que desliga `CLIENT` não suporta a asserção. A fila é o que vem depois do
+  último `:` (o BullMQ não aceita `:` no nome da fila), e a contagem é por
+  conexão: um processo com dois workers da mesma fila conta dois.
 
 - **PostgreSQL e MySQL** abrem sessão e executam uma consulta (padrão
   `SELECT 1`) numa transação somente leitura; a latência é a duração da
@@ -479,7 +503,13 @@ CREATE USER 'upwatch'@'%' IDENTIFIED BY '...';
 ```
 # Redis: só os comandos que o monitor usa
 ACL SETUSER upwatch on >... ~rq:* -@all +ping +info +scard +llen
+# com WORKERS, acrescente
+ACL SETUSER upwatch +client|list
 ```
+
+`CLIENT LIST` mostra ao usuário do monitor o endereço e o nome de todas as
+conexões do Redis; a senha fica guardada no UpWatch, mas é isso que ela
+passa a abrir. Só a contagem chega à causa do alerta.
 
 Ao editar o monitor, deixar a senha em branco mantém a guardada — exceto
 quando o endereço muda ou o TLS fica mais fraco: aí ela precisa ser
