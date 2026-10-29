@@ -207,8 +207,8 @@ configuração nenhuma e uma instalação séria versiona o YAML.
 | `UPWATCH_WORKERS` | `50` | Teto de verificações simultâneas |
 | `UPWATCH_SESSION_TTL` | `168h` | Validade da sessão da interface |
 | `UPWATCH_REMINDER_INTERVAL` | `0` | De quanto em quanto uma queda aberta e não reconhecida é relembrada, para monitor e grupo sem intervalo próprio; `0` desliga, e o mínimo é `5m` |
-| `UPWATCH_SECURE_COOKIES` | `false` | Marca o cookie como Secure; ligue ao servir por HTTPS |
-| `UPWATCH_PUBLIC_URL` | vazio | Endereço externo, para o feed da página pública usar URLs absolutas e o cartão do Teams ter o botão "Abrir no UpWatch" |
+| `UPWATCH_SECURE_COOKIES` | `false` | Marca o cookie como Secure e liga o HSTS; ligue ao servir por HTTPS |
+| `UPWATCH_PUBLIC_URL` | vazio | Endereço externo, para o feed da página pública usar URLs absolutas, o cartão do Teams ter o botão "Abrir no UpWatch" e a conferência de origem reconhecer o endereço atrás de proxy |
 | `UPWATCH_METRICS_TOKEN` | vazio | Exige `Authorization: Bearer <token>` em `/metrics`; vazio deixa aberto enquanto não houver conta restrita; aceita `_FILE` |
 | `UPWATCH_SETUP_TOKEN` | vazio | Token exigido na tela de primeiro acesso; vazio, um aleatório é gerado na subida e escrito só no log; sem efeito depois que a conta existe; aceita `_FILE` (ver [Primeiro acesso](#primeiro-acesso)) |
 | `UPWATCH_SECRET_KEY` | vazio | Chave (base64 de 32 bytes) que cifra as credenciais no banco; vazia, o SQLite usa a gerada ao lado do banco; aceita `_FILE` (ver [Segredos](#segredos)) |
@@ -220,6 +220,15 @@ Durações aceitam sufixo de dias: `90d` é o mesmo que `2160h`.
 `UPWATCH_SECURE_COOKIES` fica desligado por padrão de propósito. Muita
 instalação caseira serve em HTTP na rede local, e um cookie Secure ali
 simplesmente não é enviado — o login pareceria quebrado sem explicação.
+Ligado, ele também acrescenta `Strict-Transport-Security` (dois anos,
+com subdomínios): o navegador passa a recusar HTTP no host. Só ligue
+quando o HTTPS for definitivo.
+
+Toda resposta, da API, da interface e da página pública, sai com
+`Content-Security-Policy`, `X-Frame-Options: DENY`,
+`X-Content-Type-Options: nosniff` e `Referrer-Policy` (só a origem na
+interface, nada na página pública). Nenhuma tela pode ser posta num
+iframe, nem a página pública.
 
 `UPWATCH_RESTRICT_PRIVATE_TARGETS` fica ligado por padrão. O checker
 conecta a partir do servidor, e uma conta restrita a um grupo que
@@ -396,6 +405,23 @@ sentidos.
 # Token de acesso: Ajustes → Tokens de acesso
 curl -H "Authorization: Bearer upw_..." http://localhost:8080/api/v1/monitors
 ```
+
+Corpo vai sempre com `Content-Type: application/json` (`; charset=utf-8`
+é aceito); outro tipo responde 415. A exceção é o [push](#push).
+
+```bash
+curl -H "Authorization: Bearer upw_..." -H "Content-Type: application/json" \
+  -d '{"name":"site","type":"http","target":"https://exemplo.com","interval_seconds":60,"timeout_seconds":10}' \
+  http://localhost:8080/api/v1/monitors
+```
+
+Escrita autenticada pelo cookie de sessão, e também login e primeiro
+acesso, só é aceita da própria origem: o navegador informa de onde veio a
+requisição (`Sec-Fetch-Site`, `Origin`), e a que vem de outra origem
+recebe 403. Script fora do navegador não manda esses
+cabeçalhos e não é afetado, e o token Bearer não passa por essa
+conferência. Atrás de um proxy que reescreve o `Host`, defina
+`UPWATCH_PUBLIC_URL` para o endereço externo ser reconhecido.
 
 ## Conferindo o corpo JSON
 
