@@ -106,7 +106,8 @@ func decodeState(statusName, candidateName string, consecutive int, sinceMS int6
 
 type incidentRepo struct{ db *db }
 
-const incidentColumns = `id, monitor_id, started_at, resolved_at, cause`
+const incidentColumns = `id, monitor_id, started_at, resolved_at, cause,
+	reminded_at, acknowledged_at, acknowledged_by, ack_note`
 
 func (r *incidentRepo) Open(ctx context.Context, i *domain.Incident) error {
 	id, err := r.db.insertID(ctx, `
@@ -146,6 +147,64 @@ func (r *incidentRepo) Current(ctx context.Context, monitorID int64) (domain.Inc
 		return domain.Incident{}, fmt.Errorf("incidente do monitor %d: %w", monitorID, store.ErrNotFound)
 	}
 	return i, err
+}
+
+func (r *incidentRepo) Get(ctx context.Context, id int64) (domain.Incident, error) {
+	row := r.db.QueryRowContext(ctx, `SELECT `+incidentColumns+` FROM incident WHERE id = ?`, id)
+
+	i, err := scanIncident(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Incident{}, fmt.Errorf("incidente %d: %w", id, store.ErrNotFound)
+	}
+	return i, err
+}
+
+// Acknowledge grava o reconhecimento numa instrução condicional: dois
+// cliques simultâneos não sobrescrevem um ao outro, e o incidente que
+// encerrou no meio do pedido não é reconhecido depois de acabar.
+func (r *incidentRepo) Acknowledge(ctx context.Context, id int64, ack domain.Acknowledgement) (domain.Incident, error) {
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE incident SET acknowledged_at = ?, acknowledged_by = ?, ack_note = ?
+		WHERE id = ? AND resolved_at IS NULL AND acknowledged_at IS NULL`,
+		toMillis(ack.At), ack.By, ack.Note, id)
+	if err != nil {
+		return domain.Incident{}, fmt.Errorf("sqlstore: reconhecendo incidente %d: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return domain.Incident{}, fmt.Errorf("sqlstore: reconhecendo incidente %d: %w", id, err)
+	}
+
+	i, err := r.Get(ctx, id)
+	if err != nil {
+		return domain.Incident{}, err
+	}
+	if n == 0 {
+		return i, fmt.Errorf("incidente %d encerrado ou já reconhecido: %w", id, store.ErrConflict)
+	}
+	return i, nil
+}
+
+func (r *incidentRepo) MarkReminded(ctx context.Context, id int64, previous *time.Time, at time.Time) (bool, error) {
+	q := `UPDATE incident SET reminded_at = ?
+		WHERE id = ? AND resolved_at IS NULL AND acknowledged_at IS NULL AND `
+	args := []any{toMillis(at), id}
+	if previous == nil {
+		q += `reminded_at IS NULL`
+	} else {
+		q += `reminded_at = ?`
+		args = append(args, toMillis(*previous))
+	}
+
+	res, err := r.db.ExecContext(ctx, q, args...)
+	if err != nil {
+		return false, fmt.Errorf("sqlstore: registrando lembrete do incidente %d: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("sqlstore: registrando lembrete do incidente %d: %w", id, err)
+	}
+	return n == 1, nil
 }
 
 func (r *incidentRepo) List(ctx context.Context, f store.IncidentFilter) (store.Page[domain.Incident], error) {
@@ -213,8 +272,13 @@ func scanIncident(sc scanner) (domain.Incident, error) {
 		i          domain.Incident
 		startedMS  int64
 		resolvedMS sql.NullInt64
+		remindedMS sql.NullInt64
+		ackMS      sql.NullInt64
+		ackBy      sql.NullString
+		ackNote    sql.NullString
 	)
-	if err := sc.Scan(&i.ID, &i.MonitorID, &startedMS, &resolvedMS, &i.Cause); err != nil {
+	if err := sc.Scan(&i.ID, &i.MonitorID, &startedMS, &resolvedMS, &i.Cause,
+		&remindedMS, &ackMS, &ackBy, &ackNote); err != nil {
 		return domain.Incident{}, err
 	}
 
@@ -222,6 +286,15 @@ func scanIncident(sc scanner) (domain.Incident, error) {
 	if resolvedMS.Valid {
 		at := fromMillis(resolvedMS.Int64)
 		i.ResolvedAt = &at
+	}
+	if remindedMS.Valid {
+		at := fromMillis(remindedMS.Int64)
+		i.RemindedAt = &at
+	}
+	if ackMS.Valid {
+		i.Acknowledgement = &domain.Acknowledgement{
+			By: ackBy.String, At: fromMillis(ackMS.Int64), Note: ackNote.String,
+		}
 	}
 	return i, nil
 }
@@ -233,6 +306,11 @@ type channelRepo struct{ db *db }
 const channelColumns = `id, name, type, config, enabled, created_at, updated_at`
 
 func (r *channelRepo) Create(ctx context.Context, c *domain.Channel) error {
+	return r.db.inTx(ctx, func(t *tx) error { return r.insert(ctx, t, c) })
+}
+
+// insert grava o canal dentro da transação dada.
+func (r *channelRepo) insert(ctx context.Context, t *tx, c *domain.Channel) error {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	c.CreatedAt, c.UpdatedAt = now, now
 
@@ -245,25 +323,21 @@ func (r *channelRepo) Create(ctx context.Context, c *domain.Channel) error {
 		insertConfig = emptyConfig
 	}
 
-	var id int64
-	err := r.db.inTx(ctx, func(t *tx) error {
-		var err error
-		id, err = t.insertID(ctx, `
-			INSERT INTO notification_channel (name, type, config, enabled, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?)`,
-			c.Name, c.Type, insertConfig, boolToInt(c.Enabled), toMillis(now), toMillis(now))
-		if err != nil || insertConfig == config {
-			return err
-		}
+	id, err := t.insertID(ctx, `
+		INSERT INTO notification_channel (name, type, config, enabled, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		c.Name, c.Type, insertConfig, boolToInt(c.Enabled), toMillis(now), toMillis(now))
+	if err != nil {
+		return translateAuthErr(err, "canal")
+	}
+	if insertConfig != config {
 		sealed, err := r.db.sealForWrite(config, fields, channelTable, id)
 		if err != nil {
 			return err
 		}
-		_, err = t.ExecContext(ctx, `UPDATE notification_channel SET config = ? WHERE id = ?`, sealed, id)
-		return err
-	})
-	if err != nil {
-		return translateAuthErr(err, "canal")
+		if _, err := t.ExecContext(ctx, `UPDATE notification_channel SET config = ? WHERE id = ?`, sealed, id); err != nil {
+			return translateAuthErr(err, "canal")
+		}
 	}
 	c.ID = id
 	return nil
@@ -281,13 +355,18 @@ func (r *channelRepo) Get(ctx context.Context, id int64) (domain.Channel, error)
 }
 
 func (r *channelRepo) Update(ctx context.Context, c domain.Channel) error {
+	return r.db.inTx(ctx, func(t *tx) error { return r.update(ctx, t, c) })
+}
+
+// update regrava o canal dentro da transação dada.
+func (r *channelRepo) update(ctx context.Context, t *tx, c domain.Channel) error {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	config, err := r.db.sealForWrite(encodeConfig(c.Config), notifier.SecretFields(c.Type), channelTable, c.ID)
 	if err != nil {
 		return err
 	}
 
-	res, err := r.db.ExecContext(ctx, `
+	res, err := t.ExecContext(ctx, `
 		UPDATE notification_channel
 		SET name = ?, type = ?, config = ?, enabled = ?, updated_at = ?
 		WHERE id = ?`,

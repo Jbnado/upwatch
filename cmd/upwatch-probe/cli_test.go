@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Jbnado/upwatch/internal/probe"
+	"github.com/Jbnado/upwatch/internal/testdir"
 )
 
 // Tokens fictícios, no formato do UpWatch.
@@ -40,7 +41,7 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	return &harness{t: t, path: filepath.Join(t.TempDir(), "probe.yaml"), env: map[string]string{}}
+	return &harness{t: t, path: filepath.Join(testdir.New(t), "probe.yaml"), env: map[string]string{}}
 }
 
 func (h *harness) run(args ...string) int {

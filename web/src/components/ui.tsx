@@ -154,13 +154,18 @@ function interceptar(to: Route) {
  *
  * Sublinhado apenas sob o cursor: numa interface densa, sublinhado
  * permanente em todo lugar viraria ruído visual.
+ *
+ * O tipo padrão é "button": dentro de um formulário, um botão sem tipo
+ * envia o formulário, e abrir uma seção acabaria salvando pela metade.
  */
 export function TextLink({
   className = "",
+  type = "button",
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
     <button
+      type={type}
       className={`pressable text-action eyebrow hover:text-ink hover:underline active:text-ink-2 ${className}`}
       {...props}
     />

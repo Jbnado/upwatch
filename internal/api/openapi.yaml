@@ -54,6 +54,13 @@ tags:
     description: Recebimento de sinal de monitores push
   - name: alerts
     description: Canais de aviso e histórico de incidentes
+  - name: maintenance
+    description: |
+      Janelas de manutenção. Dentro da janela as verificações continuam e
+      são gravadas, mas a falha vira "sem medição" com o motivo na
+      mensagem&#58; não abre incidente, não avisa, e a disponibilidade não
+      conta o intervalo como queda. A página pública mostra a janela em
+      curso e as que começam nos próximos sete dias.
   - name: public
     description: |
       Página pública de estado. É a única superfície de leitura sem
@@ -653,6 +660,63 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/v1/monitors/{id}/incidents/{incidentID}/ack:
+    post:
+      tags: [alerts]
+      summary: Reconhece a queda aberta ("estou vendo")
+      description: |
+        Registra quem está olhando a queda, quando e com que nota. O
+        incidente reconhecido para de gerar lembretes; o aviso de volta
+        continua saindo. Só administrador&#58; reconhecer cala o lembrete de
+        todo mundo.
+
+        O corpo é opcional. O primeiro reconhecimento é o que vale&#58; um
+        segundo, ou sobre incidente já encerrado, responde 409 dizendo o
+        motivo. Incidente de outro monitor responde 404.
+      parameters:
+        - { $ref: "#/components/parameters/PathID" }
+        - name: incidentID
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: { type: string, maxLength: 500 }
+      responses:
+        "200":
+          description: O incidente, já reconhecido
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Incident" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Incidente já reconhecido (a mensagem diz por quem) ou já encerrado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/monitors/{id}/children/{childID}:
+    delete:
+      tags: [monitors]
+      summary: Desliga um dependente deste monitor
+      description: |
+        O monitor `childID` deixa de depender do monitor do caminho e
+        volta a avisar por conta própria. Responde 404 se ele não existe,
+        está fora do escopo ou depende de outro pai.
+      parameters:
+        - { $ref: "#/components/parameters/PathID" }
+        - { $ref: "#/components/parameters/PathChildID" }
+      responses:
+        "204": { description: Dependente desligado }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/v1/summaries:
     get:
       tags: [data]
@@ -888,7 +952,7 @@ paths:
                 properties:
                   items:
                     type: array
-                    items: { type: string, enum: [webhook, discord, slack, email, ntfy] }
+                    items: { type: string, enum: [webhook, discord, slack, teams, email, ntfy] }
 
   /api/v1/channels:
     get:
@@ -901,10 +965,12 @@ paths:
 
         Para conta com acesso restrito a grupos, só os canais vinculados a
         monitores ou grupos do escopo dela&#58; o nome e o destino de um
-        canal que só avisa sobre os outros já dizem quem existe fora.
+        canal que só avisa sobre os outros já dizem quem existe fora. Pelo
+        mesmo motivo, targets dessa conta traz só os grupos e monitores do
+        escopo dela.
       responses:
         "200":
-          description: Canais cadastrados
+          description: Canais cadastrados, cada um com onde está ligado
           content:
             application/json:
               schema:
@@ -912,7 +978,7 @@ paths:
                 properties:
                   items:
                     type: array
-                    items: { $ref: "#/components/schemas/Channel" }
+                    items: { $ref: "#/components/schemas/ChannelWithTargets" }
     post:
       tags: [alerts]
       summary: Cadastra um destino de aviso
@@ -923,6 +989,10 @@ paths:
 
         Canal é recurso de todos os grupos&#58; criar, alterar, apagar,
         testar e vincular exigem escopo total (403 para os demais).
+
+        Com targets, o canal nasce já ligado aos grupos e monitores dados,
+        na mesma transação&#58; grupo ou monitor inexistente responde 404 e
+        nada é gravado.
       requestBody:
         required: true
         content:
@@ -933,8 +1003,13 @@ paths:
           description: Canal criado
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Channel" }
+              schema: { $ref: "#/components/schemas/ChannelWithTargets" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "404":
+          description: Grupo ou monitor de targets não existe
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "409":
           description: Já existe canal com esse nome
           content:
@@ -945,18 +1020,35 @@ paths:
     get:
       tags: [alerts]
       summary: Devolve um canal
-      description: Canal que não avisa sobre nada do escopo da conta responde 404.
+      description: |
+        Canal que não avisa sobre nada do escopo da conta responde 404.
+
+        Para quem pode editar canais (papel com escrita e acesso a todos
+        os grupos), a resposta traz também config, sem credencial, para o
+        formulário de edição. Os demais recebem só o canal e targets.
       parameters: [{ $ref: "#/components/parameters/PathID" }]
       responses:
         "200":
           description: O canal
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Channel" }
+              schema: { $ref: "#/components/schemas/ChannelDetail" }
         "404": { $ref: "#/components/responses/NotFound" }
     put:
       tags: [alerts]
       summary: Atualiza um canal
+      description: |
+        Sem targets, os vínculos com monitores e grupos continuam; com
+        targets, são trocados pelos dados na mesma transação da edição.
+        A credencial que
+        não volta no GET é mantida quando não vem: url ausente mantém a
+        URL do webhook, password ausente a senha do SMTP, token ausente o
+        token do ntfy, e um cabeçalho com o valor "***" o valor guardado.
+        Campo presente, mesmo vazio, é o novo valor.
+
+        A credencial guardada só acompanha o mesmo destino: ao trocar a
+        URL, o servidor SMTP ou o servidor do ntfy, ela precisa vir de
+        novo, ou a edição responde 400. Trocar o tipo não mantém nada.
       parameters: [{ $ref: "#/components/parameters/PathID" }]
       requestBody:
         required: true
@@ -977,6 +1069,38 @@ paths:
       parameters: [{ $ref: "#/components/parameters/PathID" }]
       responses:
         "204": { description: Canal removido }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/channels/{id}/targets:
+    put:
+      tags: [alerts]
+      summary: Troca todos os grupos e monitores ligados ao canal
+      description: |
+        Substitui o conjunto inteiro numa transação&#58; o que não vier
+        deixa de estar ligado. Grupo ligado vale para os monitores dele e,
+        no sistema, para os ambientes, inclusive os criados depois; monitor
+        ligado vale só para ele.
+
+        Exige escopo total, como os vínculos avulsos. Grupo ou monitor que
+        não existe responde 404 com o id na mensagem, e nada muda.
+      parameters: [{ $ref: "#/components/parameters/PathID" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChannelTargets" }
+      responses:
+        "200":
+          description: O conjunto gravado, em ordem e sem repetidos
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChannelTargets" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403":
+          description: A conta não alcança todos os grupos
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /api/v1/channels/{id}/test:
@@ -1819,6 +1943,124 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/v1/maintenance-windows:
+    get:
+      tags: [maintenance]
+      summary: Lista as janelas de manutenção
+      description: |
+        Todas, da que começa mais tarde para a mais antiga. Para conta com
+        escopo, só as que tocam algo do escopo, e sem os alvos de fora.
+      responses:
+        "200":
+          description: Janelas
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/MaintenanceWindow" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [maintenance]
+      summary: Declara uma janela de manutenção
+      description: |
+        Exige escopo total&#58; a janela cala avisos, e declará-la no grupo
+        vizinho calaria o pager de outro time.
+
+        O alvo é um conjunto de monitores e de grupos. Grupo vale em
+        cascata (a janela no sistema cobre os ambientes dele), e a janela
+        vale para os dependentes de um monitor coberto.
+
+        O alvo que continuar fora quando a janela acabar avisa depois das
+        confirmações de sempre, uma vez, como uma queda nova.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MaintenanceWindowInput" }
+      responses:
+        "201":
+          description: Janela criada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MaintenanceWindow" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/maintenance-windows/{id}:
+    get:
+      tags: [maintenance]
+      summary: Uma janela de manutenção
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+      responses:
+        "200":
+          description: Janela
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MaintenanceWindow" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [maintenance]
+      summary: Altera uma janela de manutenção
+      description: |
+        Regrava a definição e os alvos. Não reabre a janela encerrada&#58;
+        o encerramento tem rota própria.
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MaintenanceWindowInput" }
+      responses:
+        "200":
+          description: Janela atualizada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MaintenanceWindow" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [maintenance]
+      summary: Apaga uma janela de manutenção
+      description: |
+        As batidas gravadas durante a janela continuam dizendo que houve
+        manutenção. Para parar de silenciar sem apagar, use `/end`.
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+      responses:
+        "204": { description: Janela apagada }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/maintenance-windows/{id}/end:
+    post:
+      tags: [maintenance]
+      summary: Encerra a janela antes do previsto
+      description: |
+        Daqui em diante a janela não cobre mais nada, nem as próximas
+        ocorrências da recorrente. Na que ainda não começou, é cancelar.
+        Encerrar duas vezes mantém o primeiro encerramento.
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+      responses:
+        "200":
+          description: Janela encerrada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MaintenanceWindow" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/v1/events:
     get:
       tags: [data]
@@ -1885,6 +2127,11 @@ components:
       schema: { type: integer, format: int64, minimum: 1 }
     PathChannelID:
       name: channelID
+      in: path
+      required: true
+      schema: { type: integer, format: int64, minimum: 1 }
+    PathChildID:
+      name: childID
       in: path
       required: true
       schema: { type: integer, format: int64, minimum: 1 }
@@ -2073,6 +2320,16 @@ components:
             Grupo folha do monitor; nulo é "Sem grupo", que só quem
             alcança todos os grupos usa. O PUT sobrescreve&#58; omitir move
             para "Sem grupo".
+        reminder_minutes:
+          type: integer
+          nullable: true
+          minimum: 0
+          description: |
+            De quanto em quanto tempo uma queda aberta e não reconhecida é
+            relembrada pelos canais, entre 5 e 10080 minutos. Nulo herda
+            (do ambiente, do sistema e por fim de UPWATCH_REMINDER_INTERVAL,
+            desligado por padrão); 0 desliga. O PUT sobrescreve&#58; omitir
+            volta a herdar.
         enabled: { type: boolean, default: true }
         tags:
           type: array
@@ -2327,6 +2584,16 @@ components:
           type: integer
           format: int64
           description: Sistema do ambiente; ausente é grupo de topo.
+        reminder_minutes:
+          type: integer
+          nullable: true
+          minimum: 0
+          description: |
+            Intervalo de lembrete para os monitores do grupo que não
+            escolheram o próprio, entre 5 e 10080 minutos. Nulo herda (o
+            ambiente herda do sistema, e o sistema de
+            UPWATCH_REMINDER_INTERVAL, desligado por padrão); 0 desliga.
+            O PUT sobrescreve&#58; omitir volta a herdar.
 
     MonitorGroup:
       type: object
@@ -2338,6 +2605,7 @@ components:
         path:
           type: string
           description: Nome completo, como "RPA / prod".
+        reminder_minutes: { type: integer, nullable: true }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
@@ -2427,21 +2695,59 @@ components:
       properties:
         id: { type: integer, format: int64 }
         name: { type: string }
-        type: { type: string, enum: [webhook, discord, slack, email, ntfy] }
+        type: { type: string, enum: [webhook, discord, slack, teams, email, ntfy] }
         enabled: { type: boolean }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+
+    ChannelTargets:
+      type: object
+      description: |
+        Onde o canal está ligado direto. Grupo vale para os monitores dele
+        e, no sistema, para os ambientes, inclusive os criados depois.
+      properties:
+        group_ids:
+          type: array
+          items: { type: integer, format: int64 }
+        monitor_ids:
+          type: array
+          items: { type: integer, format: int64 }
+
+    ChannelWithTargets:
+      allOf:
+        - $ref: "#/components/schemas/Channel"
+        - type: object
+          properties:
+            targets: { $ref: "#/components/schemas/ChannelTargets" }
+
+    ChannelDetail:
+      allOf:
+        - $ref: "#/components/schemas/ChannelWithTargets"
+        - type: object
+          properties:
+            config:
+              type: object
+              description: |
+                Só para quem pode editar canais. A configuração sem
+                credencial - url_set, password_set e token_set dizem se
+                há URL, senha ou token guardados, e os cabeçalhos vêm com
+                o nome e o valor "***".
 
     ChannelInput:
       type: object
       required: [name, type, config]
       properties:
         name: { type: string, maxLength: 80 }
-        type: { type: string, enum: [webhook, discord, slack, email, ntfy] }
+        type: { type: string, enum: [webhook, discord, slack, teams, email, ntfy] }
         enabled: { type: boolean, default: true }
+        targets:
+          $ref: "#/components/schemas/ChannelTargets"
+          description: |
+            Opcional. Troca todos os vínculos do canal na mesma gravação;
+            ausente na edição mantém os atuais.
         config:
           description: |
-            A forma depende de type. webhook, discord e slack usam
+            A forma depende de type. webhook, discord, slack e teams usam
             WebhookChannelConfig; email usa EmailChannelConfig; ntfy usa
             NtfyChannelConfig.
 
@@ -2454,7 +2760,10 @@ components:
 
     WebhookChannelConfig:
       type: object
-      description: Canais webhook, discord e slack.
+      description: |
+        Canais webhook, discord, slack e teams. No teams a url é a do
+        gatilho "When a Teams webhook request is received" do app
+        Workflows (Power Automate), e precisa ser https.
       required: [url]
       properties:
         url:
@@ -2478,13 +2787,13 @@ components:
         body_template:
           description: |
             Forma do corpo inteiro, e não só da frase. Só no canal
-            webhook - discord e slack têm corpo ditado pelo destino e
+            webhook - discord, slack e teams têm corpo ditado pelo destino e
             recusam este campo no cadastro.
 
             Qualquer objeto ou lista JSON. Em qualquer texto dentro
             dele, os marcadores são substituídos - $monitor,
             $monitor_id, $target, $status, $previous_status, $message,
-            $at, $duration_seconds, $group e $text. Também vale ${nome}, e $$
+            $at, $duration_seconds, $group, $event e $text. Também vale ${nome}, e $$
             escreve um cifrão literal.
 
             Sozinho, o marcador entrega o valor com o tipo dele, de
@@ -2590,6 +2899,21 @@ components:
           type: string
           description: A falha observada quando a queda foi confirmada
         open: { type: boolean }
+        acknowledgement:
+          nullable: true
+          allOf: [{ $ref: "#/components/schemas/Acknowledgement" }]
+          description: Quem disse estar olhando a queda; nulo quando ninguém disse.
+        reminded_at:
+          type: string
+          format: date-time
+          description: Último lembrete enviado; ausente enquanto nenhum saiu.
+
+    Acknowledgement:
+      type: object
+      properties:
+        by: { type: string, description: Nome da conta que reconheceu }
+        at: { type: string, format: date-time }
+        note: { type: string, maxLength: 500 }
 
     Summary:
       type: object
@@ -2641,6 +2965,11 @@ components:
           properties:
             id: { type: integer, format: int64, nullable: true }
             name: { type: string }
+        acknowledgement:
+          allOf: [{ $ref: "#/components/schemas/Acknowledgement" }]
+          description: |
+            O reconhecimento da queda aberta do monitor; ausente sem queda
+            aberta ou sem reconhecimento.
         series:
           type: array
           description: |
@@ -2834,6 +3163,79 @@ components:
           enum: [investigating, identified, monitoring, resolved]
         body: { type: string, maxLength: 4000 }
 
+    MaintenanceWindowInput:
+      type: object
+      required: [title, starts_at, ends_at]
+      properties:
+        title: { type: string, maxLength: 160 }
+        message:
+          type: string
+          maxLength: 2000
+          description: Texto que a página pública mostra junto do título
+        starts_at:
+          type: string
+          format: date-time
+          description: Início da primeira ocorrência
+        ends_at:
+          type: string
+          format: date-time
+          description: |
+            Fim da primeira ocorrência. A avulsa dura no máximo 31 dias; a
+            recorrente precisa ser mais curta que o intervalo da repetição.
+        recurrence:
+          type: string
+          enum: [none, daily, weekly]
+          default: none
+        time_zone:
+          type: string
+          default: UTC
+          example: America/Sao_Paulo
+          description: |
+            Fuso em que a recorrente repete o horário de parede&#58; "todo
+            domingo às 2h" continua às 2h depois da troca de horário de
+            verão.
+        monitor_ids:
+          type: array
+          items: { type: integer, format: int64 }
+        group_ids:
+          type: array
+          items: { type: integer, format: int64 }
+          description: Grupo vale em cascata; o sistema cobre os ambientes dele
+
+    MaintenanceWindow:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        title: { type: string }
+        message: { type: string }
+        starts_at: { type: string, format: date-time }
+        ends_at: { type: string, format: date-time }
+        recurrence: { type: string, enum: [none, daily, weekly] }
+        time_zone: { type: string }
+        monitor_ids:
+          type: array
+          items: { type: integer, format: int64 }
+        group_ids:
+          type: array
+          items: { type: integer, format: int64 }
+        ended_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Encerramento antes do previsto
+        state:
+          type: string
+          enum: [scheduled, active, finished]
+        next:
+          type: object
+          nullable: true
+          description: Ocorrência em curso ou a próxima; ausente na encerrada
+          properties:
+            start: { type: string, format: date-time }
+            end: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
     PublicView:
       type: object
       description: |
@@ -2861,6 +3263,10 @@ components:
         announcements:
           type: array
           items: { $ref: "#/components/schemas/PublicAnnouncement" }
+        maintenances:
+          type: array
+          description: Janelas em curso e as que começam nos próximos sete dias
+          items: { $ref: "#/components/schemas/PublicMaintenance" }
 
     PublicGroup:
       type: object
@@ -2891,6 +3297,9 @@ components:
         history:
           type: array
           items: { $ref: "#/components/schemas/PublicDay" }
+        maintenance:
+          type: boolean
+          description: Numa janela de manutenção agora
 
     PublicDay:
       type: object
@@ -2922,6 +3331,23 @@ components:
         updates:
           type: array
           items: { $ref: "#/components/schemas/PublicAnnouncementUpdate" }
+
+    PublicMaintenance:
+      type: object
+      properties:
+        title: { type: string }
+        message: { type: string }
+        starts_at:
+          type: string
+          format: date-time
+          description: Ocorrência em curso ou a próxima
+        ends_at: { type: string, format: date-time }
+        recurrence: { type: string, enum: [none, daily, weekly] }
+        active: { type: boolean }
+        components:
+          type: array
+          items: { type: string }
+          description: Rótulos públicos dos componentes desta página afetados
 
     PublicAnnouncementUpdate:
       type: object

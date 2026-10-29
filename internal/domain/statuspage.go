@@ -215,6 +215,11 @@ type PublicMonitor struct {
 
 	// History é um dia por elemento, do mais antigo ao mais recente.
 	History []PublicDay `json:"history"`
+
+	// Maintenance marca o alvo numa janela de manutenção agora. O estado
+	// medido continua em Status; quem lê precisa saber que a lacuna ou a
+	// queda de hoje era esperada.
+	Maintenance bool `json:"maintenance,omitempty"`
 }
 
 // PublicDay é um dia da barra de histórico.
@@ -257,6 +262,10 @@ type PublicView struct {
 
 	Groups        []PublicGroup        `json:"groups"`
 	Announcements []PublicAnnouncement `json:"announcements"`
+
+	// Maintenances são as janelas em curso e as que começam em breve,
+	// da mais próxima para a mais distante.
+	Maintenances []PublicMaintenance `json:"maintenances"`
 
 	// WindowDays é quantos dias as barras cobrem, para a legenda não
 	// precisar adivinhar.

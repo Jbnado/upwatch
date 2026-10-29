@@ -37,8 +37,8 @@ type ntfyConfig struct {
 	// Server vazio vale o servidor público.
 	Server string `json:"server,omitempty"`
 	Topic  string `json:"topic"`
-	// Token é segredo, para servidor próprio com controle de acesso. Como
-	// o resto da configuração, nunca sai pela API.
+	// Token é segredo, para servidor próprio com controle de acesso, e
+	// nunca sai pela API.
 	Token string `json:"token,omitempty"`
 }
 

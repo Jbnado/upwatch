@@ -52,13 +52,39 @@ histórico, e o aviso do pai diz quantos dependentes ficaram calados;
 quando o pai volta, o filho que continuar fora avisa. Pai sem medição
 ou pausado não cala ninguém, e ciclos são recusados no cadastro.
 
-**Avisa** por webhook, Discord, Slack, [e-mail](#e-mail) e [ntfy](#ntfy),
+**Lembra enquanto ninguém olhou.** O aviso de queda sai uma vez, na
+transição; a das duas da manhã se perde. Com lembrete ligado, a queda
+que segue aberta volta a avisar a cada intervalo, dizendo há quanto tempo
+dura — até alguém apertar "Estou vendo" no detalhe do monitor (ou chamar
+a API). O reconhecimento registra quem e quando, aparece no painel e no
+histórico de quedas, e cala os lembretes só daquela queda; o aviso de
+volta sai normalmente. O intervalo se escolhe no monitor, no ambiente ou
+no sistema (o mais específico vence; zero desliga), e o padrão da
+instalação é `UPWATCH_REMINDER_INTERVAL`, desligado. O filho calado pelo
+pai não lembra sozinho: o lembrete do pai diz quantos dependentes estão
+calados. Reconhecer é escrita, então observador não reconhece.
+
+**Sabe que o deploy das 19h vai derrubar a API.** Uma
+[janela de manutenção](#janelas-de-manutenção) cala os avisos de um
+monitor, de um grupo inteiro ou dos dois, uma vez ou toda semana, sem
+desligar nada: as verificações continuam e o histórico registra a
+manutenção, que não conta como queda na disponibilidade.
+
+**Avisa** por webhook, Discord, Slack, [Microsoft Teams](#microsoft-teams),
+[e-mail](#e-mail) e [ntfy](#ntfy),
 com um botão de teste em cada canal. Descobrir que o alerta não chega
 durante a queda é descobrir tarde. O webhook genérico aceita cabeçalhos
 próprios e deixa você escolher a forma do corpo — veja
 [Webhook](#webhook). Canal vinculado a um grupo avisa sobre todos os
 monitores dele, inclusive os criados depois; o vínculo direto com um
 monitor continua existindo, e cada canal recebe o aviso uma vez só.
+Os vínculos se escolhem no próprio canal, ao criar ou editar, numa árvore
+Sistema › Ambiente › serviço: grupo inteiro marcado liga o grupo (sistema
+inteiro liga o sistema, que cobre também os ambientes novos), e o resto
+marcado liga cada monitor. Grupo ainda vazio também pode ser marcado. Na
+API, `targets` em `POST`/`PUT /api/v1/channels` ou
+`PUT /api/v1/channels/{id}/targets` troca o conjunto inteiro numa
+transação só.
 
 Uma entrega que falha é repetida até quatro vezes, com espera crescente,
 quando a falha pode passar: erro de rede, timeout, HTTP 429 ou 5xx, SMTP
@@ -170,8 +196,9 @@ configuração nenhuma e uma instalação séria versiona o YAML.
 | `UPWATCH_ROLLUP_INTERVAL` | `5m` | De quanto em quanto a agregação roda |
 | `UPWATCH_WORKERS` | `50` | Teto de verificações simultâneas |
 | `UPWATCH_SESSION_TTL` | `168h` | Validade da sessão da interface |
+| `UPWATCH_REMINDER_INTERVAL` | `0` | De quanto em quanto uma queda aberta e não reconhecida é relembrada, para monitor e grupo sem intervalo próprio; `0` desliga, e o mínimo é `5m` |
 | `UPWATCH_SECURE_COOKIES` | `false` | Marca o cookie como Secure; ligue ao servir por HTTPS |
-| `UPWATCH_PUBLIC_URL` | vazio | Endereço externo, para o feed da página pública usar URLs absolutas |
+| `UPWATCH_PUBLIC_URL` | vazio | Endereço externo, para o feed da página pública usar URLs absolutas e o cartão do Teams ter o botão "Abrir no UpWatch" |
 | `UPWATCH_METRICS_TOKEN` | vazio | Exige `Authorization: Bearer <token>` em `/metrics`; vazio deixa aberto enquanto não houver conta restrita; aceita `_FILE` |
 | `UPWATCH_SETUP_TOKEN` | vazio | Token exigido na tela de primeiro acesso; vazio, um aleatório é gerado na subida e escrito só no log; sem efeito depois que a conta existe; aceita `_FILE` (ver [Primeiro acesso](#primeiro-acesso)) |
 | `UPWATCH_SECRET_KEY` | vazio | Chave (base64 de 32 bytes) que cifra as credenciais no banco; vazia, o SQLite usa a gerada ao lado do banco; aceita `_FILE` (ver [Segredos](#segredos)) |
@@ -219,8 +246,8 @@ O UpWatch guarda credenciais que precisa usar de volta: a senha do
 Redis, do PostgreSQL e do MySQL monitorados, o basic auth e os
 cabeçalhos de credencial do HTTP, o token do push, a senha SMTP, o token
 do ntfy e as URLs de webhook (a do Discord e a do Slack levam o token no
-caminho). Elas não podem virar hash, como as senhas de quem entra na
-interface, então ficam **cifradas no banco** com AES-256-GCM. Um backup,
+caminho, e a do Teams leva a assinatura na query). Elas não podem virar
+hash, como as senhas de quem entra na interface, então ficam **cifradas no banco** com AES-256-GCM. Um backup,
 uma cópia do volume ou um `pg_dump` não as entrega em texto. Na
 memória e pela API nada muda: quem lê continua sem vê-las, e o
 administrador continua vendo o token do push para copiar o endereço.
@@ -396,7 +423,8 @@ Sem configuração extra, o corpo é este envelope:
   "message": "connection refused",
   "at": "2026-07-30T18:42:11Z",
   "duration_seconds": 0,
-  "group": "RPA / prod"
+  "group": "RPA / prod",
+  "event": "transition"
 }
 ```
 
@@ -407,6 +435,14 @@ pode vir vazia. `group` é o caminho do grupo do monitor (`RPA / prod`), e
 vem vazio para monitor sem grupo — monitores costumam se chamar só `api`
 ou `front`, e é o grupo que diz qual sistema caiu. Pelo mesmo motivo, a
 frase padrão traz o grupo entre parênteses depois do nome.
+
+`event` diz o que o aviso conta: `transition` é a mudança de estado, e
+`reminder` é o [lembrete](#o-que-ele-faz) de uma queda que segue aberta.
+No lembrete os outros campos continuam os da queda — mesmo `monitor_id`,
+`status` e `previous_status` iguais a `down` —, `at` é o instante do
+lembrete e `duration_seconds` é há quanto tempo a queda dura. Quem abre
+chamado a partir do webhook trata o `reminder` como repetição do chamado
+aberto, e não como queda nova.
 
 ### Escolhendo a forma do corpo
 
@@ -438,6 +474,7 @@ marcadores são substituídos:
 | `$at` | Instante da mudança |
 | `$duration_seconds` | Duração do estado anterior, como número |
 | `$group` | Caminho do grupo (`RPA / prod`), vazio sem grupo |
+| `$event` | `transition` ou `reminder` |
 | `$text` | A frase pronta do aviso |
 
 Também vale `${nome}`, para quando o marcador encosta em texto que
@@ -455,12 +492,12 @@ queda por causa da própria queda.
 
 Marcador desconhecido é recusado no cadastro do canal, não na entrega:
 descobrir o erro de digitação durante o incidente é descobrir tarde
-demais. Discord e Slack recusam `body_template` pelo mesmo motivo — o
+demais. Discord, Slack e Teams recusam `body_template` pelo mesmo motivo — o
 corpo deles é ditado pelo destino.
 
 ### Modelo da frase
 
-Em webhook, Discord e Slack, `template` troca a frase padrão por um modelo
+Em webhook, Discord, Slack e Teams, `template` troca a frase padrão por um modelo
 [text/template](https://pkg.go.dev/text/template) do Go, como
 `"{{.Monitor.Name}} => {{.Status}}"`. O modelo enxerga `Monitor` (`ID`,
 `Name`, `Target`, `Type` e `Tags`), `Group`, `Status`, `Message`,
@@ -476,7 +513,8 @@ aviso vai com `allowed_mentions` vazio, e um `@everyone` na causa chega
 como texto, sem pingar ninguém. No Slack, `<`, `>` e `&` desses campos são
 escapados, e `<!channel>` ou um link disfarçado chegam como texto; o que
 você escreve no próprio `template`, como um link para o runbook, passa
-intacto.
+intacto. No Teams, menção só existe quando o cartão a declara, e o
+UpWatch não declara nenhuma.
 
 Os campos avançados também estão na interface, em Ajustes → Canais de
 aviso, atrás de "cabeçalhos e formato do corpo".
@@ -651,8 +689,49 @@ A senha do SMTP e o token do ntfy, como a URL dos webhooks, nunca voltam
 nas leituras da API. Também não aparecem no log nem no erro do botão de
 teste: quando a entrega falha, o erro mostra só esquema e host do destino,
 porque o caminho é onde ficam o token do webhook do Discord e do Slack e o
-tópico do ntfy. Para trocá-los, o `PUT /api/v1/channels/{id}` leva
+tópico do ntfy, e a query é onde fica a assinatura do Teams. Para trocá-los, o `PUT /api/v1/channels/{id}` leva
 a configuração inteira de novo.
+
+## Microsoft Teams
+
+O canal `teams` publica um Adaptive Card num canal ou num chat do Teams
+pelo app **Workflows** (Power Automate). Os conectores "Incoming Webhook"
+do Office 365 estão sendo desligados pela Microsoft; o Workflows é o
+caminho que sobra e funciona com a licença padrão, sem Premium.
+
+1. No Teams, abra **Workflows** (pelo menu `…` do canal ou pela barra de
+   apps).
+2. Escolha o modelo **Post to a channel when a webhook request is
+   received** — ou **Post to a chat when a webhook request is received**,
+   para avisar num chat com o Flow bot.
+3. Dê um nome ao fluxo, escolha a equipe e o canal (ou o chat) e conclua.
+4. Copie a URL que o Workflows mostra no fim.
+5. No UpWatch, em Ajustes → Canais de aviso, crie um canal **Microsoft
+   Teams**, cole a URL e aperte **Testar**.
+
+```json
+{ "url": "https://prod-12.westus.logic.azure.com:443/workflows/…/triggers/manual/paths/invoke?api-version=2016-06-01&sig=…" }
+```
+
+O cartão tem o cabeçalho na cor do estado (vermelho fora do ar, amarelo
+degradado, verde de volta; o lembrete sai em vermelho como "ainda fora do
+ar"), `grupo · monitor`, a frase do aviso, a causa,
+a duração, o alvo e o horário no fuso de quem lê. Com
+`UPWATCH_PUBLIC_URL` configurado, um botão **Abrir no UpWatch** leva à
+página do monitor; sem ele, o botão não aparece, porque um link relativo
+não abre nada fora do navegador.
+
+A URL é credencial — a assinatura `sig` na query é o que autoriza
+publicar — e é tratada como a do Discord e a do Slack: cifrada no banco,
+nunca devolvida pela API e fora do log de erro.
+
+O cadastro exige `https://` e recusa URL de webhook do Slack ou do
+Discord colada no tipo errado, mas não confere o host contra uma lista: a
+Microsoft já trocou o domínio do Workflows (de `*.logic.azure.com` para
+`*.environment.api.powerplatform.com`), e nuvens de governo usam outros.
+Uma lista fechada recusaria o próximo endereço válido. A URL de um
+Incoming Webhook antigo (`*.webhook.office.com`) também é aceita e
+funciona enquanto a Microsoft mantiver o conector.
 
 ## Página pública de estado
 
@@ -675,6 +754,48 @@ obrigar você a renomeá-lo nem a entregar sua convenção de nomes.
 Há também um feed Atom em `/api/v1/public/<slug>/feed.atom`, para
 acompanhar sem cadastrar e-mail e para ligar num canal de chat sem que o
 UpWatch precise saber falar com aquele canal.
+
+## Janelas de manutenção
+
+Em Ajustes → Manutenção, ou pela API em `/api/v1/maintenance-windows`.
+Declare "RPA/prod em manutenção hoje das 19h às 19h30" e o deploy não
+acende o aviso do time inteiro.
+
+Dentro da janela:
+
+- as verificações continuam e são gravadas; a falha vira "sem medição"
+  com o motivo na mensagem (`em manutenção — deploy do RPA; resultado
+  descartado (falha original: …)`), e é assim que aparece nos eventos do
+  monitor;
+- não abre incidente nem avisa, nem por queda nem por degradação;
+- a disponibilidade não conta o intervalo como queda;
+- a página pública mostra "manutenção" no componente afetado, com o
+  título e o texto da janela, e anuncia a janela que começa nos próximos
+  sete dias.
+
+**Alvo.** Monitores e grupos, à vontade. A janela num sistema vale para
+todos os ambientes dele — `RPA` cobre `RPA/hml` e `RPA/prod`, inclusive
+monitores criados depois. E vale para os dependentes: com o pai em
+manutenção, a queda do filho é a do pai, e fica calada também.
+
+**Recorrência.** Avulsa, diária ou semanal, no fuso da janela: "todo
+domingo, 02h–03h" continua às 2h depois da troca de horário de verão. A
+avulsa dura no máximo 31 dias — uma janela esquecida é o monitor
+desligado que ninguém religou —, e a recorrente precisa ser mais curta
+que o intervalo da repetição.
+
+**Quando a janela acaba com o alvo fora.** Ele avisa, uma vez, depois das
+confirmações de sempre, como uma queda nova. A queda confirmada antes de
+a janela começar já tinha avisado; a volta dela, mesmo no meio da
+janela, também avisa.
+
+**Encerrar antes do previsto** (`POST /api/v1/maintenance-windows/<id>/end`)
+para de silenciar na hora, e cancela as próximas ocorrências da
+recorrente. Apagar a janela também, mas encerrar mantém o registro.
+
+Declarar janela exige acesso a todos os grupos, como canal e relato: ela
+cala avisos, e numa conta restrita calaria o pager do time vizinho.
+Quem tem escopo vê as janelas que tocam os grupos dele.
 
 ## Prometheus
 

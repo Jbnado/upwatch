@@ -284,7 +284,23 @@ type IncidentRepo interface {
 	Resolve(ctx context.Context, monitorID int64, at time.Time) error
 	// Current devolve a queda em curso, ou ErrNotFound.
 	Current(ctx context.Context, monitorID int64) (domain.Incident, error)
+	// Get devolve o incidente pelo id, ou ErrNotFound.
+	Get(ctx context.Context, id int64) (domain.Incident, error)
 	List(ctx context.Context, f IncidentFilter) (Page[domain.Incident], error)
+
+	// Acknowledge registra o "estou vendo" e devolve o incidente como
+	// ficou. ErrNotFound se ele não existir; ErrConflict se já estiver
+	// encerrado ou reconhecido — o primeiro reconhecimento é o que conta,
+	// e trocá-lo calado apagaria quem chegou antes.
+	Acknowledge(ctx context.Context, id int64, ack domain.Acknowledgement) (domain.Incident, error)
+	// MarkReminded registra o lembrete enviado em at, e só se o incidente
+	// seguir aberto, sem reconhecimento e com o último lembrete ainda em
+	// previous (nulo: nenhum). Devolve se registrou.
+	//
+	// A condição é conferida na própria escrita, e quem chama só envia o
+	// lembrete se ela passou: um reconhecimento que chega entre a leitura
+	// e o envio cala o lembrete em vez de perder para ele.
+	MarkReminded(ctx context.Context, id int64, previous *time.Time, at time.Time) (bool, error)
 }
 
 // ChannelRepo guarda os destinos de aviso e seus vínculos.
@@ -326,6 +342,46 @@ type ChannelRepo interface {
 	// avisado precisa morar num lugar só, senão o motor e a tela de canais
 	// passam a discordar sobre quem recebe.
 	Destinations(ctx context.Context, monitorID int64) ([]domain.Channel, error)
+
+	// CreateWithTargets e UpdateWithTargets gravam o canal e trocam o
+	// conjunto de vínculos dele numa transação só: o canal que nasce sem
+	// os vínculos pedidos não avisa ninguém, e quem salvou acha que avisa.
+	// Devolvem ErrNotFound se um grupo ou monitor não existir, sem gravar
+	// nada.
+	CreateWithTargets(ctx context.Context, c *domain.Channel, t ChannelTargets) error
+	UpdateWithTargets(ctx context.Context, c domain.Channel, t ChannelTargets) error
+	// SetTargets troca todos os vínculos do canal pelos dados, de uma vez.
+	SetTargets(ctx context.Context, channelID int64, t ChannelTargets) error
+	// Targets devolve os vínculos diretos de cada canal, recortados pela
+	// seleção (nula traz tudo): grupos da seleção e monitores que estão
+	// neles. Canal sem vínculo na seleção fica fora do mapa.
+	Targets(ctx context.Context, sel *GroupSelection) (map[int64]ChannelTargets, error)
+}
+
+// ChannelTargets é onde um canal está ligado direto, em ordem de id.
+type ChannelTargets struct {
+	GroupIDs   []int64
+	MonitorIDs []int64
+}
+
+// MaintenanceRepo guarda as janelas de manutenção.
+//
+// Os alvos (monitores e grupos) saem por cascata quando o monitor ou o
+// grupo é apagado: a janela fica com menos alcance, nunca com outro.
+type MaintenanceRepo interface {
+	Create(ctx context.Context, w *domain.MaintenanceWindow) error
+	Get(ctx context.Context, id int64) (domain.MaintenanceWindow, error)
+	// Update regrava a definição e os alvos, sem tocar em EndedAt: o
+	// encerramento tem caminho próprio (End), para uma edição feita com a
+	// tela aberta desde antes não reabrir a janela que alguém encerrou.
+	Update(ctx context.Context, w domain.MaintenanceWindow) error
+	Delete(ctx context.Context, id int64) error
+	// List traz todas, da que começa mais tarde para a mais antiga. São
+	// poucas, e o motor precisa de todas para decidir.
+	List(ctx context.Context) ([]domain.MaintenanceWindow, error)
+	// End encerra a janela no instante, ou mantém o encerramento anterior
+	// se ele for mais cedo.
+	End(ctx context.Context, id int64, at time.Time) error
 }
 
 // GroupRepo guarda os grupos de monitores.
@@ -454,6 +510,7 @@ type MetadataStore interface {
 	Announcements() AnnouncementRepo
 	Groups() GroupRepo
 	Transitions() TransitionRepo
+	Maintenance() MaintenanceRepo
 	Close() error
 }
 

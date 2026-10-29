@@ -119,3 +119,38 @@ describe("Groups com escopo total", () => {
     expect(within(linha("RPA")).getByRole("button", { name: "Renomear" })).toBeEnabled();
   });
 });
+
+describe("Groups e o lembrete", () => {
+  it("liga o lembrete do sistema sem mexer no resto do grupo", async () => {
+    vi.mocked(api.updateMonitorGroup).mockResolvedValue({ ...RPA, reminder_minutes: 60 });
+    render(<Groups scope={TOTAL} />);
+
+    await screen.findAllByText("RPA");
+    fireEvent.click(within(linha("RPA")).getByRole("button", { name: "Avisos" }));
+    const campo = await screen.findByRole("combobox", { name: /relembrar queda aberta/ });
+    expect(within(campo).getByRole("option", { name: "herdar da instalação" })).toBeInTheDocument();
+
+    fireEvent.change(campo, { target: { value: "60" } });
+
+    await vi.waitFor(() => expect(api.updateMonitorGroup).toHaveBeenCalled());
+    expect(vi.mocked(api.updateMonitorGroup).mock.lastCall).toEqual([
+      1,
+      { name: "RPA", slug: "rpa", parent_id: undefined, reminder_minutes: 60 },
+    ]);
+  });
+
+  it("renomear não desliga o lembrete", async () => {
+    // O PUT sobrescreve o grupo inteiro: sem repetir o lembrete, a edição
+    // do nome voltaria o grupo a herdar sem ninguém pedir.
+    vi.mocked(api.listGroups).mockResolvedValue({ items: [{ ...RPA, reminder_minutes: 0 }, PROD] });
+    vi.mocked(api.updateMonitorGroup).mockResolvedValue(RPA);
+    render(<Groups scope={TOTAL} />);
+
+    await screen.findAllByText("RPA");
+    fireEvent.click(within(linha("RPA")).getByRole("button", { name: "Renomear" }));
+    fireEvent.click(screen.getByRole("button", { name: "Salvar" }));
+
+    await vi.waitFor(() => expect(api.updateMonitorGroup).toHaveBeenCalled());
+    expect(vi.mocked(api.updateMonitorGroup).mock.lastCall?.[1]).toMatchObject({ reminder_minutes: 0 });
+  });
+});

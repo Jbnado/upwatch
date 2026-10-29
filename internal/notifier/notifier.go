@@ -42,10 +42,30 @@ type Notification struct {
 	Group string
 	// Dependents é quantos monitores ficaram calados por esta queda.
 	Dependents int
+	// Reminder marca o lembrete de uma queda que segue aberta: o estado não
+	// mudou, e Event.Duration é há quanto tempo ela dura.
+	Reminder bool
 }
+
+// Tipos de aviso, como saem no corpo do webhook.
+const (
+	KindTransition = "transition"
+	KindReminder   = "reminder"
+)
 
 // Status é o estado que passou a valer, em texto.
 func (n Notification) Status() string { return n.Event.To.String() }
+
+// Kind diz se o aviso conta uma mudança de estado ou relembra uma queda
+// aberta. Quem integra precisa distinguir: o lembrete repete o mesmo
+// monitor_id e o mesmo "down", e tratá-lo como queda nova abriria um
+// segundo chamado para o mesmo problema.
+func (n Notification) Kind() string {
+	if n.Reminder {
+		return KindReminder
+	}
+	return KindTransition
+}
 
 // Notifier entrega uma notificação por um canal.
 type Notifier interface {
@@ -63,16 +83,21 @@ var canais = []struct {
 	tipo     string
 	novo     func(json.RawMessage) (Notifier, error)
 	segredos secretbox.Fields
+	// edicao é como a configuração sai para o formulário e como a edição
+	// recupera o que não voltou (ver RedactConfig e CarrySecrets).
+	edicao edicao
 }{
-	{"webhook", NewWebhook, webhookSecrets},
-	{"discord", NewDiscord, webhookSecrets},
-	{"slack", NewSlack, webhookSecrets},
-	{"email", NewEmail, secretbox.Fields{Names: []string{"password"}}},
-	{"ntfy", NewNtfy, secretbox.Fields{Names: []string{"token"}}},
+	{"webhook", NewWebhook, webhookSecrets, edicaoWebhook},
+	{"discord", NewDiscord, webhookSecrets, edicaoWebhook},
+	{"slack", NewSlack, webhookSecrets, edicaoWebhook},
+	{"teams", NewTeams, webhookSecrets, edicaoWebhook},
+	{"email", NewEmail, secretbox.Fields{Names: []string{"password"}}, edicaoEmail},
+	{"ntfy", NewNtfy, secretbox.Fields{Names: []string{"token"}}, edicaoNtfy},
 }
 
-// webhookSecrets vale para os três canais de webhook. A URL do Discord e a
-// do Slack levam o token no caminho: quem a tem publica no canal. Os
+// webhookSecrets vale para os canais de webhook. A URL do Discord e a do
+// Slack levam o token no caminho, e a do Teams leva a assinatura na query:
+// quem a tem publica no canal. Os
 // cabeçalhos existem para autenticar contra o destino, então todos são
 // credencial — ao contrário do monitor HTTP, aqui nenhum volta pela API
 // para a interface mostrar.
@@ -130,15 +155,22 @@ func Render(n Notification) string {
 		nome += " (" + n.Group + ")"
 	}
 
-	switch n.Event.Kind {
-	case domain.ChangeDown:
+	switch {
+	case n.Reminder:
+		texto := fmt.Sprintf("%s continua fora do ar há %s", nome, humanDuration(n.Event.Duration))
+		if n.Message != "" {
+			texto += ": " + n.Message
+		}
+		return texto + dependentsNote(n.Dependents)
+
+	case n.Event.Kind == domain.ChangeDown:
 		texto := fmt.Sprintf("%s está fora do ar", nome)
 		if n.Message != "" {
 			texto += ": " + n.Message
 		}
 		return texto + dependentsNote(n.Dependents)
 
-	case domain.ChangeDegraded:
+	case n.Event.Kind == domain.ChangeDegraded:
 		texto := fmt.Sprintf("%s está degradado", nome)
 		if n.Message != "" {
 			texto += ": " + n.Message
@@ -239,6 +271,8 @@ type templateData struct {
 	Duration string
 	At       time.Time
 	Text     string
+	// Event é "transition" ou "reminder", como no corpo do webhook.
+	Event string
 }
 
 func newTemplateData(n Notification, texto string) templateData {
@@ -250,6 +284,7 @@ func newTemplateData(n Notification, texto string) templateData {
 		Group:  n.Group,
 		Status: n.Status(), Message: n.Message,
 		Duration: humanDuration(n.Event.Duration), At: n.Event.At, Text: texto,
+		Event: n.Kind(),
 	}
 }
 
@@ -261,6 +296,7 @@ var exemploModelo = templateData{
 	Group:  "RPA / prod",
 	Status: "down", Message: "status 502", Duration: "5 min",
 	At: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Text: "api (RPA / prod) está fora do ar: status 502",
+	Event: KindTransition,
 }
 
 // compileTemplate prepara o modelo do canal, se houver.
@@ -385,6 +421,12 @@ func (e *statusError) Permanent() bool {
 // faria a notificação sumir em silêncio, que é o pior desfecho possível
 // num sistema de alerta.
 func postRaw(ctx context.Context, url string, headers map[string]string, contentType string, corpo []byte) error {
+	return postRawVia(ctx, http.DefaultClient, url, headers, contentType, corpo)
+}
+
+// postRawVia é o postRaw com o cliente escolhido; o do Teams o troca nos
+// testes, porque o canal só aceita https.
+func postRawVia(ctx context.Context, cliente *http.Client, url string, headers map[string]string, contentType string, corpo []byte) error {
 	ctx, cancel := context.WithTimeout(ctx, sendTimeout)
 	defer cancel()
 
@@ -397,7 +439,7 @@ func postRaw(ctx context.Context, url string, headers map[string]string, content
 		req.Header.Set(k, v)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := cliente.Do(req)
 	if err != nil {
 		return fmt.Errorf("notifier: entregando aviso: %w", maskURL(err))
 	}

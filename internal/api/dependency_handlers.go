@@ -120,6 +120,45 @@ func (a *API) handleSetChildren(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
+// handleUnlinkChild desliga um dependente do monitor do caminho.
+//
+// Só desliga quem depende deste pai: o filho de outro pai responde como o
+// inexistente, para um id trocado na tela não soltar a verificação de
+// outra sonda. Fora do escopo também é 404, pelo mesmo motivo do lote.
+func (a *API) handleUnlinkChild(w http.ResponseWriter, r *http.Request) {
+	paiID, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	filhoID, ok := pathParamID(w, r, "childID")
+	if !ok {
+		return
+	}
+
+	ctx := r.Context()
+	anterior, err := a.store.Monitors().Get(ctx, filhoID)
+	if err == nil && (!viewerFrom(r).sees(anterior) || anterior.ParentID == nil || *anterior.ParentID != paiID) {
+		err = store.ErrNotFound
+	}
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+
+	if err := a.store.Monitors().SetParent(ctx, nil, []int64{filhoID}); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	m, err := a.store.Monitors().Get(ctx, filhoID)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	a.notifyScheduler(m)
+	a.events.publish(event{Type: "monitor.updated", Data: toMonitorResponse(m, checker.Readers), monitor: &m, previous: &anterior})
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // affectedRef aponta o ancestral em queda que cala um monitor.
 //
 // O id é nulo, e o nome some, quando a conta não enxerga o ancestral: o

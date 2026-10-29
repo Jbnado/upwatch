@@ -22,7 +22,7 @@ const monitorColumns = `
 	id, name, type, target, interval_ms, timeout_ms,
 	confirmation_threshold, degraded_latency_ms, config, parent_id,
 	enabled, tags, created_at, updated_at, rearmed_at, push_token, group_id,
-	restrict_internal`
+	restrict_internal, reminder_interval_ms`
 
 // emptyConfig é o que grava quando o monitor não traz configuração. Nil ou
 // string vazia quebrariam o Unmarshal que o checker faz na leitura.
@@ -57,9 +57,9 @@ func (r *monitorRepo) Create(ctx context.Context, m *domain.Monitor) error {
 			name, type, target, interval_ms, timeout_ms,
 			confirmation_threshold, degraded_latency_ms, config, parent_id,
 			enabled, tags, created_at, updated_at, rearmed_at, push_token, group_id,
-			restrict_internal
+			restrict_internal, reminder_interval_ms
 		)
-		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 		WHERE ` + groupExists
 
 	// A cifra leva o id do registro, que só existe depois do INSERT. A
@@ -82,7 +82,7 @@ func (r *monitorRepo) Create(ctx context.Context, m *domain.Monitor) error {
 			insertConfig, m.ParentID,
 			boolToInt(m.Enabled), tags, toMillis(now), toMillis(now), toMillis(now),
 			nullableToken(hashPushToken(m.PushToken)), m.GroupID,
-			boolToInt(m.RestrictInternal),
+			boolToInt(m.RestrictInternal), durationMillis(m.ReminderInterval),
 			m.GroupID, m.GroupID,
 		)
 		if err != nil || insertConfig == config {
@@ -151,7 +151,7 @@ func (r *monitorRepo) Update(ctx context.Context, m domain.Monitor) error {
 			name = ?, type = ?, target = ?, interval_ms = ?, timeout_ms = ?,
 			confirmation_threshold = ?, degraded_latency_ms = ?, config = ?, parent_id = ?,
 			enabled = ?, tags = ?, updated_at = ?, push_token = ?, group_id = ?,
-			restrict_internal = ?
+			restrict_internal = ?, reminder_interval_ms = ?
 		WHERE id = ? AND ` + groupExists
 
 	res, err := r.db.ExecContext(ctx, q,
@@ -161,7 +161,7 @@ func (r *monitorRepo) Update(ctx context.Context, m domain.Monitor) error {
 		m.ConfirmationThreshold, m.DegradedLatency.Milliseconds(),
 		config, m.ParentID,
 		enabled, tags, toMillis(now), nullableToken(hashPushToken(m.PushToken)), m.GroupID,
-		boolToInt(m.RestrictInternal), m.ID,
+		boolToInt(m.RestrictInternal), durationMillis(m.ReminderInterval), m.ID,
 		m.GroupID, m.GroupID,
 	)
 	if err != nil {
@@ -221,6 +221,23 @@ func (r *monitorRepo) FindByPushToken(ctx context.Context, token string) (domain
 // nullableToken grava NULL para o monitor sem token. Uma string vazia
 // contaria como valor no índice único, e só um monitor sem token
 // poderia existir.
+// durationMillis grava a duração opcional em milissegundos; nula fica nula,
+// que é "herda", e não zero, que é "desligado".
+func durationMillis(d *time.Duration) any {
+	if d == nil {
+		return nil
+	}
+	return d.Milliseconds()
+}
+
+func durationFromMillis(ms sql.NullInt64) *time.Duration {
+	if !ms.Valid {
+		return nil
+	}
+	d := time.Duration(ms.Int64) * time.Millisecond
+	return &d
+}
+
 func nullableToken(token string) any {
 	if token == "" {
 		return nil
@@ -322,13 +339,14 @@ func (d *db) scanMonitor(sc scanner) (domain.Monitor, error) {
 		pushToken  sql.NullString
 		groupID    sql.NullInt64
 		restrict   int64
+		reminderMS sql.NullInt64
 	)
 
 	err := sc.Scan(
 		&m.ID, &m.Name, &typeName, &m.Target, &intervalMS, &timeoutMS,
 		&m.ConfirmationThreshold, &degradedMS, &configJSON, &parentID,
 		&enabled, &tagsJSON, &createdMS, &updatedMS, &rearmedMS, &pushToken, &groupID,
-		&restrict,
+		&restrict, &reminderMS,
 	)
 	if err != nil {
 		return domain.Monitor{}, err
@@ -350,6 +368,7 @@ func (d *db) scanMonitor(sc scanner) (domain.Monitor, error) {
 	m.CreatedAt = fromMillis(createdMS)
 	m.UpdatedAt = fromMillis(updatedMS)
 	m.RearmedAt = fromMillis(rearmedMS)
+	m.ReminderInterval = durationFromMillis(reminderMS)
 	// A coluna guarda só o hash. O token sai da configuração, e só no
 	// monitor que é dono dele na busca.
 	if pushToken.Valid {

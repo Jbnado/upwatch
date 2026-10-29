@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Monitor, Status, Summary } from "../api/types";
-import { Board } from "./Board";
+import { Board, rotuloDosDependentes } from "./Board";
 
 /**
  * A tela do grupo: a lista de sempre, recortada pelo grupo, com o
@@ -124,10 +124,101 @@ describe("Board num grupo", () => {
     expect(screen.queryByRole("button", { name: /fora do ar/ })).not.toBeInTheDocument();
   });
 
+  it("diz quem já está olhando a queda", async () => {
+    const visto = { ...resumo(3, "down"), acknowledgement: { by: "ana", at: new Date().toISOString() } };
+    vi.mocked(api.summaries).mockResolvedValue({
+      items: [resumo(1, "up"), resumo(2, "up"), visto, resumo(4, "up"), resumo(5, "down")],
+      from: "",
+      to: "",
+    });
+    render(<Board podeEscrever={false} group={{ id: 3, path: "RPA / prod" }} />);
+
+    expect(await screen.findByText(/visto por ana há/)).toBeInTheDocument();
+  });
+
   it("não oferece filtro de estado que não tem ninguém", async () => {
     render(<Board podeEscrever={false} group={{ id: 3, path: "RPA / prod" }} />);
     await screen.findByText("bff");
 
     expect(screen.queryByRole("button", { name: /degradado/ })).not.toBeInTheDocument();
+  });
+});
+
+describe("Board: dependentes", () => {
+  // A sonda da VM e duas verificações que ela faz, no mesmo grupo.
+  function comSonda(calados: boolean) {
+    const sonda = { ...monitor(9, "sonda vm-01"), type: "push" as const };
+    vi.mocked(api.listMonitors).mockResolvedValue({
+      items: [
+        monitor(1, "api"),
+        { ...monitor(2, "fila"), parent_id: 9 },
+        sonda,
+        { ...monitor(4, "worker"), parent_id: 9 },
+      ],
+      has_more: false,
+    });
+    const ref = calados ? { affected_by: { id: 9, name: "sonda vm-01" } } : {};
+    vi.mocked(api.summaries).mockResolvedValue({
+      items: [
+        resumo(1, "up"),
+        { ...resumo(2, "up"), ...ref },
+        resumo(9, calados ? "down" : "up"),
+        { ...resumo(4, calados ? "down" : "up"), ...ref },
+      ],
+      from: "",
+      to: "",
+    });
+  }
+
+  it("põe cada dependente recuado sob o pai, que recolhe", async () => {
+    comSonda(false);
+    render(<Board podeEscrever={false} group={{ id: 3, path: "RPA / prod" }} />);
+    await screen.findByText("api");
+
+    expect(nomes()).toEqual(["api", "sonda vm-01", "fila", "worker"]);
+    expect(screen.getByText("fila").parentElement).toHaveAttribute("style", expect.stringContaining("padding-left: 1.25rem"));
+
+    fireEvent.click(screen.getByRole("button", { name: /2 dependentes de sonda vm-01/ }));
+    expect(nomes()).toEqual(["api", "sonda vm-01"]);
+  });
+
+  it("com o pai sem sinal, junta os filhos sob ele numa linha só, e o pai sobe", async () => {
+    comSonda(true);
+    render(<Board podeEscrever={false} group={{ id: 3, path: "RPA / prod" }} />);
+    await screen.findByText("api");
+
+    const linha = screen.getByRole("button", { name: /2 sem sinal \(sonda vm-01 calada\)/ });
+    expect(linha).toHaveAttribute("aria-expanded", "false");
+    expect(nomes()).toEqual(["sonda vm-01", "api"]);
+
+    // Abertos, a linha de cima já disse por que estão sem sinal.
+    fireEvent.click(linha);
+    expect(nomes()).toEqual(["sonda vm-01", "fila", "worker", "api"]);
+    expect(screen.queryByText("sem sinal — sonda vm-01 fora")).not.toBeInTheDocument();
+  });
+
+  it("com a busca escondendo o pai, o dependente achado aparece sozinho", async () => {
+    comSonda(false);
+    render(<Board podeEscrever={false} group={{ id: 3, path: "RPA / prod" }} />);
+    await screen.findByText("api");
+
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: "worker" } });
+    expect(nomes()).toEqual(["worker"]);
+  });
+});
+
+describe("rotuloDosDependentes", () => {
+  const banco = monitor(7, "banco");
+  const sonda = { ...monitor(9, "vm-01"), type: "push" as const };
+
+  it("conta os dependentes quando eles têm sinal", () => {
+    expect(rotuloDosDependentes(banco, [{}], false)).toBe("1 dependente");
+  });
+
+  it("chama de sonda o sinal de vida que parou, e de fora o resto", () => {
+    expect(rotuloDosDependentes(sonda, [{ affectedBy: { id: 9 } }], true)).toBe("1 sem sinal (sonda vm-01 calada)");
+    expect(rotuloDosDependentes(banco, [{ affectedBy: { id: 7 } }], true)).toBe("1 sem sinal (banco fora)");
+    // Calados por um ancestral mais acima, a linha diz qual.
+    expect(rotuloDosDependentes(banco, [{ affectedBy: { id: 1, name: "host" } }], true)).toBe("1 sem sinal (host fora)");
   });
 });

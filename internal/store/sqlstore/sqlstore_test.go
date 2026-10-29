@@ -12,6 +12,7 @@ import (
 	"github.com/Jbnado/upwatch/internal/store"
 	"github.com/Jbnado/upwatch/internal/store/sqlstore"
 	"github.com/Jbnado/upwatch/internal/store/storetest"
+	"github.com/Jbnado/upwatch/internal/testdir"
 )
 
 // newStore devolve uma store limpa em arquivo temporário.
@@ -22,7 +23,7 @@ import (
 func newStore(t *testing.T) store.Store {
 	t.Helper()
 
-	path := filepath.Join(t.TempDir(), "upwatch.db")
+	path := filepath.Join(testdir.New(t), "upwatch.db")
 	s, err := sqlstore.OpenSQLite(path, testKeys)
 	if err != nil {
 		t.Fatalf("OpenSQLite returned unexpected error: %v", err)
@@ -68,7 +69,7 @@ func TestOpenSQLiteAppliesMigrations(t *testing.T) {
 // passaria despercebida até o dia em que alguém precisasse voltar uma
 // versão — justamente o pior dia para descobrir.
 func TestMigrationsRollBackCleanly(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "rollback.db")
+	path := filepath.Join(testdir.New(t), "rollback.db")
 	s, err := sqlstore.OpenSQLite(path, testKeys)
 	if err != nil {
 		t.Fatalf("OpenSQLite returned unexpected error: %v", err)
@@ -122,7 +123,7 @@ func TestWALJournalModeIsEnabled(t *testing.T) {
 // nada — exatamente a queixa que levou o Uptime Kuma a expor um botão
 // manual de VACUUM.
 func TestCompactReclaimsSpaceAfterPruning(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "compact.db")
+	path := filepath.Join(testdir.New(t), "compact.db")
 	s, err := sqlstore.OpenSQLite(path, testKeys)
 	if err != nil {
 		t.Fatalf("OpenSQLite returned unexpected error: %v", err)
@@ -277,7 +278,7 @@ func TestPushTokenLookupUsesIndex(t *testing.T) {
 // impede o segundo lugar de voltar.
 func TestOpenAcceptsEveryImplementedDriver(t *testing.T) {
 	casos := map[string]string{
-		"sqlite":   filepath.Join(t.TempDir(), "upwatch.db"),
+		"sqlite":   filepath.Join(testdir.New(t), "upwatch.db"),
 		"postgres": "postgres://ninguem@127.0.0.1:1/vazio?sslmode=disable&connect_timeout=1",
 	}
 

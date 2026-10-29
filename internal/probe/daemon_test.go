@@ -16,13 +16,14 @@ import (
 
 	"github.com/Jbnado/upwatch/internal/clock"
 	"github.com/Jbnado/upwatch/internal/probe"
+	"github.com/Jbnado/upwatch/internal/testdir"
 )
 
 // O status roda noutro processo (docker exec) e só enxerga o daemon pelo
 // arquivo de estado. Ele fica no volume, ao lado da configuração, porque
 // é o único lugar gravável com o contêiner em --read-only.
 func TestStateFileIsReadableByAnotherProcess(t *testing.T) {
-	dir := t.TempDir()
+	dir := testdir.New(t)
 	path := probe.StatePath(filepath.Join(dir, "probe.yaml"))
 	if filepath.Dir(path) != dir {
 		t.Fatalf("state path %q is not beside the config", path)
@@ -108,7 +109,7 @@ func startDaemon(t *testing.T, initial string) *daemonFixture {
 	t.Cleanup(func() { l.Close() })
 
 	f := &daemonFixture{
-		path: filepath.Join(t.TempDir(), "probe.yaml"),
+		path: filepath.Join(testdir.New(t), "probe.yaml"),
 		clk:  clock.NewFake(epoch),
 		hup:  make(chan os.Signal, 1),
 		logs: &syncBuffer{},

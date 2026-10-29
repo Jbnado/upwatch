@@ -1,6 +1,6 @@
 /** Tipos do contrato da API, espelhando internal/api/openapi.yaml. */
 
-import type { ConfigCanal, ConfigEmail, ConfigNtfy } from "../lib/channel-config";
+import type { ConfigCanal, ConfigEditavel, ConfigEmail, ConfigNtfy } from "../lib/channel-config";
 
 export type Status = "up" | "down" | "degraded" | "unknown";
 
@@ -32,6 +32,11 @@ export type Monitor = {
   parent_id?: number;
   /** Grupo folha do monitor; null é "Sem grupo". */
   group_id?: number | null;
+  /**
+   * Minutos entre lembretes de uma queda aberta e não reconhecida. null
+   * herda do grupo; 0 desliga.
+   */
+  reminder_minutes?: number | null;
   enabled: boolean;
   tags: string[];
   created_at: string;
@@ -55,6 +60,8 @@ export type MonitorInput = {
   group_id?: number | null;
   /** O PUT sobrescreve: omitir desliga o pai. */
   parent_id?: number | null;
+  /** O PUT sobrescreve: omitir volta a herdar. */
+  reminder_minutes?: number | null;
 };
 
 /**
@@ -101,6 +108,15 @@ export type Summary = {
    * "sem sinal — pai fora" no lugar do estado: a falha não é dele.
    */
   affected_by?: AffectedBy;
+  /** Quem disse estar olhando a queda aberta; ausente sem reconhecimento. */
+  acknowledgement?: Acknowledgement;
+};
+
+/** O "estou vendo" de alguém sobre uma queda aberta. */
+export type Acknowledgement = {
+  by: string;
+  at: string;
+  note?: string;
 };
 
 export type SummaryPoint = {
@@ -153,8 +169,18 @@ export type Group = {
   parent_id: number | null;
   /** Nome completo, como "RPA / prod". */
   path: string;
+  /** Lembrete dos monitores que não escolheram o próprio; null herda, 0 desliga. */
+  reminder_minutes?: number | null;
   created_at: string;
   updated_at: string;
+};
+
+export type GroupInput = {
+  name: string;
+  slug?: string;
+  parent_id?: number;
+  /** O PUT sobrescreve: omitir volta a herdar. */
+  reminder_minutes?: number | null;
 };
 
 /**
@@ -248,12 +274,12 @@ export type APIToken = {
 /** CreatedToken traz o segredo, que só aparece nesta resposta. */
 export type CreatedToken = APIToken & { token: string };
 
-export type ChannelType = "webhook" | "discord" | "slack" | "email" | "ntfy";
+export type ChannelType = "webhook" | "discord" | "slack" | "teams" | "email" | "ntfy";
 
 /**
- * A configuração nunca vem do servidor: ela contém a URL do webhook, a
+ * A configuração não vem na listagem: ela contém a URL do webhook, a
  * senha do SMTP ou o token do ntfy — credenciais de quem pode publicar no
- * canal.
+ * canal. A edição a recebe sem elas (ChannelDetail).
  */
 export type Channel = {
   id: number;
@@ -262,13 +288,26 @@ export type Channel = {
   enabled: boolean;
   created_at: string;
   updated_at: string;
+  /** Onde o canal está ligado direto; para conta com escopo, só o dela. */
+  targets?: ChannelTargets;
 };
+
+/**
+ * Grupos e monitores ligados ao canal. Grupo vale para os monitores dele
+ * e, no sistema, para os ambientes, inclusive os criados depois.
+ */
+export type ChannelTargets = { group_ids: number[]; monitor_ids: number[] };
+
+/** O canal com a configuração para editar, que só volta a quem pode salvá-la. */
+export type ChannelDetail = Channel & { config?: ConfigEditavel };
 
 export type ChannelInput = {
   name: string;
   type: ChannelType;
   enabled?: boolean;
   config: ConfigCanal | ConfigEmail | ConfigNtfy;
+  /** Troca todos os vínculos junto; ausente na edição, mantém os atuais. */
+  targets?: ChannelTargets;
 };
 
 export type Incident = {
@@ -279,6 +318,9 @@ export type Incident = {
   duration_seconds: number;
   cause?: string;
   open: boolean;
+  acknowledgement: Acknowledgement | null;
+  /** Último lembrete enviado sobre a queda. */
+  reminded_at?: string;
 };
 
 export type Page<T> = {
@@ -378,6 +420,8 @@ export type PublicView = {
   generated_at: string;
   groups: PublicGroup[];
   announcements: PublicAnnouncement[];
+  /** Janelas em curso e as que começam nos próximos sete dias. */
+  maintenances?: PublicMaintenance[];
 };
 
 export type PublicGroup = {
@@ -393,6 +437,8 @@ export type PublicMonitor = {
   uptime_percent?: number;
   latency_p95_ms?: number;
   history: PublicDay[];
+  /** Numa janela de manutenção agora. */
+  maintenance?: boolean;
 };
 
 export type PublicDay = {
@@ -411,6 +457,53 @@ export type PublicAnnouncement = {
   started_at: string;
   resolved_at?: string | null;
   updates: PublicAnnouncementUpdate[];
+};
+
+export type Recurrence = "none" | "daily" | "weekly";
+
+export type PublicMaintenance = {
+  title: string;
+  message?: string;
+  /** Ocorrência em curso ou a próxima. */
+  starts_at: string;
+  ends_at: string;
+  recurrence: Recurrence;
+  active: boolean;
+  /** Rótulos públicos dos componentes afetados. */
+  components: string[];
+};
+
+/**
+ * Janela de manutenção. Dentro dela a falha não avisa nem conta como
+ * queda; as verificações continuam.
+ */
+export type MaintenanceWindow = {
+  id: number;
+  title: string;
+  message?: string;
+  /** Primeira ocorrência; a recorrente repete o horário no fuso dela. */
+  starts_at: string;
+  ends_at: string;
+  recurrence: Recurrence;
+  time_zone: string;
+  monitor_ids: number[];
+  group_ids: number[];
+  /** Encerramento antes do previsto. */
+  ended_at?: string | null;
+  state: "scheduled" | "active" | "finished";
+  /** Ocorrência em curso ou a próxima, calculada pelo servidor. */
+  next?: { start: string; end: string };
+};
+
+export type MaintenanceInput = {
+  title: string;
+  message: string;
+  starts_at: string;
+  ends_at: string;
+  recurrence: Recurrence;
+  time_zone: string;
+  monitor_ids: number[];
+  group_ids: number[];
 };
 
 export type PublicAnnouncementUpdate = {
