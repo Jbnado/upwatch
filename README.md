@@ -167,6 +167,18 @@ docker compose -f compose.postgres.yaml up -d
 A senha do banco, o DSN e a chave dos segredos vão por arquivo (ver
 [Segredos](#segredos)).
 
+Os dois arquivos sobem o contêiner endurecido: `read_only: true`,
+`cap_drop: [ALL]` e `no-new-privileges`. O binário é estático, escuta
+numa porta alta e não muda de usuário, então não há o que ele faça com as
+capacidades que o Docker concede por padrão — e elas são degrau depois de
+uma execução remota de código. O volume de `/data` continua gravável,
+porque é ele que recebe o banco, e `/tmp` vem em `tmpfs` para o arquivo
+temporário que o SQLite pode querer em ordenação grande e em `VACUUM`. Se
+for usar monitor de ping, descomente o `cap_add: NET_RAW` do arquivo: é a
+única verificação que precisa de privilégio de rede. Rodando por `docker
+run`, o equivalente é `--read-only --cap-drop ALL --security-opt
+no-new-privileges --tmpfs /tmp:rw,noexec,nosuid`.
+
 ### Primeiro acesso
 
 Abra a interface e crie a conta de administração. A tela pede o **token
