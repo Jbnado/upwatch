@@ -55,6 +55,14 @@ services:
       UPWATCH_RETENTION_DAILY: 17520h
     security_opt:
       - no-new-privileges:true
+    # Mesmo endurecimento do arranjo com SQLite, e aqui não há nem volume
+    # de dados: o estado todo mora no PostgreSQL, então só /tmp precisa
+    # ser gravável.
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
 
   postgres:
     image: postgres:17-alpine

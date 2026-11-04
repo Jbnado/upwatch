@@ -223,6 +223,15 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 		slog.Warn(aviso)
 	}
 
+	// Combinações que sobem sem erro e expõem mais do que parece. Saem na
+	// partida porque é o único momento em que quem instalou está olhando,
+	// e nenhuma delas se anuncia depois: a exposição aberta de /metrics é
+	// silenciosa por definição, e o cookie sem Secure só aparece quando já
+	// foi copiado.
+	for _, aviso := range cfg.DeploymentWarnings() {
+		slog.Warn(aviso)
+	}
+
 	// Resolvido na subida, antes de a porta abrir: não há janela em que o
 	// assistente responda sem token.
 	setupToken, err := resolveSetupToken(context.Background(), authSvc.NeedsSetup, cfg.SetupToken, slog.Default())

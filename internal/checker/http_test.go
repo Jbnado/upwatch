@@ -498,3 +498,38 @@ func TestHTTPValidateConfigRejectsOutOfRangeStatus(t *testing.T) {
 		t.Fatal("ValidateConfig with an out-of-range status returned nil error, want an error")
 	}
 }
+
+// Uma lista de asserções sem teto é custo por verificação que quem
+// cadastra escolhe e a instalação paga para sempre: cada asserção
+// percorre o JSON já interpretado, e a configuração inteira viaja em toda
+// listagem de monitores. O teto é alto de propósito — o uso real é de duas
+// a cinco —, então só recusa o que não é uso.
+func TestHTTPValidateConfigRejectsTooManyJSONAssertions(t *testing.T) {
+	grande := make([]map[string]any, checker.MaxJSONAssertions+1)
+	for i := range grande {
+		grande[i] = map[string]any{"path": fmt.Sprintf("$.campo%d", i), "op": "exists"}
+	}
+	cfg, _ := json.Marshal(map[string]any{"json_assertions": grande})
+
+	err := checker.NewHTTP().ValidateConfig(cfg)
+	if err == nil {
+		t.Fatal("ValidateConfig with too many assertions returned nil error, want an error")
+	}
+	if !strings.Contains(err.Error(), "json_assertions") {
+		t.Errorf("error = %q, want it to name json_assertions", err)
+	}
+}
+
+// No teto, aceita: o limite é o último valor válido, não o primeiro
+// inválido.
+func TestHTTPValidateConfigAcceptsTheAssertionLimit(t *testing.T) {
+	noLimite := make([]map[string]any, checker.MaxJSONAssertions)
+	for i := range noLimite {
+		noLimite[i] = map[string]any{"path": fmt.Sprintf("$.campo%d", i), "op": "exists"}
+	}
+	cfg, _ := json.Marshal(map[string]any{"json_assertions": noLimite})
+
+	if err := checker.NewHTTP().ValidateConfig(cfg); err != nil {
+		t.Fatalf("ValidateConfig with exactly the limit returned error: %v", err)
+	}
+}

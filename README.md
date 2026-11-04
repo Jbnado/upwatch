@@ -167,6 +167,18 @@ docker compose -f compose.postgres.yaml up -d
 A senha do banco, o DSN e a chave dos segredos vão por arquivo (ver
 [Segredos](#segredos)).
 
+Os dois arquivos sobem o contêiner endurecido: `read_only: true`,
+`cap_drop: [ALL]` e `no-new-privileges`. O binário é estático, escuta
+numa porta alta e não muda de usuário, então não há o que ele faça com as
+capacidades que o Docker concede por padrão — e elas são degrau depois de
+uma execução remota de código. O volume de `/data` continua gravável,
+porque é ele que recebe o banco, e `/tmp` vem em `tmpfs` para o arquivo
+temporário que o SQLite pode querer em ordenação grande e em `VACUUM`. Se
+for usar monitor de ping, descomente o `cap_add: NET_RAW` do arquivo: é a
+única verificação que precisa de privilégio de rede. Rodando por `docker
+run`, o equivalente é `--read-only --cap-drop ALL --security-opt
+no-new-privileges --tmpfs /tmp:rw,noexec,nosuid`.
+
 ### Primeiro acesso
 
 Abra a interface e crie a conta de administração. A tela pede o **token
@@ -193,6 +205,40 @@ nada instalado:
 
 ```bash
 UPWATCH_DB_DSN=./upwatch.db ./upwatch
+```
+
+### Conferindo o que você baixou
+
+Cada release leva um `SHA256SUMS` e a assinatura dele
+(`SHA256SUMS.cosign.bundle`). As duas imagens — o central e a sonda — são
+assinadas no digest e publicadas com SBOM e proveniência. Tudo isso é
+[sigstore](https://www.sigstore.dev) sem chave: a assinatura prende o
+arquivo ou o digest a este repositório, a este workflow e a esta tag, e
+não existe chave privada guardada em lugar nenhum para ser roubada.
+
+Conferir as somas e a assinatura delas (precisa do
+[cosign](https://github.com/sigstore/cosign)):
+
+```bash
+sha256sum --check --ignore-missing SHA256SUMS
+```
+
+```bash
+cosign verify-blob SHA256SUMS --bundle SHA256SUMS.cosign.bundle --certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-identity-regexp '^https://github\.com/Jbnado/upwatch/\.github/workflows/release\.yml@refs/tags/v'
+```
+
+Conferir a imagem (troque `upwatch` por `upwatch-probe` para a sonda):
+
+```bash
+cosign verify ghcr.io/jbnado/upwatch:latest --certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-identity-regexp '^https://github\.com/Jbnado/upwatch/\.github/workflows/release\.yml@refs/'
+```
+
+O `--certificate-identity-regexp` é a parte que importa: sem ele, o
+`cosign verify` aceitaria uma assinatura válida de qualquer pessoa. Ver o
+SBOM e a proveniência de uma imagem:
+
+```bash
+docker buildx imagetools inspect ghcr.io/jbnado/upwatch:latest --format '{{ json .SBOM }}'
 ```
 
 ## Configuração
@@ -230,6 +276,13 @@ simplesmente não é enviado — o login pareceria quebrado sem explicação.
 Ligado, ele também acrescenta `Strict-Transport-Security` (dois anos,
 com subdomínios): o navegador passa a recusar HTTP no host. Só ligue
 quando o HTTPS for definitivo.
+
+Quando `UPWATCH_PUBLIC_URL` é `https://...` e `UPWATCH_SECURE_COOKIES`
+está desligado, o servidor avisa na partida. É a combinação que entrega
+a sessão em claro numa instalação que se acha protegida: existe HTTPS no
+caminho, mas o cookie segue sem a marca e acompanharia uma requisição em
+HTTP puro — por um link antigo, um redirecionamento perdido ou quem
+esteja na mesma rede forçando uma.
 
 Toda resposta, da API, da interface e da página pública, sai com
 `Content-Security-Policy`, `X-Frame-Options: DENY`,
@@ -528,8 +581,9 @@ valer no corpo:
 }
 ```
 
-Todas precisam passar. Quando uma falha, a causa no aviso diz qual e o que
-foi encontrado: `$.queue_lag = 340, esperado < 100`. Como a causa vai
+Todas precisam passar, e são no máximo 50 por monitor. Quando uma falha,
+a causa no aviso diz qual e o que foi encontrado: `$.queue_lag = 340,
+esperado < 100`. Como a causa vai
 para chat e webhook, texto encontrado — que pode ser um token ou um
 e-mail — aparece só como tamanho (`$.status = texto de 12 caracteres,
 esperado contém "ok"`), e lista e objeto só como contagem; em `eq` e `ne`
@@ -816,6 +870,46 @@ grava arquivo no servidor com `SELECT lo_export(...)` mesmo dentro dela.
 O usuário acima, só com `LOGIN`, roda a consulta personalizada
 normalmente.
 
+**Não ser superusuário não basta: o usuário do monitor precisa ser só de
+leitura, e sem as funções que escapam da transação.** A consulta é texto
+que alguém digita na interface, e a credencial fica guardada para ser
+usada a cada minuto — então vale desenhar o usuário supondo que as duas
+coisas vazem. A recusa automática pega o superusuário, que é o caso
+grosso; as três abaixo passariam por ela, porque o `EXECUTE` delas pode
+ter sido concedido a um papel comum:
+
+- `dblink` e `postgres_fdw` abrem conexão **a partir do servidor do
+  banco**, que normalmente alcança rede que ninguém de fora alcança.
+  `BEGIN READ ONLY` não impede: a escrita acontece na outra ponta.
+- `adminpack` escreve e apaga arquivo no servidor, pela mesma razão.
+- `lo_export` e `lo_import` leem e gravam arquivo do sistema de arquivos
+  do servidor. No PostgreSQL 11 e acima elas exigem privilégio, mas ele é
+  concedível, e foi assim que o caso do superusuário apareceu.
+
+Confira o que o usuário do monitor pode executar antes de usá-lo:
+
+```sql
+-- Nada aqui, ou o usuário não serve
+SELECT n.nspname, p.proname
+  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+ WHERE p.proname IN ('dblink', 'dblink_exec', 'lo_export', 'lo_import',
+                     'pg_file_write', 'pg_file_unlink')
+   AND has_function_privilege('upwatch', p.oid, 'EXECUTE');
+```
+
+```sql
+-- E que ele não escreve em nada
+REVOKE ALL ON ALL TABLES IN SCHEMA public FROM upwatch;
+REVOKE ALL ON SCHEMA public FROM upwatch;
+```
+
+No MySQL, o equivalente é não dar `FILE` (que lê e grava arquivo no
+servidor com `LOAD DATA INFILE` e `SELECT ... INTO OUTFILE`) nem
+`SUPER`/`PROCESS`: o `CREATE USER` acima, sem nenhum `GRANT`, já é isso —
+só o direito de conectar. O ideal, nos dois bancos, é um usuário que
+chegue na sessão e não leia dado nenhum: o monitor quer saber se o banco
+responde, não o que tem dentro dele.
+
 ## E-mail
 
 O canal `email` envia por SMTP. Na API, a configuração é:
@@ -1028,6 +1122,15 @@ primeira conta restrita a grupos, `/metrics` sem token responde 403 —
 aberto, seria o atalho dessa conta para ver os nomes que o escopo
 esconde —, e o servidor avisa no início. Sem contas restritas, nada
 muda.
+
+**Sem token e escutando fora de loopback, o servidor avisa na partida.**
+É só um aviso no log: a raspagem continua funcionando como antes, nada
+passa a responder 403 por causa dele. O aviso sai quando
+`UPWATCH_METRICS_TOKEN` está vazio e `UPWATCH_LISTEN` não é `127.0.0.1`
+nem `localhost` — o que inclui o padrão `:8080`, porque ali qualquer um
+que alcance a porta lê a lista inteira de monitores. Para calar: defina
+o token, ou escute só em loopback e deixe o proxy reverso alcançar a
+porta.
 
 Monitor dentro de um grupo leva também o rótulo `group`, com o caminho
 (`group="RPA / prod"`). O nome só é único dentro do grupo, e sem o rótulo
