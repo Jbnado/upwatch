@@ -530,8 +530,9 @@ valer no corpo:
 }
 ```
 
-Todas precisam passar. Quando uma falha, a causa no aviso diz qual e o que
-foi encontrado: `$.queue_lag = 340, esperado < 100`. Como a causa vai
+Todas precisam passar, e são no máximo 50 por monitor. Quando uma falha,
+a causa no aviso diz qual e o que foi encontrado: `$.queue_lag = 340,
+esperado < 100`. Como a causa vai
 para chat e webhook, texto encontrado — que pode ser um token ou um
 e-mail — aparece só como tamanho (`$.status = texto de 12 caracteres,
 esperado contém "ok"`), e lista e objeto só como contagem; em `eq` e `ne`
