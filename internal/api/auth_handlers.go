@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -62,6 +63,8 @@ func (a *API) handleSetup(w http.ResponseWriter, r *http.Request) {
 	// token: comparar "" com "" abriria o assistente justamente quando
 	// alguém esqueceu de configurá-lo.
 	if a.setupToken == "" || !subtleEqual(body.SetupToken, a.setupToken) {
+		a.audit(r, ageSetupTokenErrado, "/setup")
+
 		var resp errorBody
 		resp.Error.Code = codeUnauthorized
 		resp.Error.Message = "token de configuração inválido; ele está no log do servidor ou em " +
@@ -92,6 +95,12 @@ func (a *API) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	res, err := a.auth.Login(r.Context(), body.Username, body.Password)
 	if err != nil {
+		switch {
+		case errors.Is(err, auth.ErrInvalidCredentials):
+			a.auditAs(r, body.Username, ageLoginSenhaErrada, "/auth/login")
+		case errors.Is(err, auth.ErrTooManyAttempts):
+			a.auditAs(r, body.Username, ageContaBloqueada, "/auth/login")
+		}
 		writeStoreError(w, err)
 		return
 	}
@@ -119,6 +128,10 @@ func (a *API) handleLoginSecondFactor(w http.ResponseWriter, r *http.Request) {
 
 	secret, err := a.auth.CompleteLogin(r.Context(), body.Challenge, body.Code)
 	if err != nil {
+		var código *auth.InvalidCodeError
+		if errors.As(err, &código) {
+			a.auditAs(r, código.Username, ageLoginCódigoErrado, "/auth/login/2fa")
+		}
 		writeStoreError(w, err)
 		return
 	}
@@ -201,10 +214,12 @@ func (a *API) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := a.auth.ChangePassword(r.Context(), mustUser(r).ID, body.Current, body.Next); err != nil {
+	u := mustUser(r)
+	if err := a.auth.ChangePassword(r.Context(), u.ID, body.Current, body.Next); err != nil {
 		writeStoreError(w, err)
 		return
 	}
+	a.audit(r, ageSenhaTrocada, u.Username)
 
 	// A própria sessão desta requisição foi encerrada junto; apagar o
 	// cookie evita o cliente insistir com uma credencial já inválida.
@@ -244,6 +259,8 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	a.audit(r, ageTokenCriado, tok.Name)
+
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"id":         tok.ID,
 		"name":       tok.Name,
@@ -266,6 +283,7 @@ func (a *API) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	a.audit(r, ageTokenRevogado, strconv.FormatInt(id, 10))
 	w.WriteHeader(http.StatusNoContent)
 }
 

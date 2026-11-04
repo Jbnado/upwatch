@@ -88,6 +88,7 @@ func (a *API) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	if a.metricsToken != "" {
 		segredo, ok := bearerToken(r)
 		if !ok || !subtleEqual(segredo, a.metricsToken) {
+			a.audit(r, ageMetricsTokenErrado, "/metrics")
 			writeError(w, http.StatusUnauthorized, codeUnauthorized, "token de métricas inválido")
 			return
 		}

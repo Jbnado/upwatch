@@ -417,6 +417,57 @@ upwatch disable-2fa admin
 Na imagem: `docker compose run --rm upwatch disable-2fa admin`. As
 sessões da conta são encerradas, e ela volta a entrar só com a senha.
 
+## Registro de eventos de segurança
+
+O que mexe em acesso sai no log do processo, numa linha por evento, com
+quatro campos sempre nos mesmos nomes:
+
+```
+level=INFO msg="evento de segurança" ação=login.senha_errada ator=admin alvo=/auth/login origem=203.0.113.7
+```
+
+- **`ação`** é o nome estável do evento, pensado para filtro.
+- **`ator`** é a conta que agiu, ou `anônimo` quando não havia conta
+  identificada. No login errado é a conta que se tentou usar.
+- **`alvo`** é o que sofreu a ação: a conta afetada, o nome do token, a
+  rota.
+- **`origem`** é o endereço do cliente, com a mesma regra dos [limites
+  por origem](#limites-por-origem) — atrás de proxy reverso, configure
+  `UPWATCH_TRUSTED_PROXIES` ou toda linha sairá com o endereço do proxy.
+
+As ações:
+
+| `ação` | Quando |
+|---|---|
+| `login.senha_errada` | senha recusada |
+| `login.conta_bloqueada` | conta barrada por tentativas demais |
+| `login.codigo_errado` | segundo fator recusado (TOTP ou código de recuperação) |
+| `limite.bloqueio` | origem barrada pelo limite por origem (429) |
+| `setup.token_errado` | token de configuração recusado no `POST /setup` |
+| `metrics.token_errado` | token recusado no `/metrics` |
+| `senha.trocada` | conta trocou a própria senha |
+| `token.criado` / `token.revogado` | credencial de API emitida ou apagada |
+| `usuario.criado` | conta criada |
+| `usuario.acesso_trocado` | papel ou escopo de uma conta alterado |
+| `2fa.ligada` / `2fa.desligada` | segundo fator ligado ou desligado pela própria conta |
+| `2fa.recuperacao_trocada` | códigos de recuperação gerados de novo |
+| `2fa.desligada_por_admin` | administrador desligou o segundo fator de outra conta |
+
+Senha, código, token, segredo TOTP, código de recuperação e cookie de
+sessão **nunca** entram nessas linhas, e um teste do pacote exercita
+todos os fluxos acima com segredos reconhecíveis para garantir isso: um
+log de auditoria é copiado para fora da máquina e guardado por meses, de
+modo que um segredo vazado numa linha passa a existir em muito mais
+lugares do que a base que o guarda com hash.
+
+Como é o log do processo, `docker compose logs`, `journalctl` ou o
+coletor que já recolhe a saída do contêiner servem sem configurar nada:
+
+```bash
+docker compose logs upwatch | grep "evento de segurança"
+docker compose logs upwatch | grep "ação=login.senha_errada"
+```
+
 ### Opções sensíveis por arquivo (`_FILE`)
 
 `UPWATCH_DB_DSN`, `UPWATCH_METRICS_TOKEN`, `UPWATCH_SECRET_KEY` e

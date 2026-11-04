@@ -71,6 +71,7 @@ func (a *API) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	a.audit(r, ageUsuárioCriado, u.Username)
 	writeJSON(w, http.StatusCreated, u)
 }
 
@@ -115,6 +116,7 @@ func (a *API) handleUpdateUserRole(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	a.audit(r, ageAcessoTrocado, u.Username)
 	writeJSON(w, http.StatusOK, u)
 }
 

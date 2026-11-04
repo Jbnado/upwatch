@@ -1,6 +1,7 @@
 package api
 
 import (
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
@@ -96,6 +97,10 @@ type Options struct {
 	// aceito para saber o endereço do cliente nos limites por origem.
 	// Vazio, o padrão, nunca lê o cabeçalho (ver originResolver).
 	TrustedProxies []netip.Prefix
+
+	// Logger recebe o registro de eventos de segurança (ver audit.go).
+	// Nulo usa o logger padrão do processo.
+	Logger *slog.Logger
 }
 
 // MonitorSink recebe as alterações de monitor.
@@ -146,6 +151,13 @@ type API struct {
 
 	// originCheck recusa escrita vinda de outra origem (ver sameOrigin).
 	originCheck *http.CrossOriginProtection
+
+	// origins resolve o endereço do cliente para o registro de auditoria,
+	// com a mesma regra de proxy confiável usada nos limites por origem.
+	origins originResolver
+
+	// logger recebe os eventos de segurança (ver audit.go).
+	logger *slog.Logger
 }
 
 // New monta o roteador da API.
@@ -161,6 +173,9 @@ func New(opts Options) http.Handler {
 	}
 	if opts.Resolver == nil {
 		opts.Resolver = net.DefaultResolver
+	}
+	if opts.Logger == nil {
+		opts.Logger = slog.Default()
 	}
 	origins := originResolver{trusted: opts.TrustedProxies}
 
@@ -188,6 +203,16 @@ func New(opts Options) http.Handler {
 		loginLimit:                newRateLimiter(opts.Clock, origins, loginBurst, loginPerSecond),
 		policies:                  map[string]scopePolicy{},
 		originCheck:               newOriginCheck(opts.PublicURL),
+		origins:                   origins,
+		logger:                    opts.Logger,
+	}
+
+	// Cada limitador registra a recusa. Ligado aqui, e não no construtor,
+	// para o limitador seguir testável sozinho.
+	for _, l := range []*rateLimiter{a.pushLimit, a.setupLimit, a.loginLimit} {
+		l.onBlock = func(r *http.Request) {
+			a.audit(r, ageLimiteBloqueio, r.URL.Path)
+		}
 	}
 	return a.routes()
 }
