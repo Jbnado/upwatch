@@ -231,6 +231,13 @@ Ligado, ele também acrescenta `Strict-Transport-Security` (dois anos,
 com subdomínios): o navegador passa a recusar HTTP no host. Só ligue
 quando o HTTPS for definitivo.
 
+Quando `UPWATCH_PUBLIC_URL` é `https://...` e `UPWATCH_SECURE_COOKIES`
+está desligado, o servidor avisa na partida. É a combinação que entrega
+a sessão em claro numa instalação que se acha protegida: existe HTTPS no
+caminho, mas o cookie segue sem a marca e acompanharia uma requisição em
+HTTP puro — por um link antigo, um redirecionamento perdido ou quem
+esteja na mesma rede forçando uma.
+
 Toda resposta, da API, da interface e da página pública, sai com
 `Content-Security-Policy`, `X-Frame-Options: DENY`,
 `X-Content-Type-Options: nosniff` e `Referrer-Policy` (só a origem na
@@ -977,6 +984,15 @@ primeira conta restrita a grupos, `/metrics` sem token responde 403 —
 aberto, seria o atalho dessa conta para ver os nomes que o escopo
 esconde —, e o servidor avisa no início. Sem contas restritas, nada
 muda.
+
+**Sem token e escutando fora de loopback, o servidor avisa na partida.**
+É só um aviso no log: a raspagem continua funcionando como antes, nada
+passa a responder 403 por causa dele. O aviso sai quando
+`UPWATCH_METRICS_TOKEN` está vazio e `UPWATCH_LISTEN` não é `127.0.0.1`
+nem `localhost` — o que inclui o padrão `:8080`, porque ali qualquer um
+que alcance a porta lê a lista inteira de monitores. Para calar: defina
+o token, ou escute só em loopback e deixe o proxy reverso alcançar a
+porta.
 
 Monitor dentro de um grupo leva também o rótulo `group`, com o caminho
 (`group="RPA / prod"`). O nome só é único dentro do grupo, e sem o rótulo
