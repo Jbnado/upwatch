@@ -60,6 +60,10 @@ type rateLimiter struct {
 	burst     float64
 	perSecond float64
 
+	// onBlock é chamado a cada recusa, para o registro de auditoria. Nulo
+	// não registra nada, que é o caso dos testes do limitador em si.
+	onBlock func(*http.Request)
+
 	mu      sync.Mutex
 	buckets map[string]*bucket
 }
@@ -118,6 +122,9 @@ func (l *rateLimiter) limit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ok, wait := l.allow(l.origins.origin(r))
 		if !ok {
+			if l.onBlock != nil {
+				l.onBlock(r)
+			}
 			// Retry-After em segundos inteiros, arredondado para cima: zero
 			// mandaria o cliente tentar de novo na hora.
 			w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(wait.Seconds()))))

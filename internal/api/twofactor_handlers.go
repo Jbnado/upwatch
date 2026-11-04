@@ -1,7 +1,6 @@
 package api
 
 import (
-	"log/slog"
 	"net/http"
 
 	"github.com/Jbnado/upwatch/internal/domain"
@@ -77,7 +76,7 @@ func (a *API) handleTOTPEnable(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	slog.Info("verificação em duas etapas ligada", "conta", u.Username)
+	a.audit(r, age2FALigada, u.Username)
 	writeRecoveryCodes(w, codes)
 }
 
@@ -101,7 +100,7 @@ func (a *API) handleTOTPRecoveryCodes(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	slog.Info("códigos de recuperação trocados", "conta", u.Username)
+	a.audit(r, age2FARecuperaçãoNova, u.Username)
 	writeRecoveryCodes(w, codes)
 }
 
@@ -117,7 +116,7 @@ func (a *API) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	slog.Info("verificação em duas etapas desligada", "conta", u.Username)
+	a.audit(r, age2FADesligada, u.Username)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -140,8 +139,7 @@ func (a *API) handleResetUserTOTP(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	slog.Warn("verificação em duas etapas desligada por administrador",
-		"administrador", actor.Username, "conta", target.Username, "conta_id", id)
+	a.audit(r, age2FADesligadaPorAdmin, target.Username)
 	w.WriteHeader(http.StatusNoContent)
 }
 

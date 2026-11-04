@@ -130,7 +130,7 @@ func (s *Service) CompleteLogin(ctx context.Context, challenge, code string) (st
 	}
 	if !ok {
 		att.fail()
-		return "", ErrInvalidCode
+		return "", &InvalidCodeError{Username: u.Username}
 	}
 
 	// Consumir depois de conferir, e exigir que o consumo aconteça: dois
@@ -145,6 +145,23 @@ func (s *Service) CompleteLogin(ctx context.Context, challenge, code string) (st
 	att.succeed()
 	return s.openSession(ctx, u.ID)
 }
+
+// InvalidCodeError é o código errado, sabendo de qual conta era o
+// desafio.
+//
+// A conta vai para o registro de auditoria: código errado com a senha já
+// na mão é o sinal mais forte de conta comprometida, e a linha não serve
+// de nada sem dizer qual conta. O código digitado nunca entra aqui.
+//
+// Is faz errors.Is(err, ErrInvalidCode) continuar valendo, de modo que a
+// resposta HTTP e quem já tratava o erro não mudam.
+type InvalidCodeError struct {
+	Username string
+}
+
+func (e *InvalidCodeError) Error() string { return ErrInvalidCode.Error() }
+
+func (e *InvalidCodeError) Is(target error) bool { return target == ErrInvalidCode }
 
 // checkSecondFactor confere um código TOTP ou de recuperação, gastando-o.
 //
