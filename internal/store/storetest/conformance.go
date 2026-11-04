@@ -82,6 +82,7 @@ func monitoringCases() []conformanceCase {
 		{"MonitorListFiltersByTag", testMonitorListFiltersByTag},
 		{"MonitorListTagFilterIsExact", testMonitorListTagFilterIsExact},
 		{"MonitorListTagFilterEscapesWildcards", testMonitorListTagFilterEscapesWildcards},
+		{"MonitorListTagFilterHandlesBackslash", testMonitorListTagFilterHandlesBackslash},
 		{"MonitorListCapsLimit", testMonitorListCapsLimit},
 		{"MonitorSetParentLinksMany", testMonitorSetParentLinksMany},
 		{"MonitorSetParentIsAllOrNothing", testMonitorSetParentIsAllOrNothing},
