@@ -818,6 +818,46 @@ grava arquivo no servidor com `SELECT lo_export(...)` mesmo dentro dela.
 O usuário acima, só com `LOGIN`, roda a consulta personalizada
 normalmente.
 
+**Não ser superusuário não basta: o usuário do monitor precisa ser só de
+leitura, e sem as funções que escapam da transação.** A consulta é texto
+que alguém digita na interface, e a credencial fica guardada para ser
+usada a cada minuto — então vale desenhar o usuário supondo que as duas
+coisas vazem. A recusa automática pega o superusuário, que é o caso
+grosso; as três abaixo passariam por ela, porque o `EXECUTE` delas pode
+ter sido concedido a um papel comum:
+
+- `dblink` e `postgres_fdw` abrem conexão **a partir do servidor do
+  banco**, que normalmente alcança rede que ninguém de fora alcança.
+  `BEGIN READ ONLY` não impede: a escrita acontece na outra ponta.
+- `adminpack` escreve e apaga arquivo no servidor, pela mesma razão.
+- `lo_export` e `lo_import` leem e gravam arquivo do sistema de arquivos
+  do servidor. No PostgreSQL 11 e acima elas exigem privilégio, mas ele é
+  concedível, e foi assim que o caso do superusuário apareceu.
+
+Confira o que o usuário do monitor pode executar antes de usá-lo:
+
+```sql
+-- Nada aqui, ou o usuário não serve
+SELECT n.nspname, p.proname
+  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+ WHERE p.proname IN ('dblink', 'dblink_exec', 'lo_export', 'lo_import',
+                     'pg_file_write', 'pg_file_unlink')
+   AND has_function_privilege('upwatch', p.oid, 'EXECUTE');
+```
+
+```sql
+-- E que ele não escreve em nada
+REVOKE ALL ON ALL TABLES IN SCHEMA public FROM upwatch;
+REVOKE ALL ON SCHEMA public FROM upwatch;
+```
+
+No MySQL, o equivalente é não dar `FILE` (que lê e grava arquivo no
+servidor com `LOAD DATA INFILE` e `SELECT ... INTO OUTFILE`) nem
+`SUPER`/`PROCESS`: o `CREATE USER` acima, sem nenhum `GRANT`, já é isso —
+só o direito de conectar. O ideal, nos dois bancos, é um usuário que
+chegue na sessão e não leia dado nenhum: o monitor quer saber se o banco
+responde, não o que tem dentro dele.
+
 ## E-mail
 
 O canal `email` envia por SMTP. Na API, a configuração é:
