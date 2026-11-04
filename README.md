@@ -207,6 +207,40 @@ nada instalado:
 UPWATCH_DB_DSN=./upwatch.db ./upwatch
 ```
 
+### Conferindo o que você baixou
+
+Cada release leva um `SHA256SUMS` e a assinatura dele
+(`SHA256SUMS.cosign.bundle`). As duas imagens — o central e a sonda — são
+assinadas no digest e publicadas com SBOM e proveniência. Tudo isso é
+[sigstore](https://www.sigstore.dev) sem chave: a assinatura prende o
+arquivo ou o digest a este repositório, a este workflow e a esta tag, e
+não existe chave privada guardada em lugar nenhum para ser roubada.
+
+Conferir as somas e a assinatura delas (precisa do
+[cosign](https://github.com/sigstore/cosign)):
+
+```bash
+sha256sum --check --ignore-missing SHA256SUMS
+```
+
+```bash
+cosign verify-blob SHA256SUMS --bundle SHA256SUMS.cosign.bundle --certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-identity-regexp '^https://github\.com/Jbnado/upwatch/\.github/workflows/release\.yml@refs/tags/v'
+```
+
+Conferir a imagem (troque `upwatch` por `upwatch-probe` para a sonda):
+
+```bash
+cosign verify ghcr.io/jbnado/upwatch:latest --certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-identity-regexp '^https://github\.com/Jbnado/upwatch/\.github/workflows/release\.yml@refs/'
+```
+
+O `--certificate-identity-regexp` é a parte que importa: sem ele, o
+`cosign verify` aceitaria uma assinatura válida de qualquer pessoa. Ver o
+SBOM e a proveniência de uma imagem:
+
+```bash
+docker buildx imagetools inspect ghcr.io/jbnado/upwatch:latest --format '{{ json .SBOM }}'
+```
+
 ## Configuração
 
 Tudo por variável de ambiente ou arquivo YAML. A variável ganha do

@@ -19,7 +19,12 @@ WORKDIR /app/web
 # A versão fica fixa e igual à do CI. Com corepack ela era a que viesse
 # embutida na imagem base, o que fazia a versão do pnpm mudar junto com o
 # Node sem ninguém decidir isso.
-RUN npm install -g pnpm@10
+#
+# Exata até o patch, e não "pnpm@10": a linha flutuante trazia o 10.x que
+# tivesse saído na véspera, então a imagem publicada hoje e a de amanhã
+# podiam ser construídas por versões diferentes sem nenhum commit entre
+# elas. É o mesmo número das três etapas do CI e do release.
+RUN npm install -g pnpm@10.24.0
 
 # Só o manifesto primeiro: a instalação de dependências é a camada cara,
 # e mexer no código-fonte não deveria invalidá-la.
