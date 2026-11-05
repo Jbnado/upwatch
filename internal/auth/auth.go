@@ -267,8 +267,10 @@ func (s *Service) SweepExpiredSessions(ctx context.Context) (int64, error) {
 
 // ChangePassword troca a senha e encerra as sessões abertas.
 //
-// Derrubar as sessões é parte do propósito: trocar a senha porque ela pode
-// ter vazado não adianta se quem a obteve continuar logado.
+// Derrubar as credenciais é parte do propósito: trocar a senha porque ela
+// pode ter vazado não adianta se quem a obteve continuar logado — nem se o
+// token de API que ele emitiu continuar valendo, e esse não vence por
+// padrão. Sessões e tokens, portanto (ver revokeCredentials).
 func (s *Service) ChangePassword(ctx context.Context, userID int64, current, next string) error {
 	u, err := s.store.Users().Get(ctx, userID)
 	if err != nil {
@@ -298,7 +300,7 @@ func (s *Service) ChangePassword(ctx context.Context, userID int64, current, nex
 	if err := s.store.Users().SetPasswordHash(ctx, userID, u.PasswordHash); err != nil {
 		return err
 	}
-	return s.store.Sessions().DeleteByUser(ctx, userID)
+	return s.revokeCredentials(ctx, userID, "")
 }
 
 // ---------- tokens ----------

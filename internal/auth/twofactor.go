@@ -313,9 +313,11 @@ func (s *Service) BeginTOTP(ctx context.Context, userID int64, password string) 
 // ConfirmTOTP liga o fator pendente com um código do aplicativo e devolve
 // os códigos de recuperação, que só existem neste retorno.
 //
-// As outras sessões da conta caem: uma aberta antes, talvez por quem
-// roubou a senha, não pode sobreviver justamente à proteção nova. keep é
-// o segredo da sessão de quem está ligando, que fica; vazio derruba todas.
+// As outras credenciais da conta caem — sessões e tokens de API: uma
+// aberta antes, talvez por quem roubou a senha, não pode sobreviver
+// justamente à proteção nova, e o token menos ainda, porque é ele que o
+// segundo fator não cobre. keep é o segredo da sessão de quem está
+// ligando, que fica; vazio derruba todas.
 func (s *Service) ConfirmTOTP(ctx context.Context, userID int64, keep, code string) ([]string, error) {
 	f, err := s.store.TwoFactor().Get(ctx, userID)
 	if errors.Is(err, store.ErrNotFound) {
@@ -342,7 +344,7 @@ func (s *Service) ConfirmTOTP(ctx context.Context, userID int64, keep, code stri
 		}
 		return nil, err
 	}
-	if err := s.revokeOthers(ctx, userID, keep); err != nil {
+	if err := s.revokeCredentials(ctx, userID, keep); err != nil {
 		return nil, err
 	}
 	return codes, nil
@@ -378,15 +380,18 @@ func (s *Service) DisableTOTP(ctx context.Context, userID int64, keep, password,
 		}
 		return err
 	}
-	return s.revokeOthers(ctx, userID, keep)
+	return s.revokeCredentials(ctx, userID, keep)
 }
 
 // ResetTOTP desliga o fator de outra conta, para quem perdeu o celular e
 // os códigos de recuperação. Quem pode fazer isso é decidido antes (ver
 // as rotas de contas); aqui só se recusa a própria conta.
 //
-// Todas as sessões da conta caem. A pessoa entra de novo com a senha e,
-// se a instalação exigir, cadastra o aplicativo novo nesse login.
+// Todas as credenciais da conta caem, sessões e tokens de API. A pessoa
+// entra de novo com a senha e, se a instalação exigir, cadastra o
+// aplicativo novo nesse login; a automação dela é recadastrada, porque um
+// reset de segundo fator também responde a incidente, e aí o token que
+// sobrevivesse seria justamente o que o fator nunca cobriu.
 func (s *Service) ResetTOTP(ctx context.Context, actorID, userID int64) error {
 	if actorID == userID {
 		return ErrResetOwnTOTP
@@ -397,7 +402,7 @@ func (s *Service) ResetTOTP(ctx context.Context, actorID, userID int64) error {
 		}
 		return err
 	}
-	return s.store.Sessions().DeleteByUser(ctx, userID)
+	return s.revokeCredentials(ctx, userID, "")
 }
 
 // ResetTOTPByUsername é a saída de quem não tem mais ninguém para pedir:
@@ -414,7 +419,7 @@ func (s *Service) ResetTOTPByUsername(ctx context.Context, username string) erro
 		}
 		return err
 	}
-	return s.store.Sessions().DeleteByUser(ctx, u.ID)
+	return s.revokeCredentials(ctx, u.ID, "")
 }
 
 // SweepExpiredChallenges remove os desafios de login vencidos.
@@ -452,6 +457,28 @@ func (s *Service) proveAccount(ctx context.Context, userID int64, password, code
 	}
 	att.succeed()
 	return nil
+}
+
+// revokeCredentials corta o acesso da conta depois de uma mudança que
+// existe para cortar acesso: trocar a senha, ligar, desligar ou resetar
+// o segundo fator.
+//
+// Sessões e tokens de API no mesmo lugar porque esquecer os tokens foi
+// exatamente o que aconteceu. Essas quatro ações derrubavam a sessão e
+// deixavam de pé a credencial que faz tudo o que a interface faz, não
+// vence por padrão e não passa pelo segundo fator: quem roubasse uma
+// sessão de administrador emitia um token, e ele sobrevivia à troca de
+// senha e ao segundo fator ligado depois — com a vítima vendo o painel
+// dizer que estava resolvido.
+//
+// keep é a sessão de quem está mexendo, que fica. Token não tem
+// equivalente: quem está na interface não está usando token, então não
+// há o que preservar.
+func (s *Service) revokeCredentials(ctx context.Context, userID int64, keep string) error {
+	if err := s.revokeOthers(ctx, userID, keep); err != nil {
+		return err
+	}
+	return s.store.Tokens().DeleteByUser(ctx, userID)
 }
 
 // revokeOthers derruba as sessões da conta menos a de keep.

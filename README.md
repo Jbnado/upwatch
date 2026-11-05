@@ -131,7 +131,10 @@ login pede o código depois da senha. Desligar e gerar códigos novos
 pedem senha e código; ligar e desligar encerram as outras sessões da
 conta. Quem perdeu o celular e os códigos pede a um administrador, que
 desliga o segundo fator dela em Contas e acesso. Tokens de API não
-passam pelo segundo fator. Ver [Verificação em duas etapas](#verificação-em-duas-etapas).
+passam pelo segundo fator — e por isso ligar, desligar ou resetar o
+segundo fator, e trocar a senha, revogam os tokens de API da conta: o
+token é justamente a credencial que o fator não cobre, e deixá-lo de pé
+faria a resposta ao incidente parecer completa sem ser. Ver [Verificação em duas etapas](#verificação-em-duas-etapas).
 
 **Publica uma página de estado** no formato que Anthropic, Cloudflare e
 Google consolidaram: veredito no topo, componentes agrupados, noventa

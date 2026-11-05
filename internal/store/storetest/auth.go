@@ -39,6 +39,7 @@ func authCases() []conformanceCase {
 		{"TokenGetByHashMissingReturnsNotFound", testTokenGetByHashMissingReturnsNotFound},
 		{"TokenListIsScopedToUser", testTokenListIsScopedToUser},
 		{"TokenDelete", testTokenDelete},
+		{"TokenDeleteByUser", testTokenDeleteByUser},
 		{"TokenTouchLastUsed", testTokenTouchLastUsed},
 		{"TokenRoundTripsExpiry", testTokenRoundTripsExpiry},
 	}
@@ -575,6 +576,49 @@ func testTokenDelete(t *testing.T, newStore Factory) {
 
 // Saber quando o token foi usado pela última vez é o que permite revogar
 // credenciais esquecidas com segurança.
+// Revogar em massa é o que a troca de senha e as ações de segundo fator
+// fazem com as sessões, e passaram a fazer com os tokens: a credencial que
+// um invasor emitiu não pode atravessar a resposta ao incidente. E tem de
+// alcançar só a conta pedida, senão responder a um incidente derruba a
+// automação da instalação inteira.
+func testTokenDeleteByUser(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	target := mustCreateUser(t, s, "admin")
+	other := mustCreateUser(t, s, "operador")
+	mustCreateToken(t, s, target.ID, "ci")
+	mustCreateToken(t, s, target.ID, "backup")
+	mustCreateToken(t, s, other.ID, "dele")
+
+	if err := s.Tokens().DeleteByUser(ctx, target.ID); err != nil {
+		t.Fatalf("DeleteByUser returned unexpected error: %v", err)
+	}
+
+	meus, err := s.Tokens().List(ctx, target.ID)
+	if err != nil {
+		t.Fatalf("List returned unexpected error: %v", err)
+	}
+	if len(meus) != 0 {
+		t.Errorf("sobraram %d tokens da conta", len(meus))
+	}
+	dele, err := s.Tokens().List(ctx, other.ID)
+	if err != nil {
+		t.Fatalf("List returned unexpected error: %v", err)
+	}
+	if len(dele) != 1 {
+		t.Errorf("tokens da outra conta = %d, queria 1 intacto", len(dele))
+	}
+
+	// Conta sem token nenhum não é erro: a troca de senha de quem nunca
+	// emitiu token chama isto do mesmo jeito.
+	if err := s.Tokens().DeleteByUser(ctx, other.ID); err != nil {
+		t.Fatalf("DeleteByUser returned unexpected error: %v", err)
+	}
+	if err := s.Tokens().DeleteByUser(ctx, other.ID); err != nil {
+		t.Errorf("DeleteByUser numa conta sem tokens falhou: %v", err)
+	}
+}
+
 func testTokenTouchLastUsed(t *testing.T, newStore Factory) {
 	s := newStore(t)
 	ctx := context.Background()

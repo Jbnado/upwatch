@@ -460,6 +460,17 @@ func (r *tokenRepo) Delete(ctx context.Context, id int64) error {
 	return requireAffected(res, fmt.Sprintf("token %d", id))
 }
 
+// DeleteByUser revoga todos os tokens da conta. Sem requireAffected:
+// conta que nunca emitiu token chama isto do mesmo jeito, na troca de
+// senha, e zero linhas é o resultado certo.
+func (r *tokenRepo) DeleteByUser(ctx context.Context, userID int64) error {
+	if _, err := r.db.ExecContext(ctx,
+		`DELETE FROM api_token WHERE user_id = ?`, userID); err != nil {
+		return fmt.Errorf("sqlstore: apagando tokens do usuário %d: %w", userID, err)
+	}
+	return nil
+}
+
 func (r *tokenRepo) TouchLastUsed(ctx context.Context, id int64, at time.Time) error {
 	if _, err := r.db.ExecContext(ctx,
 		`UPDATE api_token SET last_used_at = ? WHERE id = ?`, toMillis(at), id); err != nil {
