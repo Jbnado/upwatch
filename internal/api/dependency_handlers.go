@@ -90,6 +90,13 @@ func (a *API) handleSetChildren(w http.ResponseWriter, r *http.Request) {
 		anteriores = append(anteriores, m)
 	}
 
+	// Antes da conferência de ciclo: a autorização não espera o ramo que
+	// conta como a árvore está montada.
+	if err := a.checkDependentsInScope(ctx, v, ids...); err != nil {
+		writeDependentsError(w, err)
+		return
+	}
+
 	lookup := a.storeLookup(ctx)
 	for _, m := range anteriores {
 		if domain.ParentCycle(m.ID, &paiID, lookup) {
@@ -137,12 +144,17 @@ func (a *API) handleUnlinkChild(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+	v := viewerFrom(r)
 	anterior, err := a.store.Monitors().Get(ctx, filhoID)
-	if err == nil && (!viewerFrom(r).sees(anterior) || anterior.ParentID == nil || *anterior.ParentID != paiID) {
+	if err == nil && (!v.sees(anterior) || anterior.ParentID == nil || *anterior.ParentID != paiID) {
 		err = store.ErrNotFound
 	}
 	if err != nil {
 		writeStoreError(w, err)
+		return
+	}
+	if err := a.checkDependentsInScope(ctx, v, filhoID); err != nil {
+		writeDependentsError(w, err)
 		return
 	}
 
@@ -289,17 +301,26 @@ func (a *API) publishMonitor(ctx context.Context, tipo string, m domain.Monitor,
 // monitores fora do escopo de quem edita.
 var errDependentsOutOfScope = errors.New("api: monitor com dependentes fora do escopo")
 
-// checkDependentsInScope exige escopo total para alterar ou apagar o
-// monitor que tem dependentes, diretos ou não, fora do escopo de quem
-// pede.
+// checkDependentsInScope exige escopo total para mexer no monitor de que
+// dependem monitores, diretos ou não, fora do escopo de quem pede.
 //
 // O pai em queda cala os alertas dos dependentes (domain.DownAncestor).
 // Quem alcança tudo pode ligar um monitor de outro grupo como dependente
 // de um daqui — o caso comum é a sonda como pai —, e a conta restrita a
-// este grupo não pode, mexendo no pai (trocar o alvo, pausar, apagar),
-// decidir se os alertas do outro grupo chegam. Os netos contam: a queda
-// do pai cala a cadeia inteira.
-func (a *API) checkDependentsInScope(ctx context.Context, v viewer, id int64) error {
+// este grupo não pode, mexendo no pai, decidir se os alertas do outro
+// grupo chegam. Os netos contam: a queda do pai cala a cadeia inteira.
+//
+// "Mexer no pai" são quatro rotas, não duas. Trocar o alvo e apagar são
+// as óbvias; trocar de pai e soltar do pai mudam o mesmo que elas, porque
+// é o parent_id que decide quem cala quem. Pendurar o monitor numa sonda
+// caída do próprio grupo silencia a cadeia inteira abaixo dele sem nunca
+// tocar no monitor de fora, e soltá-lo do pai dessilencia o que estava
+// calado — numa ferramenta de alerta, as duas direções são o mesmo
+// defeito. Por isso a guarda é chamada pelas quatro.
+//
+// Recebe vários ids porque a rota em lote confere até MaxPageSize
+// monitores de uma vez, e a instalação é lida uma vez por requisição.
+func (a *API) checkDependentsInScope(ctx context.Context, v viewer, ids ...int64) error {
 	if v.access.All() {
 		return nil
 	}
@@ -313,6 +334,20 @@ func (a *API) checkDependentsInScope(ctx context.Context, v viewer, id int64) er
 			filhos[*m.ParentID] = append(filhos[*m.ParentID], m)
 		}
 	}
+	for _, id := range ids {
+		if temDependenteForaDoEscopo(v, filhos, id) {
+			return errDependentsOutOfScope
+		}
+	}
+	return nil
+}
+
+// temDependenteForaDoEscopo desce a cadeia a partir de id.
+//
+// Índice de filhos recebido pronto, e não montado aqui: montá-lo por
+// monitor pedido leria a instalação inteira a cada id, e é a instalação
+// grande que mais tem dependência entre grupos.
+func temDependenteForaDoEscopo(v viewer, filhos map[int64][]domain.Monitor, id int64) bool {
 	vistos := map[int64]bool{id: true}
 	fila := []int64{id}
 	for len(fila) > 0 {
@@ -320,7 +355,7 @@ func (a *API) checkDependentsInScope(ctx context.Context, v viewer, id int64) er
 		fila = fila[1:]
 		for _, f := range filhos[atual] {
 			if !v.sees(f) {
-				return errDependentsOutOfScope
+				return true
 			}
 			if !vistos[f.ID] {
 				vistos[f.ID] = true
@@ -328,7 +363,7 @@ func (a *API) checkDependentsInScope(ctx context.Context, v viewer, id int64) er
 			}
 		}
 	}
-	return nil
+	return false
 }
 
 // writeDependentsError traduz a recusa por dependentes de fora. 403, e

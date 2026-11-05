@@ -350,6 +350,80 @@ func TestScopedAdminCannotChangeAParentWithDependentsOutsideItsScope(t *testing.
 	assertStatus(t, c.s.do(t, http.MethodDelete, "/api/v1/monitors/"+itoa(pai), nil), http.StatusNoContent)
 }
 
+// A guarda da #111 leu "mexer no pai" como trocar o alvo, pausar ou
+// apagar, e cobriu as duas rotas que fazem isso. Mexer no pai também é
+// trocar de pai, e isso acontece por outra rota: pendurar o monitor numa
+// sonda caída do próprio grupo cala a cadeia inteira abaixo dele — netos
+// de outros grupos incluídos — sem nunca tocar no monitor de fora.
+func TestScopedAdminCannotReparentAMonitorWithDependentsOutsideItsScope(t *testing.T) {
+	c := novoCenarioEscopo(t)
+	adm := c.s.como(c.retAdmin)
+
+	// O monitor de dentro do escopo que tem dependente de fora.
+	filho := c.s.createMonitor(t, monitorNoGrupo("verificacao", &c.retProd))
+	assertStatus(t, c.s.do(t, http.MethodPost, "/api/v1/monitors/"+itoa(filho)+"/children",
+		map[string]any{"monitor_ids": []int64{c.foraAgrupado}}), http.StatusOK)
+
+	// A sonda do próprio grupo que viraria o pai novo.
+	sonda := c.s.createMonitor(t, monitorNoGrupo("sonda", &c.retProd))
+
+	resp := adm.do(t, http.MethodPost, "/api/v1/monitors/"+itoa(sonda)+"/children",
+		map[string]any{"monitor_ids": []int64{filho}})
+	assertStatus(t, resp, http.StatusForbidden)
+	if corpo := readBody(t, resp); strings.Contains(corpo, "segredo-rpa") || strings.Contains(corpo, itoa(c.foraAgrupado)) {
+		t.Errorf("the refusal names the dependent: %s", corpo)
+	}
+	if pai := c.s.paiDe(t, filho); pai != nil {
+		t.Errorf("parent_id = %v, want it kept without a parent", pai)
+	}
+
+	// Controle: o monitor sem dependente de fora continua sendo pendurado
+	// pela conta restrita. Guarda que custa o uso normal vira guarda que
+	// alguém desliga.
+	solto := c.s.createMonitor(t, monitorNoGrupo("bff-interno", &c.retProd))
+	assertStatus(t, adm.do(t, http.MethodPost, "/api/v1/monitors/"+itoa(sonda)+"/children",
+		map[string]any{"monitor_ids": []int64{solto}}), http.StatusOK)
+
+	// Controle: quem alcança tudo continua montando a dependência entre
+	// grupos, que é o caso de uso de que a guarda não pode tirar.
+	assertStatus(t, c.s.do(t, http.MethodPost, "/api/v1/monitors/"+itoa(sonda)+"/children",
+		map[string]any{"monitor_ids": []int64{filho}}), http.StatusOK)
+}
+
+// O espelho da mesma escrita: soltar o filho do pai também decide se o
+// alerta do outro grupo chega. Dessilencia o que estava calado e despeja
+// a fila no pager de quem não pediu, o que numa ferramenta de alerta é
+// tão ruim quanto o silêncio.
+func TestScopedAdminCannotUnlinkAChildWithDependentsOutsideItsScope(t *testing.T) {
+	c := novoCenarioEscopo(t)
+	adm := c.s.como(c.retAdmin)
+
+	sonda := c.s.createMonitor(t, monitorNoGrupo("sonda", &c.retProd))
+	filho := c.s.createMonitor(t, monitorNoGrupo("verificacao", &c.retProd))
+	assertStatus(t, c.s.do(t, http.MethodPost, "/api/v1/monitors/"+itoa(sonda)+"/children",
+		map[string]any{"monitor_ids": []int64{filho}}), http.StatusOK)
+	assertStatus(t, c.s.do(t, http.MethodPost, "/api/v1/monitors/"+itoa(filho)+"/children",
+		map[string]any{"monitor_ids": []int64{c.foraAgrupado}}), http.StatusOK)
+
+	assertStatus(t, adm.do(t, http.MethodDelete,
+		"/api/v1/monitors/"+itoa(sonda)+"/children/"+itoa(filho), nil), http.StatusForbidden)
+	if pai := c.s.paiDe(t, filho); pai == nil || *pai != sonda {
+		t.Errorf("parent_id = %v, want %d kept", pai, sonda)
+	}
+
+	// Controle: filho sem dependente de fora continua sendo solto pela
+	// conta restrita.
+	solto := c.s.createMonitor(t, monitorNoGrupo("bff-interno", &c.retProd))
+	assertStatus(t, c.s.do(t, http.MethodPost, "/api/v1/monitors/"+itoa(sonda)+"/children",
+		map[string]any{"monitor_ids": []int64{solto}}), http.StatusOK)
+	assertStatus(t, adm.do(t, http.MethodDelete,
+		"/api/v1/monitors/"+itoa(sonda)+"/children/"+itoa(solto), nil), http.StatusNoContent)
+
+	// Controle: quem alcança tudo continua soltando.
+	assertStatus(t, c.s.do(t, http.MethodDelete,
+		"/api/v1/monitors/"+itoa(sonda)+"/children/"+itoa(filho), nil), http.StatusNoContent)
+}
+
 // O fluxo ao vivo também não leva o parent_id de fora: ligar o monitor de
 // dentro a um pai de fora chega como atualização do monitor, sem o pai.
 func TestEventStreamHidesAParentOutsideTheScope(t *testing.T) {
