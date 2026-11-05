@@ -66,8 +66,12 @@ func recoverPanic(next http.Handler) http.Handler {
 				return
 			}
 
+			// A rota pelo padrão, e não pelo caminho: o caminho do /push
+			// carrega o token do monitor, e o registro do defeito não pode
+			// ser a porta dos fundos por onde o segredo sai da máquina. O
+			// padrão diz qual endpoint quebrou, que é o que se investiga.
 			slog.Error("api: pânico no handler",
-				"erro", p, "método", r.Method, "caminho", r.URL.Path)
+				"erro", p, "método", r.Method, "rota", rotaDe(r))
 			writeError(w, http.StatusInternalServerError, codeInternal, "erro interno")
 		}()
 

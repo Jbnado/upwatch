@@ -3,6 +3,8 @@ package api
 import (
 	"net/http"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/Jbnado/upwatch/internal/audit"
 )
 
@@ -38,6 +40,28 @@ func (a *API) auditAs(r *http.Request, ator, ação, alvo string) {
 }
 
 // atorDe identifica a conta da requisição, ou devolve o ator anônimo.
+// rotaDe identifica a rota pelo padrão com que ela foi registrada, e
+// não pelo caminho que chegou na requisição.
+//
+// A diferença é um segredo. O caminho do /push carrega o token do
+// monitor — decisão declarada, porque é assim que um cron reporta sem
+// credencial de interface —, então registrar o caminho instanciado faz
+// o funil escrever exatamente o que ele existe para manter fora:
+// "/api/v1/push/<token-real>" no lugar de "/api/v1/push/{token}".
+//
+// O padrão vem do roteador. Fora de uma rota casada ele é vazio, e aí o
+// caminho cru é o que resta — mas o registro acontece dentro dos
+// handlers e das middlewares de rota, que o chi roda depois do
+// roteamento, então na prática o padrão está sempre lá.
+func rotaDe(r *http.Request) string {
+	if rc := chi.RouteContext(r.Context()); rc != nil {
+		if padrão := rc.RoutePattern(); padrão != "" {
+			return padrão
+		}
+	}
+	return r.URL.Path
+}
+
 func atorDe(r *http.Request) string {
 	if u, ok := userFrom(r.Context()); ok {
 		return u.Username

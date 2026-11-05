@@ -212,7 +212,7 @@ func New(opts Options) http.Handler {
 	// para o limitador seguir testável sozinho.
 	for _, l := range []*rateLimiter{a.pushLimit, a.setupLimit, a.loginLimit} {
 		l.onBlock = func(r *http.Request) {
-			a.audit(r, audit.AçãoLimiteBloqueio, r.URL.Path)
+			a.audit(r, audit.AçãoLimiteBloqueio, rotaDe(r))
 		}
 	}
 	return a.routes()

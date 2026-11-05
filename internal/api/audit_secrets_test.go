@@ -115,6 +115,16 @@ func TestAuditNeverLogsSecrets(t *testing.T) {
 	}
 	mresp.Body.Close()
 
+	// Monitor push: o segredo dele viaja no caminho da URL, então todo
+	// fluxo que registre o caminho o registra. O passeio não passava por
+	// aqui, e foi essa ausência que deixou a linha do 429 vazar o token.
+	pushID := s.createMonitor(t, pushMonitorBody("fila de pedidos", pushToken))
+	assertStatus(t, s.do(t, http.MethodPost, "/api/v1/push/"+pushToken, nil), http.StatusOK)
+	assertStatus(t, s.do(t, http.MethodPost, "/api/v1/push/"+pushToken+"-errado", nil),
+		http.StatusUnauthorized)
+	assertStatus(t, s.do(t, http.MethodDelete, "/api/v1/monitors/"+itoa(pushID), nil),
+		http.StatusNoContent)
+
 	// Troca de senha por último: encerra a sessão.
 	cookieUsado := s.cookie.Value
 	assertStatus(t, s.do(t, http.MethodPost, "/api/v1/auth/password", map[string]any{
@@ -140,6 +150,7 @@ func TestAuditNeverLogsSecrets(t *testing.T) {
 		"segredo do token de API":    segredoToken,
 		"desafio do segundo passo":   desafio,
 		"cookie de sessão":           cookieUsado,
+		"token do monitor push":      pushToken,
 	}
 	log := reg.texto()
 	for nome, segredo := range segredos {
