@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/Jbnado/upwatch/internal/audit"
 	"github.com/Jbnado/upwatch/internal/auth"
 	"github.com/Jbnado/upwatch/internal/domain"
 )
@@ -63,7 +64,7 @@ func (a *API) handleSetup(w http.ResponseWriter, r *http.Request) {
 	// token: comparar "" com "" abriria o assistente justamente quando
 	// alguém esqueceu de configurá-lo.
 	if a.setupToken == "" || !subtleEqual(body.SetupToken, a.setupToken) {
-		a.audit(r, ageSetupTokenErrado, "/setup")
+		a.audit(r, audit.AçãoSetupTokenErrado, "/setup")
 
 		var resp errorBody
 		resp.Error.Code = codeUnauthorized
@@ -97,9 +98,9 @@ func (a *API) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, auth.ErrInvalidCredentials):
-			a.auditAs(r, body.Username, ageLoginSenhaErrada, "/auth/login")
+			a.auditAs(r, body.Username, audit.AçãoLoginSenhaErrada, "/auth/login")
 		case errors.Is(err, auth.ErrTooManyAttempts):
-			a.auditAs(r, body.Username, ageContaBloqueada, "/auth/login")
+			a.auditAs(r, body.Username, audit.AçãoContaBloqueada, "/auth/login")
 		}
 		writeStoreError(w, err)
 		return
@@ -126,16 +127,26 @@ func (a *API) handleLoginSecondFactor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	secret, err := a.auth.CompleteLogin(r.Context(), body.Challenge, body.Code)
+	entrou, err := a.auth.CompleteLogin(r.Context(), body.Challenge, body.Code)
 	if err != nil {
 		var código *auth.InvalidCodeError
 		if errors.As(err, &código) {
-			a.auditAs(r, código.Username, ageLoginCódigoErrado, "/auth/login/2fa")
+			a.auditAs(r, código.Username, audit.AçãoLoginCódigoErrado, "/auth/login/2fa")
 		}
 		writeStoreError(w, err)
 		return
 	}
-	a.startSession(w, secret)
+
+	// Login certo não gera linha de propósito: registrar todos encheria o
+	// log e esconderia o que importa. Entrar por código de recuperação é
+	// outra coisa — é passar por cima do aplicativo autenticador, que é o
+	// que faz quem perdeu o celular e também quem roubou a lista. Sem
+	// esta linha, o contorno do segundo fator seria o único evento de
+	// segurança do sistema a não deixar rastro.
+	if entrou.UsedRecoveryCode {
+		a.auditAs(r, entrou.Username, audit.Ação2FARecuperaçãoUsada, entrou.Username)
+	}
+	a.startSession(w, entrou.Session)
 }
 
 // startSession entrega o cookie da sessão recém-aberta.
@@ -219,7 +230,7 @@ func (a *API) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	a.audit(r, ageSenhaTrocada, u.Username)
+	a.audit(r, audit.AçãoSenhaTrocada, u.Username)
 
 	// A própria sessão desta requisição foi encerrada junto; apagar o
 	// cookie evita o cliente insistir com uma credencial já inválida.
@@ -259,7 +270,7 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.audit(r, ageTokenCriado, tok.Name)
+	a.audit(r, audit.AçãoTokenCriado, tok.Name)
 
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"id":         tok.ID,
@@ -283,7 +294,7 @@ func (a *API) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	a.audit(r, ageTokenRevogado, strconv.FormatInt(id, 10))
+	a.audit(r, audit.AçãoTokenRevogado, strconv.FormatInt(id, 10))
 	w.WriteHeader(http.StatusNoContent)
 }
 

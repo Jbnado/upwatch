@@ -481,12 +481,15 @@ level=INFO msg="evento de segurança" ação=login.senha_errada ator=admin alvo=
 
 - **`ação`** é o nome estável do evento, pensado para filtro.
 - **`ator`** é a conta que agiu, ou `anônimo` quando não havia conta
-  identificada. No login errado é a conta que se tentou usar.
+  identificada. No login errado é a conta que se tentou usar; nos
+  subcomandos de manutenção é `linha-de-comando`, porque ali a prova é o
+  acesso ao servidor, não uma sessão.
 - **`alvo`** é o que sofreu a ação: a conta afetada, o nome do token, a
   rota.
 - **`origem`** é o endereço do cliente, com a mesma regra dos [limites
   por origem](#limites-por-origem) — atrás de proxy reverso, configure
   `UPWATCH_TRUSTED_PROXIES` ou toda linha sairá com o endereço do proxy.
+  Quem não chegou pela rede sai como `local`.
 
 As ações:
 
@@ -504,7 +507,21 @@ As ações:
 | `usuario.acesso_trocado` | papel ou escopo de uma conta alterado |
 | `2fa.ligada` / `2fa.desligada` | segundo fator ligado ou desligado pela própria conta |
 | `2fa.recuperacao_trocada` | códigos de recuperação gerados de novo |
+| `2fa.recuperacao_usada` | login entrou com um código de recuperação, por cima do aplicativo autenticador |
 | `2fa.desligada_por_admin` | administrador desligou o segundo fator de outra conta |
+| `2fa.desligada_pela_linha_de_comando` | `upwatch disable-2fa` desligou o segundo fator de uma conta |
+
+Login que deu certo não gera linha: registrar todos encheria o log e
+esconderia o que importa. A exceção é `2fa.recuperacao_usada` — quem
+entra por código de recuperação passou por cima do aplicativo
+autenticador, e isso é tanto o que faz quem perdeu o celular quanto o que
+faz quem roubou a lista de códigos.
+
+`2fa.desligada_pela_linha_de_comando` é a ação mais drástica que o
+sistema oferece: desliga o segundo fator sem senha, sem código e sem
+sessão, com acesso ao banco (ver [verificação em duas
+etapas](#verificação-em-duas-etapas)). Ela sai no mesmo formato das
+demais de propósito, para cair no mesmo filtro.
 
 Senha, código, token, segredo TOTP, código de recuperação e cookie de
 sessão **nunca** entram nessas linhas, e um teste do pacote exercita

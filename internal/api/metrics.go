@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Jbnado/upwatch/internal/audit"
 	"github.com/Jbnado/upwatch/internal/domain"
 	"github.com/Jbnado/upwatch/internal/store"
 )
@@ -88,7 +89,7 @@ func (a *API) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	if a.metricsToken != "" {
 		segredo, ok := bearerToken(r)
 		if !ok || !subtleEqual(segredo, a.metricsToken) {
-			a.audit(r, ageMetricsTokenErrado, "/metrics")
+			a.audit(r, audit.AçãoMetricsTokenErrado, "/metrics")
 			writeError(w, http.StatusUnauthorized, codeUnauthorized, "token de métricas inválido")
 			return
 		}

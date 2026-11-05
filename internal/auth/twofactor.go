@@ -98,39 +98,54 @@ func (s *Service) openChallenge(ctx context.Context, userID int64) (LoginResult,
 //
 // O código errado conta no mesmo bloqueio da senha errada. Sem isso, quem
 // tem a senha teria cinco palpites por desafio e desafios à vontade.
-func (s *Service) CompleteLogin(ctx context.Context, challenge, code string) (string, error) {
+// Completion é o desfecho de um segundo fator aceito.
+type Completion struct {
+	// Session é o segredo do cookie.
+	Session string
+
+	// Username é a conta que entrou. Vai no retorno porque quem registra
+	// o evento não tem de onde tirá-la: a sessão só passa a existir neste
+	// retorno, então não há conta no contexto da requisição.
+	Username string
+
+	// UsedRecoveryCode diz que o código veio da lista de recuperação, e
+	// não do aplicativo autenticador — o segundo fator foi contornado.
+	UsedRecoveryCode bool
+}
+
+func (s *Service) CompleteLogin(ctx context.Context, challenge, code string) (Completion, error) {
 	if challenge == "" {
-		return "", ErrChallengeInvalid
+		return Completion{}, ErrChallengeInvalid
 	}
 	hash := domain.HashToken(challenge)
 
 	c, err := s.store.TwoFactor().AttemptChallenge(ctx, hash, s.clock.Now(), MaxChallengeAttempts)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return "", ErrChallengeInvalid
+			return Completion{}, ErrChallengeInvalid
 		}
-		return "", err
+		return Completion{}, err
 	}
 	u, err := s.store.Users().Get(ctx, c.UserID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return "", ErrChallengeInvalid
+			return Completion{}, ErrChallengeInvalid
 		}
-		return "", err
+		return Completion{}, err
 	}
 	att, err := s.attempts.reserve(u.Username)
 	if err != nil {
-		return "", err
+		return Completion{}, err
 	}
 	defer att.release()
 
-	ok, err := s.checkSecondFactor(ctx, u.ID, code)
+	usada, err := s.checkSecondFactor(ctx, u.ID, code)
 	if err != nil {
-		return "", err
+		return Completion{}, err
 	}
-	if !ok {
+	if !usada.ok() {
 		att.fail()
-		return "", &InvalidCodeError{Username: u.Username}
+		return Completion{}, &InvalidCodeError{Username: u.Username}
 	}
 
 	// Consumir depois de conferir, e exigir que o consumo aconteça: dois
@@ -138,12 +153,20 @@ func (s *Service) CompleteLogin(ctx context.Context, challenge, code string) (st
 	// com o mesmo desafio.
 	if err := s.store.TwoFactor().ConsumeChallenge(ctx, hash); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return "", ErrChallengeInvalid
+			return Completion{}, ErrChallengeInvalid
 		}
-		return "", err
+		return Completion{}, err
 	}
 	att.succeed()
-	return s.openSession(ctx, u.ID)
+	session, err := s.openSession(ctx, u.ID)
+	if err != nil {
+		return Completion{}, err
+	}
+	return Completion{
+		Session:          session,
+		Username:         u.Username,
+		UsedRecoveryCode: usada == provaRecuperação,
+	}, nil
 }
 
 // InvalidCodeError é o código errado, sabendo de qual conta era o
@@ -163,38 +186,66 @@ func (e *InvalidCodeError) Error() string { return ErrInvalidCode.Error() }
 
 func (e *InvalidCodeError) Is(target error) bool { return target == ErrInvalidCode }
 
-// checkSecondFactor confere um código TOTP ou de recuperação, gastando-o.
+// checkSecondFactor confere um código TOTP ou de recuperação, gastando-o,
+// e diz qual dos dois passou.
 //
 // Seis dígitos é TOTP; qualquer outra coisa é tentada como código de
 // recuperação. Os dois formatos não se confundem, então a pessoa não
-// precisa dizer qual digitou.
-func (s *Service) checkSecondFactor(ctx context.Context, userID int64, code string) (bool, error) {
+// precisa dizer qual digitou. Quem chama não repete essa decisão: ela
+// mudaria aqui e continuaria errada do outro lado.
+// prova diz qual segundo fator o código passou.
+//
+// Um tipo em vez de dois booleanos porque "recusado, mas de
+// recuperação" não existe: o par deixaria essa combinação
+// representável, e é dela que sairia uma linha de auditoria dizendo que
+// alguém entrou quando ninguém entrou.
+type prova int
+
+const (
+	// provaNenhuma é o código recusado.
+	provaNenhuma prova = iota
+	provaTOTP
+	provaRecuperação
+)
+
+// ok informa se o código passou.
+func (p prova) ok() bool { return p != provaNenhuma }
+
+func (s *Service) checkSecondFactor(ctx context.Context, userID int64, code string) (prova, error) {
 	f, err := s.store.TwoFactor().Get(ctx, userID)
 	if errors.Is(err, store.ErrNotFound) {
-		return false, nil
+		return provaNenhuma, nil
 	}
 	if err != nil {
-		return false, err
+		return provaNenhuma, err
 	}
 	if !f.Enabled {
-		return false, nil
+		return provaNenhuma, nil
 	}
 
 	if totp.LooksLikeCode(code) {
 		step, ok := totp.Verify(f.Secret, code, s.clock.Now(), f.LastStep)
 		if !ok {
-			return false, nil
+			return provaNenhuma, nil
 		}
 		// A gravação do passo é que decide: entre a leitura acima e aqui,
 		// outro pedido pode ter usado o mesmo código.
-		return s.store.TwoFactor().AdvanceStep(ctx, userID, step)
+		gravou, err := s.store.TwoFactor().AdvanceStep(ctx, userID, step)
+		if err != nil || !gravou {
+			return provaNenhuma, err
+		}
+		return provaTOTP, nil
 	}
 
 	normalized := normalizeRecoveryCode(code)
 	if normalized == "" {
-		return false, nil
+		return provaNenhuma, nil
 	}
-	return s.store.TwoFactor().UseRecoveryCode(ctx, userID, domain.HashToken(normalized), s.clock.Now().UTC())
+	gastou, err := s.store.TwoFactor().UseRecoveryCode(ctx, userID, domain.HashToken(normalized), s.clock.Now().UTC())
+	if err != nil || !gastou {
+		return provaNenhuma, err
+	}
+	return provaRecuperação, nil
 }
 
 // ---------- cadastro ----------
@@ -391,11 +442,11 @@ func (s *Service) proveAccount(ctx context.Context, userID int64, password, code
 		att.fail()
 		return ErrInvalidCredentials
 	}
-	ok, err := s.checkSecondFactor(ctx, userID, code)
+	usada, err := s.checkSecondFactor(ctx, userID, code)
 	if err != nil {
 		return err
 	}
-	if !ok {
+	if !usada.ok() {
 		att.fail()
 		return ErrInvalidCode
 	}

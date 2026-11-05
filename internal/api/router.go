@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/Jbnado/upwatch/internal/audit"
 	"github.com/Jbnado/upwatch/internal/auth"
 	"github.com/Jbnado/upwatch/internal/checker"
 	"github.com/Jbnado/upwatch/internal/clock"
@@ -211,7 +212,7 @@ func New(opts Options) http.Handler {
 	// para o limitador seguir testável sozinho.
 	for _, l := range []*rateLimiter{a.pushLimit, a.setupLimit, a.loginLimit} {
 		l.onBlock = func(r *http.Request) {
-			a.audit(r, ageLimiteBloqueio, r.URL.Path)
+			a.audit(r, audit.AçãoLimiteBloqueio, r.URL.Path)
 		}
 	}
 	return a.routes()

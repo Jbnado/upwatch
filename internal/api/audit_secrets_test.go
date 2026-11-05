@@ -73,6 +73,19 @@ func TestAuditNeverLogsSecrets(t *testing.T) {
 	assertStatus(t, resp, http.StatusOK)
 	s.cookie = sessionCookie(resp)
 
+	// Entrar com código de recuperação, que é o único segredo que a pessoa
+	// digita de um papel e o único que produz linha de login.
+	resp = s.do(t, http.MethodPost, "/api/v1/auth/login", map[string]any{
+		"username": "admin", "password": senhaInicial,
+	})
+	assertStatus(t, resp, http.StatusOK)
+	desafio = decode[map[string]any](t, resp)["challenge"].(string)
+	resp = s.do(t, http.MethodPost, "/api/v1/auth/login/2fa", map[string]any{
+		"challenge": desafio, "code": recuperação[0],
+	})
+	assertStatus(t, resp, http.StatusOK)
+	s.cookie = sessionCookie(resp)
+
 	// Token de API: o segredo só aparece nesta resposta.
 	resp = s.do(t, http.MethodPost, "/api/v1/auth/tokens", map[string]any{"name": "token-do-ci"})
 	assertStatus(t, resp, http.StatusCreated)
