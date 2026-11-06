@@ -60,24 +60,71 @@ func Destinations(m domain.Monitor) ([]string, error) {
 	}
 }
 
-// sharedAddressSpace é o 100.64.0.0/10 da RFC 6598. Não é privado pela
-// definição do Go, mas é rede de provedor, e é onde mora o serviço de
-// metadados de algumas nuvens (100.100.100.200).
-var sharedAddressSpace = netip.MustParsePrefix("100.64.0.0/10")
+// internalPrefixes são as faixas que, além das que netip já classifica
+// (loopback, privada, enlace local, multicast), chegam à rede de dentro
+// do servidor ou não deveriam sair dele.
+var internalPrefixes = []netip.Prefix{
+	// 100.64.0.0/10, RFC 6598. Não é privado pela definição do Go, mas é
+	// rede de provedor, e é onde mora o serviço de metadados de algumas
+	// nuvens (100.100.100.200).
+	netip.MustParsePrefix("100.64.0.0/10"),
+	// 0.0.0.0/8: em Linux, conectar a ele chega à própria máquina.
+	netip.MustParsePrefix("0.0.0.0/8"),
+	// 192.0.0.0/24, atribuições de protocolo da IANA: é onde ficam o
+	// tradutor de NAT64 local e o DS-Lite, que levam para dentro.
+	netip.MustParsePrefix("192.0.0.0/24"),
+	// 198.18.0.0/15 é de teste de equipamento de rede, e em muita rede
+	// corporativa é usado como privado.
+	netip.MustParsePrefix("198.18.0.0/15"),
+	// 240.0.0.0/4 é reservado; inclui 255.255.255.255, o broadcast da
+	// rede local.
+	netip.MustParsePrefix("240.0.0.0/4"),
+	// fec0::/10, site-local: obsoleto, mas ainda roteado como rede
+	// interna onde foi configurado.
+	netip.MustParsePrefix("fec0::/10"),
+}
 
-// thisNetwork é o 0.0.0.0/8: em Linux, conectar a ele chega à própria
-// máquina.
-var thisNetwork = netip.MustParsePrefix("0.0.0.0/8")
+// embeddedIPv4Prefixes são as faixas IPv6 que carregam um IPv4 dentro do
+// endereço, e que um tradutor no caminho converte de volta nele: NAT64
+// (64:ff9b::/96 e 64:ff9b:1::/48), 6to4 (2002::/16), IPv4-compatível
+// (::/96) e SIIT (::ffff:0:0:0/96). Num servidor atrás de NAT64,
+// [64:ff9b::a00:5] é 10.0.0.5.
+//
+// Recusadas por inteiro, sem extrair o IPv4 de dentro: cada formato põe o
+// IPv4 num lugar, um tradutor pode usar prefixo próprio, e errar a
+// extração abriria a rede interna. Um site público alcançável só por
+// essas faixas não existe na prática; quem tem NAT64 resolve o nome para
+// o IPv4 e para o IPv6 nativo do destino.
+var embeddedIPv4Prefixes = []netip.Prefix{
+	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("2002::/16"),
+	netip.MustParsePrefix("::/96"),
+	netip.MustParsePrefix("::ffff:0:0:0/96"),
+}
 
 // InternalAddr informa se o endereço, alcançado a partir do servidor, é a
 // rede de dentro dele: a própria máquina (loopback e não especificado), a
 // rede privada (RFC 1918 e ULA), o enlace local — onde fica o serviço de
-// metadados da nuvem, que entrega credenciais a quem pergunta — e o espaço
-// compartilhado de provedor.
+// metadados da nuvem, que entrega credenciais a quem pergunta —, o espaço
+// compartilhado de provedor, as faixas reservadas e os endereços IPv6
+// que embutem um IPv4.
 func InternalAddr(a netip.Addr) bool {
 	a = a.Unmap()
-	return a.IsLoopback() || a.IsUnspecified() || a.IsPrivate() ||
+	if a.IsLoopback() || a.IsUnspecified() || a.IsPrivate() ||
 		a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() ||
-		a.IsInterfaceLocalMulticast() || a.IsMulticast() ||
-		sharedAddressSpace.Contains(a) || thisNetwork.Contains(a)
+		a.IsInterfaceLocalMulticast() || a.IsMulticast() {
+		return true
+	}
+	for _, p := range internalPrefixes {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	for _, p := range embeddedIPv4Prefixes {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
 }

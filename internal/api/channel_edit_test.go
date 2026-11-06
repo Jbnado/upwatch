@@ -155,3 +155,31 @@ func TestChannelUpdateKeepsTheLinks(t *testing.T) {
 		t.Errorf("the monitor lost the channel after the update: %s", corpo)
 	}
 }
+
+// Cabeçalho próprio por http atravessaria a rede em claro. A recusa vale
+// ao criar e ao editar; o canal já gravado assim continua entregando.
+func TestChannelWithHeadersOverPlainHTTPIsRefused(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+
+	inseguro := map[string]any{
+		"url":     "http://automacao.exemplo/hook",
+		"headers": map[string]string{"X-Api-Key": "segredo"},
+	}
+	resp := s.do(t, http.MethodPost, "/api/v1/channels", map[string]any{
+		"name": "inseguro", "type": "webhook", "config": inseguro,
+	})
+	assertStatus(t, resp, http.StatusBadRequest)
+	if corpo := readBody(t, resp); !strings.Contains(corpo, "https") {
+		t.Errorf("refusal = %s, want it to ask for https", corpo)
+	}
+
+	id := s.criarCanal(t, "webhook", map[string]any{
+		"url":     "https://automacao.exemplo/hook",
+		"headers": map[string]string{"X-Api-Key": "segredo"},
+	})
+	resp = s.do(t, http.MethodPut, fmt.Sprintf("/api/v1/channels/%d", id), map[string]any{
+		"name": "inseguro", "type": "webhook", "config": inseguro,
+	})
+	assertStatus(t, resp, http.StatusBadRequest)
+}

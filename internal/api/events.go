@@ -49,6 +49,10 @@ type event struct {
 	// trata não pode vazar para todo mundo.
 	monitor  *domain.Monitor
 	previous *domain.Monitor
+	// parent é o pai do monitor, quando há um e foi lido: decide se o
+	// parent_id vai para a conta (ver parentVisibility). Sem ele, o id
+	// não vai para quem tem escopo.
+	parent *domain.Monitor
 }
 
 // visibleTo devolve o que a conta pode receber deste evento.
@@ -61,6 +65,11 @@ func (e event) visibleTo(acc domain.Access) (event, bool) {
 		return e, acc.All()
 	}
 	if e.monitor != nil && acc.Monitor(*e.monitor) {
+		if resp, ok := e.Data.(monitorResponse); ok && resp.ParentID != nil &&
+			!acc.All() && (e.parent == nil || !acc.Monitor(*e.parent)) {
+			resp.ParentID = nil
+			e.Data = resp
+		}
 		return e, true
 	}
 	if e.previous != nil && acc.Monitor(*e.previous) {

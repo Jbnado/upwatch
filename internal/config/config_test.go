@@ -274,6 +274,27 @@ func TestRestrictPrivateTargetsIsOnByDefault(t *testing.T) {
 	}
 }
 
+// Exigir o segundo fator vem desligado: ligado por padrão, a atualização
+// prenderia todo administrador no cadastro no primeiro login seguinte.
+func TestRequire2FAAdminIsOffByDefault(t *testing.T) {
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Require2FAAdmin {
+		t.Error("Require2FAAdmin = true sem configuração, want false")
+	}
+
+	t.Setenv("UPWATCH_REQUIRE_2FA_ADMIN", "true")
+	cfg, err = config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Require2FAAdmin {
+		t.Error("Require2FAAdmin = false com a variável em true")
+	}
+}
+
 // O token da configuração inicial vem do ambiente ou de arquivo apontado
 // por ele, nunca do YAML: o arquivo de configuração costuma ir para o
 // controle de versão, e o token publicado ali abriria a instância a quem
@@ -312,5 +333,50 @@ func TestReminderIntervalIsOptIn(t *testing.T) {
 	t.Setenv("UPWATCH_REMINDER_INTERVAL", "1m")
 	if _, err := config.Load(""); err == nil {
 		t.Error("intervalo de 1 minuto aceito")
+	}
+}
+
+// Proxies confiáveis aceitam CIDR e endereço solto, que vira o bloco só
+// dele.
+func TestTrustedProxiesComeAsPrefixes(t *testing.T) {
+	t.Setenv("UPWATCH_TRUSTED_PROXIES", "10.0.0.0/8, 192.168.1.10, fd00::/8")
+
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("Load returned unexpected error: %v", err)
+	}
+	got, err := cfg.TrustedProxyPrefixes()
+	if err != nil {
+		t.Fatalf("TrustedProxyPrefixes returned unexpected error: %v", err)
+	}
+
+	want := []string{"10.0.0.0/8", "192.168.1.10/32", "fd00::/8"}
+	if len(got) != len(want) {
+		t.Fatalf("prefixes = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i].String() != want[i] {
+			t.Errorf("prefix %d = %s, want %s", i, got[i], want[i])
+		}
+	}
+}
+
+// Sem a opção, nenhum proxy é confiável: o cabeçalho nunca é lido.
+func TestTrustedProxiesDefaultToNone(t *testing.T) {
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("Load returned unexpected error: %v", err)
+	}
+	got, err := cfg.TrustedProxyPrefixes()
+	if err != nil || len(got) != 0 {
+		t.Errorf("TrustedProxyPrefixes = %v, %v, want vazio", got, err)
+	}
+}
+
+func TestInvalidTrustedProxyIsRejected(t *testing.T) {
+	t.Setenv("UPWATCH_TRUSTED_PROXIES", "10.0.0.0/8, proxy.local")
+
+	if _, err := config.Load(""); err == nil {
+		t.Fatal("Load with an invalid proxy returned nil error, want an error")
 	}
 }

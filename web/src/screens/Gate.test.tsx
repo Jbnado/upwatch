@@ -10,7 +10,7 @@ import { Gate } from "./Gate";
  */
 
 vi.mock("../api/client", () => ({
-  api: { createAdmin: vi.fn(), login: vi.fn() },
+  api: { createAdmin: vi.fn(), login: vi.fn(), loginSecondFactor: vi.fn() },
 }));
 
 const { api } = await import("../api/client");
@@ -18,6 +18,7 @@ const { api } = await import("../api/client");
 beforeEach(() => {
   vi.mocked(api.createAdmin).mockReset();
   vi.mocked(api.login).mockReset();
+  vi.mocked(api.loginSecondFactor).mockReset();
 });
 
 function preencher(token: string) {
@@ -73,5 +74,93 @@ describe("Gate", () => {
     render(<Gate mode="login" onDone={() => {}} />);
 
     expect(screen.queryByLabelText(/token de configuração/)).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * O segundo passo do login, para conta com verificação em duas etapas.
+ *
+ * A senha certa não termina o login: a tela pede o código e só então
+ * avisa que entrou. Sem o celular, o mesmo campo aceita um código de
+ * recuperação; e um desafio vencido devolve à senha, porque sem ele o
+ * código não serve para nada.
+ */
+describe("Gate, segundo passo", () => {
+  function entrar() {
+    fireEvent.change(screen.getByLabelText(/usuário/), { target: { value: "admin" } });
+    fireEvent.change(screen.getByLabelText(/^senha/), { target: { value: "uma-senha-bem-longa" } });
+    fireEvent.click(screen.getByRole("button", { name: "Entrar" }));
+  }
+
+  beforeEach(() => {
+    vi.mocked(api.login).mockResolvedValue({
+      status: "two_factor_required",
+      challenge: "desafio-1",
+      expires_at: "",
+    });
+  });
+
+  it("pede o código depois da senha e só então entra", async () => {
+    vi.mocked(api.loginSecondFactor).mockResolvedValue({ status: "ok" });
+    const onDone = vi.fn();
+    render(<Gate mode="login" onDone={onDone} />);
+
+    entrar();
+    const campo = await screen.findByLabelText(/^código$/);
+    expect(onDone).not.toHaveBeenCalled();
+    expect(campo).toHaveAttribute("inputmode", "numeric");
+    expect(campo).toHaveAttribute("autocomplete", "one-time-code");
+
+    fireEvent.change(campo, { target: { value: " 123456 " } });
+    fireEvent.click(screen.getByRole("button", { name: "Verificar" }));
+
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    expect(api.loginSecondFactor).toHaveBeenCalledWith("desafio-1", "123456");
+  });
+
+  it("aceita código de recuperação no mesmo campo", async () => {
+    vi.mocked(api.loginSecondFactor).mockResolvedValue({ status: "ok" });
+    const onDone = vi.fn();
+    render(<Gate mode="login" onDone={onDone} />);
+
+    entrar();
+    fireEvent.click(await screen.findByRole("button", { name: "usar código de recuperação" }));
+    const campo = screen.getByLabelText(/código de recuperação/);
+    expect(campo).toHaveAttribute("inputmode", "text");
+
+    fireEvent.change(campo, { target: { value: "abcd-efgh-ijkm-npqr" } });
+    fireEvent.click(screen.getByRole("button", { name: "Verificar" }));
+
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    expect(api.loginSecondFactor).toHaveBeenCalledWith("desafio-1", "abcd-efgh-ijkm-npqr");
+  });
+
+  it("mostra o código recusado e deixa tentar de novo", async () => {
+    vi.mocked(api.loginSecondFactor).mockRejectedValue(
+      new ApiError(401, "unauthorized", "código inválido", "code"),
+    );
+    render(<Gate mode="login" onDone={() => {}} />);
+
+    entrar();
+    fireEvent.change(await screen.findByLabelText(/^código$/), { target: { value: "000000" } });
+    fireEvent.click(screen.getByRole("button", { name: "Verificar" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("código inválido");
+    expect(screen.getByLabelText(/^código$/)).toHaveValue("");
+  });
+
+  it("volta para a senha quando o desafio expira", async () => {
+    vi.mocked(api.loginSecondFactor).mockRejectedValue(
+      new ApiError(401, "unauthorized", "a verificação expirou; entre de novo", "challenge"),
+    );
+    render(<Gate mode="login" onDone={() => {}} />);
+
+    entrar();
+    fireEvent.change(await screen.findByLabelText(/^código$/), { target: { value: "123456" } });
+    fireEvent.click(screen.getByRole("button", { name: "Verificar" }));
+
+    expect(await screen.findByRole("button", { name: "Entrar" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("a verificação expirou");
+    expect(screen.getByLabelText(/^senha/)).toHaveValue("");
   });
 });

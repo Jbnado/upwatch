@@ -40,7 +40,7 @@ func TestEveryAPIRouteReachesTheAPI(t *testing.T) {
 }
 
 func TestUnknownPathGoesToTheInterface(t *testing.T) {
-	mux := server.New(marcador("api"), marcador("interface"))
+	mux := server.New(marcador("api"), marcador("interface"), server.Options{})
 
 	// Qualquer caminho desconhecido é da aplicação de página única: ela
 	// precisa devolver o HTML para o navegador resolver a rota.
@@ -54,7 +54,7 @@ func TestUnknownPathGoesToTheInterface(t *testing.T) {
 }
 
 func TestInfrastructureEndpointsStayAtTheRoot(t *testing.T) {
-	mux := server.New(marcador("api"), marcador("interface"))
+	mux := server.New(marcador("api"), marcador("interface"), server.Options{})
 
 	// Orquestrador consulta /healthz e Prometheus raspa /metrics; nenhum
 	// dos dois aceita um prefixo inventado.
@@ -68,7 +68,7 @@ func TestInfrastructureEndpointsStayAtTheRoot(t *testing.T) {
 }
 
 func TestSimilarPathsDoNotLeakToTheAPI(t *testing.T) {
-	mux := server.New(marcador("api"), marcador("interface"))
+	mux := server.New(marcador("api"), marcador("interface"), server.Options{})
 
 	// "/metricas" e "/healthzzz" são caminhos da interface, não da API:
 	// comparar por prefixo solto os capturaria por engano.

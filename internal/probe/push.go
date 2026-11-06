@@ -3,6 +3,7 @@ package probe
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/Jbnado/upwatch/internal/checker"
@@ -81,8 +83,9 @@ func (e *SendError) Error() string { return e.Msg }
 
 // Sender entrega o sinal ao central, uma tentativa por chamada.
 type Sender struct {
-	client *http.Client
-	agent  string
+	agent     string
+	newClient func() *http.Client
+	client    atomic.Pointer[http.Client]
 }
 
 // sendTimeout limita uma entrega. O sinal tem poucas dezenas de bytes; o
@@ -90,23 +93,48 @@ type Sender struct {
 // que esperar.
 const sendTimeout = 15 * time.Second
 
+// O ping vai depois de 30s sem nada chegar pela conexão e, sem resposta
+// em 10s, ela é descartada: menos que o intervalo de 60s das verificações.
+const (
+	http2PingAfter   = 30 * time.Second
+	http2PingTimeout = 10 * time.Second
+)
+
 // NewSender cria o cliente de push.
 //
 // Respeita HTTPS_PROXY, que é como muita VM corporativa sai para a
 // internet, e não segue redirecionamento: seguir mandaria o token a outro
 // host, e o POST viraria GET sem corpo, que o central lê como "up".
 func NewSender(version string) *Sender {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	return &Sender{
+	return newSender(version, nil, sendTimeout)
+}
+
+func newSender(version string, tlsConfig *tls.Config, timeout time.Duration) *Sender {
+	s := &Sender{
 		agent: "upwatch-probe/" + version,
-		client: &http.Client{
-			Transport: transport,
-			Timeout:   sendTimeout,
-			CheckRedirect: func(*http.Request, []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
+		newClient: func() *http.Client {
+			transport := http.DefaultTransport.(*http.Transport).Clone()
+			if tlsConfig != nil {
+				transport.TLSClientConfig = tlsConfig
+			}
+			// Uma conexão HTTP/2 que a NAT ou o firewall esquece no caminho
+			// não fecha nem dá erro: sem o ping, o pool a reusa e todo
+			// envio estoura o tempo, com a rede de pé.
+			transport.HTTP2 = &http.HTTP2Config{
+				SendPingTimeout: http2PingAfter,
+				PingTimeout:     http2PingTimeout,
+			}
+			return &http.Client{
+				Transport: transport,
+				Timeout:   timeout,
+				CheckRedirect: func(*http.Request, []*http.Request) error {
+					return http.ErrUseLastResponse
+				},
+			}
 		},
 	}
+	s.client.Store(s.newClient())
+	return s
 }
 
 // Send faz uma tentativa de entrega.
@@ -118,8 +146,13 @@ func (s *Sender) Send(ctx context.Context, pushURL string, sig Signal) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", s.agent)
 
-	resp, err := s.client.Do(req)
+	resp, err := s.client.Load().Do(req)
 	if err != nil {
+		// A conexão que estourou o tempo pode estar morta sem saber, e o
+		// HTTP/2 segue contando a requisição cancelada nela, então fechar
+		// as ociosas não a solta. Um pool novo garante que a próxima
+		// tentativa abra outra conexão.
+		s.client.Swap(s.newClient()).CloseIdleConnections()
 		return &SendError{Retryable: true, Msg: "falha de rede: " + withoutURL(err)}
 	}
 	defer resp.Body.Close()

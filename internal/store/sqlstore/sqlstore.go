@@ -265,6 +265,9 @@ func (s *Store) Sessions() store.SessionRepo { return &sessionRepo{db: s.db} }
 // Tokens devolve o repositório de credenciais programáticas.
 func (s *Store) Tokens() store.TokenRepo { return &tokenRepo{db: s.db} }
 
+// TwoFactor devolve o repositório do segundo fator.
+func (s *Store) TwoFactor() store.TwoFactorRepo { return &twoFactorRepo{db: s.db} }
+
 // States devolve o repositório do estado confirmado dos monitores.
 func (s *Store) States() store.StateRepo { return &stateRepo{db: s.db} }
 

@@ -45,12 +45,12 @@ func Owns(path string) bool {
 // A interface fica no fim porque ela é a única que atende caminho
 // desconhecido: uma rota de aplicação de página única precisa devolver o
 // HTML para qualquer endereço, e por isso não pode julgar o que é dela.
-func New(apiHandler, spa http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func New(apiHandler, spa http.Handler, opts Options) http.Handler {
+	return securityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if Owns(r.URL.Path) {
 			apiHandler.ServeHTTP(w, r)
 			return
 		}
 		spa.ServeHTTP(w, r)
-	})
+	}), opts)
 }

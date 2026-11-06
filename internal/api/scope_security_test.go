@@ -45,6 +45,8 @@ type cenarioEscopo struct {
 
 	contaTotal, contaRestrita int64
 	pagina, relato            int64
+	// relatoFora só cita monitor de fora do escopo.
+	relatoFora int64
 	// manutencao cobre o que está dentro e o que está fora.
 	manutencao int64
 	// canal só avisa sobre o que está fora do escopo; canalDentro avisa
@@ -172,6 +174,14 @@ func novoCenarioEscopo(t *testing.T) *cenarioEscopo {
 	})
 	assertStatus(t, resp, http.StatusCreated)
 	c.relato = decode[idResp](t, resp).ID
+	// Só de fora: nem o título nem a linha do tempo podem aparecer para
+	// quem tem escopo.
+	resp = s.do(t, http.MethodPost, "/api/v1/announcements", map[string]any{
+		"title": "mensagem-secreta", "impact": "major", "phase": "investigating",
+		"components": []int64{c.foraAgrupado}, "body": "mensagem-secreta",
+	})
+	assertStatus(t, resp, http.StatusCreated)
+	c.relatoFora = decode[idResp](t, resp).ID
 
 	janela := func(titulo string, monitores, grupos []int64) int64 {
 		resp := s.do(t, http.MethodPost, "/api/v1/maintenance-windows", map[string]any{
@@ -252,6 +262,7 @@ var rotas = map[string]classe{
 	"GET /api/v1/setup":                                       publica,
 	"POST /api/v1/setup":                                      publica,
 	"POST /api/v1/auth/login":                                 publica,
+	"POST /api/v1/auth/login/2fa":                             publica,
 	"GET /api/v1/push/{token}":                                publica,
 	"POST /api/v1/push/{token}":                               publica,
 	"GET /api/v1/public":                                      publica,
@@ -261,6 +272,11 @@ var rotas = map[string]classe{
 	"POST /api/v1/auth/logout":                                semRecurso,
 	"GET /api/v1/auth/me":                                     semRecurso,
 	"POST /api/v1/auth/password":                              semRecurso,
+	"GET /api/v1/auth/2fa":                                    semRecurso,
+	"POST /api/v1/auth/2fa/setup":                             semRecurso,
+	"POST /api/v1/auth/2fa/enable":                            semRecurso,
+	"POST /api/v1/auth/2fa/disable":                           semRecurso,
+	"POST /api/v1/auth/2fa/recovery-codes":                    semRecurso,
 	"GET /api/v1/auth/tokens":                                 semRecurso,
 	"POST /api/v1/auth/tokens":                                semRecurso,
 	"DELETE /api/v1/auth/tokens/{id}":                         semRecurso,
@@ -296,6 +312,7 @@ var rotas = map[string]classe{
 	"GET /api/v1/groups/{id}/channels":                        porGrupo,
 	"PUT /api/v1/users/{id}":                                  porConta,
 	"DELETE /api/v1/users/{id}":                               porConta,
+	"DELETE /api/v1/users/{id}/2fa":                           porConta,
 	"POST /api/v1/monitors":                                   criacao,
 	"POST /api/v1/groups":                                     criacao,
 	"POST /api/v1/users":                                      criacao,
@@ -534,6 +551,40 @@ func TestScopedListingsDoNotLeak(t *testing.T) {
 				}
 			})
 		}
+	}
+
+	// O relato só sobre o que está fora responde como o inexistente,
+	// como a janela de manutenção só de fora.
+	for conta, cookie := range map[string]*http.Cookie{"observador": c.retViewer, "admin": c.retAdmin} {
+		t.Run("relato só de fora "+conta, func(t *testing.T) {
+			resp := c.s.como(cookie).do(t, http.MethodGet, "/api/v1/announcements/"+itoa(c.relatoFora), nil)
+			assertStatus(t, resp, http.StatusNotFound)
+			if corpo := readBody(t, resp); strings.Contains(corpo, "mensagem-secreta") {
+				t.Fatalf("o 404 vazou o relato: %s", corpo)
+			}
+		})
+	}
+}
+
+// O relato global é da plataforma inteira e continua aparecendo para
+// quem tem escopo; o que cita algo de dentro também, só com o que é de
+// dentro.
+func TestScopedAnnouncementsKeepGlobalAndInScope(t *testing.T) {
+	c := novoCenarioEscopo(t)
+	resp := c.s.do(t, http.MethodPost, "/api/v1/announcements", map[string]any{
+		"title": "manutencao-geral", "impact": "minor", "phase": "investigating", "global": true,
+	})
+	assertStatus(t, resp, http.StatusCreated)
+	global := decode[idResp](t, resp).ID
+
+	resp = c.s.como(c.retViewer).do(t, http.MethodGet, "/api/v1/announcements", nil)
+	assertStatus(t, resp, http.StatusOK)
+	corpo := readBody(t, resp)
+	if !strings.Contains(corpo, "manutencao-geral") || !strings.Contains(corpo, `"id":`+itoa(c.relato)) {
+		t.Fatalf("a listagem perdeu o relato global ou o de dentro: %s", corpo)
+	}
+	for _, id := range []int64{global, c.relato} {
+		assertStatus(t, c.s.como(c.retViewer).do(t, http.MethodGet, "/api/v1/announcements/"+itoa(id), nil), http.StatusOK)
 	}
 }
 

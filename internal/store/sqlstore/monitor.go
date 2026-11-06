@@ -276,8 +276,12 @@ func (r *monitorRepo) List(ctx context.Context, f store.MonitorFilter) (store.Pa
 		// ali "%" e "_" são curingas. Sem isto, filtrar por "a_b" traria
 		// também "axb", e por "100%" traria tudo que começa com 100 — a
 		// listagem simplesmente vem demais, sem erro nenhum aparecer.
+		needle, err := tagNeedle(f.Tag)
+		if err != nil {
+			return store.Page[domain.Monitor]{}, err
+		}
 		conds = append(conds, `tags LIKE ? ESCAPE '\'`)
-		args = append(args, "%\""+escapeLike(f.Tag)+"\"%")
+		args = append(args, needle)
 	}
 	if cond, condArgs := groupCondition("group_id", f.Groups); cond != "" {
 		conds = append(conds, cond)
@@ -460,9 +464,25 @@ func isForeignKeyViolation(err error) bool {
 // cláusula ESCAPE tem a mesma sintaxe. A barra invertida vem primeiro,
 // senão o escape das outras seria escapado de novo.
 func escapeLike(v string) string {
-	v = strings.ReplaceAll(v, `\`, `\`)
+	v = strings.ReplaceAll(v, `\`, `\\`)
 	v = strings.ReplaceAll(v, "%", `\%`)
 	return strings.ReplaceAll(v, "_", `\_`)
+}
+
+// tagNeedle monta o trecho que a etiqueta ocupa dentro do array JSON.
+//
+// A etiqueta é serializada antes de ir para o padrão porque é assim que
+// ela está no banco: a coluna guarda o JSON cru, onde uma barra invertida
+// aparece dobrada e uma aspas aparece escapada. Montar o padrão com a
+// string como veio na requisição faria o filtro procurar uma forma que
+// nunca foi gravada. As aspas em volta continuam servindo para casar o
+// valor inteiro, e não um pedaço de outra etiqueta.
+func tagNeedle(tag string) (string, error) {
+	b, err := json.Marshal(tag)
+	if err != nil {
+		return "", fmt.Errorf("sqlstore: serializando etiqueta: %w", err)
+	}
+	return "%" + escapeLike(string(b)) + "%", nil
 }
 
 // SetParent põe vários monitores sob o mesmo pai numa transação.

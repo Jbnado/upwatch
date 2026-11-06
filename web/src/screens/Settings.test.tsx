@@ -30,6 +30,7 @@ function conta(role: User["role"], all_groups: boolean): User {
     username: "ana",
     role,
     scope: { all_groups, group_ids: all_groups ? [] : [4] },
+    totp_enabled: false,
     created_at: "",
     updated_at: "",
   };
@@ -58,19 +59,26 @@ describe("Settings", () => {
       "Páginas de estado",
       "Tokens de API",
       "Senha",
+      "Verificação em duas etapas",
     ]);
   });
 
   it("reduz o menu da conta restrita", () => {
     render(<Settings eu={conta("admin", false)} section="grupos" onSignedOut={() => {}} />);
 
-    expect(itens()).toEqual(["Grupos", "Contas e acesso", "Tokens de API", "Senha"]);
+    expect(itens()).toEqual([
+      "Grupos",
+      "Contas e acesso",
+      "Tokens de API",
+      "Senha",
+      "Verificação em duas etapas",
+    ]);
   });
 
   it("deixa ao observador só a senha", () => {
     render(<Settings eu={conta("viewer", true)} onSignedOut={() => {}} />);
 
-    expect(itens()).toEqual(["Senha"]);
+    expect(itens()).toEqual(["Senha", "Verificação em duas etapas"]);
     expect(screen.getByRole("heading", { name: "Senha" })).toBeInTheDocument();
   });
 

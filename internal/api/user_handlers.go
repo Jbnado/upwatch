@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 
+	"github.com/Jbnado/upwatch/internal/audit"
 	"github.com/Jbnado/upwatch/internal/domain"
 )
 
@@ -71,6 +72,7 @@ func (a *API) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	a.audit(r, audit.AçãoUsuárioCriado, u.Username)
 	writeJSON(w, http.StatusCreated, u)
 }
 
@@ -115,6 +117,7 @@ func (a *API) handleUpdateUserRole(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	a.audit(r, audit.AçãoAcessoTrocado, u.Username)
 	writeJSON(w, http.StatusOK, u)
 }
 

@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Jbnado/upwatch/internal/domain"
 	"github.com/Jbnado/upwatch/internal/secretbox"
@@ -463,3 +464,124 @@ func TestForgetSecretsRecoversFromALostKey(t *testing.T) {
 		}
 	})
 }
+
+// enrollTOTP liga o segundo fator de uma conta nova e devolve o id dela.
+func enrollTOTP(t *testing.T, s *sqlstore.Store, secret string) int64 {
+	t.Helper()
+	ctx := context.Background()
+	u := domain.User{Username: "com-fator", Role: domain.RoleAdmin}
+	if err := u.SetPassword("uma-senha-bem-longa"); err != nil {
+		t.Fatalf("SetPassword returned unexpected error: %v", err)
+	}
+	if err := s.Users().Create(ctx, &u); err != nil {
+		t.Fatalf("Create returned unexpected error: %v", err)
+	}
+	if err := s.TwoFactor().SetPending(ctx, u.ID, secret, time.Now()); err != nil {
+		t.Fatalf("SetPending returned unexpected error: %v", err)
+	}
+	if err := s.TwoFactor().Enable(ctx, u.ID, 1, []string{"h"}, time.Now()); err != nil {
+		t.Fatalf("Enable returned unexpected error: %v", err)
+	}
+	return u.ID
+}
+
+// O segredo TOTP é credencial cifrada como as outras: a troca de chave o
+// recifra, e sem ele a troca deixaria a conta sem conseguir entrar.
+func TestRotateSecretKeyReciphersTOTP(t *testing.T) {
+	eachBackend(t, func(t *testing.T, b backend) {
+		oldKey, newerKey := newKey(t), newKey(t)
+		s := b.mustOpen(t, keysOf(oldKey))
+		id := enrollTOTP(t, s, "JBSWY3DPEHPK3PXP")
+
+		if err := s.RotateSecretKey(context.Background(), newerKey); err != nil {
+			t.Fatalf("RotateSecretKey returned unexpected error: %v", err)
+		}
+		_ = s.Close()
+
+		rotated := b.mustOpen(t, keysOf(newerKey))
+		got, err := rotated.TwoFactor().Get(context.Background(), id)
+		if err != nil || got.Secret != "JBSWY3DPEHPK3PXP" {
+			t.Errorf("segundo fator depois da troca = (%+v, %v), want o segredo de volta", got, err)
+		}
+	})
+}
+
+// Um banco só com segredo TOTP cifrado já exige a chave: sem ela, o
+// segredo seria ruído e a conta não entraria.
+func TestTOTPSecretMakesTheKeyRequired(t *testing.T) {
+	eachBackend(t, func(t *testing.T, b backend) {
+		s := b.mustOpen(t, keysOf(newKey(t)))
+		enrollTOTP(t, s, "JBSWY3DPEHPK3PXP")
+		// O sentinela também denunciaria o banco; tirá-lo deixa o segredo
+		// TOTP como único indício.
+		if _, err := s.DB().ExecContext(context.Background(), `DELETE FROM secret_key_check`); err != nil {
+			t.Fatalf("apagando o sentinela returned unexpected error: %v", err)
+		}
+		_ = s.Close()
+
+		if _, err := b.open(t, func(sealed bool) (*secretbox.Box, error) {
+			if !sealed {
+				t.Error("o banco com segredo TOTP cifrado foi tratado como sem nada cifrado")
+			}
+			return nil, secretbox.ErrKeyMissing
+		}); !errors.Is(err, secretbox.ErrKeyMissing) {
+			t.Errorf("error = %v, want ErrKeyMissing", err)
+		}
+	})
+}
+
+// Chave perdida leva o segundo fator junto: a conta volta a entrar só com
+// a senha, e o resto fica.
+func TestForgetSecretsDropsTOTP(t *testing.T) {
+	eachBackend(t, func(t *testing.T, b backend) {
+		ctx := context.Background()
+		lost := b.mustOpen(t, keysOf(newKey(t)))
+		id := enrollTOTP(t, lost, "JBSWY3DPEHPK3PXP")
+		if err := lost.Sessions().Create(ctx, domain.Session{
+			UserID: id, Hash: domain.HashToken(sessãoDeTeste),
+			ExpiresAt: time.Now().Add(time.Hour), CreatedAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("Create returned unexpected error: %v", err)
+		}
+		tok := domain.APIToken{UserID: id, Name: "ci", Hash: domain.HashToken(tokenDeTeste)}
+		if err := lost.Tokens().Create(ctx, &tok); err != nil {
+			t.Fatalf("Create returned unexpected error: %v", err)
+		}
+		_ = lost.Close()
+
+		n, err := sqlstore.ForgetSecrets(b.driver, b.dsn)
+		if err != nil {
+			t.Fatalf("ForgetSecrets returned unexpected error: %v", err)
+		}
+		if n != 1 {
+			t.Errorf("ForgetSecrets erased %d values, want 1", n)
+		}
+
+		s := b.mustOpen(t, keysOf(newKey(t)))
+		if _, err := s.TwoFactor().Get(ctx, id); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("segundo fator depois de esquecer error = %v, want ErrNotFound", err)
+		}
+		u, err := s.Users().Get(ctx, id)
+		if err != nil || u.TOTPEnabled {
+			t.Errorf("conta depois de esquecer = (%+v, %v), want mantida sem segundo fator", u, err)
+		}
+
+		// Desligar o segundo fator de todas as contas e deixar as
+		// credenciais de pé é a resposta ao incidente parecendo completa
+		// sem ser: quem estava com uma sessão ou um token continua dentro,
+		// agora sem o fator no caminho. E o token não vence.
+		if ss, err := s.Sessions().Get(ctx, domain.HashToken(sessãoDeTeste)); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("sessão depois de esquecer = (%+v, %v), want ErrNotFound", ss, err)
+		}
+		if tk, err := s.Tokens().GetByHash(ctx, domain.HashToken(tokenDeTeste)); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("token depois de esquecer = (%+v, %v), want ErrNotFound", tk, err)
+		}
+	})
+}
+
+// Credenciais do teste do forget-secrets, nomeadas para as asserções
+// poderem procurá-las depois de o comando rodar.
+const (
+	sessãoDeTeste = "sessao-de-teste-suficientemente-longa"
+	tokenDeTeste  = "token-de-teste-suficientemente-longo"
+)

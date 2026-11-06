@@ -15,3 +15,16 @@ func SetNetworkForTest(t testing.TB, internal func(netip.Addr) bool, r *net.Reso
 	isInternal, lookupResolver = internal, r
 	t.Cleanup(func() { isInternal, lookupResolver = oldInternal, oldResolver })
 }
+
+// SetSystemResolverForTest faz do servidor dado o resolvedor do sistema
+// do monitor DNS sem resolvedor próprio, enquanto o teste roda.
+func SetSystemResolverForTest(t testing.TB, addr string) {
+	t.Helper()
+	old := systemResolverAddr
+	systemResolverAddr = func() (string, error) { return addr, nil }
+	t.Cleanup(func() { systemResolverAddr = old })
+}
+
+// RefuseInternalForTest expõe o Control do dialer restrito, para conferir
+// a recusa de endereços que o teste não consegue discar de verdade.
+var RefuseInternalForTest = refuseInternal
