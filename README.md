@@ -260,7 +260,6 @@ configuração nenhuma e uma instalação séria versiona o YAML.
 | `UPWATCH_RETENTION_DAILY` | `17520h` | Retenção do agregado diário |
 | `UPWATCH_ROLLUP_INTERVAL` | `5m` | De quanto em quanto a agregação roda |
 | `UPWATCH_WORKERS` | `50` | Teto de verificações simultâneas |
-| `UPWATCH_PASSWORD_HASH_COST` | `12` | Custo do bcrypt das senhas. Maior encarece cada tentativa de quem vazou o banco, e cada login. Abaixo de 12 a partida é recusada |
 | `UPWATCH_SESSION_TTL` | `168h` | Validade da sessão da interface |
 | `UPWATCH_REMINDER_INTERVAL` | `0` | De quanto em quanto uma queda aberta e não reconhecida é relembrada, para monitor e grupo sem intervalo próprio; `0` desliga, e o mínimo é `5m` |
 | `UPWATCH_SECURE_COOKIES` | `false` | Marca o cookie como Secure e liga o HSTS; ligue ao servir por HTTPS |

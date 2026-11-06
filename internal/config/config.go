@@ -54,11 +54,6 @@ type Config struct {
 	// juntos abririam mil conexões e esgotariam os descritores do processo.
 	Workers int `yaml:"workers"`
 
-	// PasswordHashCost é o custo do bcrypt das senhas. Quanto maior, mais
-	// caro para quem vazou o banco tentar candidatas — e mais lento cada
-	// login. Abaixo do piso a partida é recusada.
-	PasswordHashCost int `yaml:"password_hash_cost"`
-
 	// RollupInterval é a frequência do ciclo de agregação e poda.
 	RollupInterval time.Duration `yaml:"rollup_interval"`
 
@@ -151,12 +146,11 @@ func Default() Config {
 			Hourly: rollup.DefaultRetention.Hourly,
 			Daily:  rollup.DefaultRetention.Daily,
 		},
-		Workers:          scheduler.DefaultWorkers,
-		PasswordHashCost: domain.MinPasswordHashCost,
-		RollupInterval:   rollup.DefaultInterval,
-		SentinelTargets:  sentinel.DefaultTargets,
-		SecureCookies:    false,
-		SessionTTL:       7 * 24 * time.Hour,
+		Workers:         scheduler.DefaultWorkers,
+		RollupInterval:  rollup.DefaultInterval,
+		SentinelTargets: sentinel.DefaultTargets,
+		SecureCookies:   false,
+		SessionTTL:      7 * 24 * time.Hour,
 
 		RestrictPrivateTargets: true,
 	}
@@ -240,9 +234,6 @@ func applyEnv(cfg *Config) error {
 	if err := num(&cfg.Workers, "WORKERS"); err != nil {
 		return err
 	}
-	if err := num(&cfg.PasswordHashCost, "PASSWORD_HASH_COST"); err != nil {
-		return err
-	}
 	if err := boolean(&cfg.SecureCookies, "SECURE_COOKIES"); err != nil {
 		return err
 	}
@@ -275,14 +266,6 @@ func (c Config) Validate() error {
 	}
 	if c.Workers <= 0 {
 		return fmt.Errorf("config: workers precisa ser positivo")
-	}
-	// Recusar na partida, e não baixar em silêncio para o piso: quem
-	// escreveu um número menor acha que configurou algo, e um custo de
-	// senha mais fraco do que o pedido é o tipo de coisa que ninguém
-	// descobre até o banco vazar.
-	if c.PasswordHashCost < domain.MinPasswordHashCost {
-		return fmt.Errorf("config: password_hash_cost precisa ser ao menos %d",
-			domain.MinPasswordHashCost)
 	}
 	if c.RollupInterval <= 0 {
 		return fmt.Errorf("config: rollup_interval precisa ser positivo")
