@@ -23,6 +23,15 @@ import (
 // cabeçalho; frase não cabe em nenhum dos dois.
 const maxGroupNameLength = 60
 
+// PathSeparator separa os níveis em GroupTree.Path.
+//
+// Exportado porque é contrato, não detalhe: o caminho vai como rótulo no
+// Prometheus, e nome que contenha o separador produz o mesmo rótulo de um
+// caminho de dois níveis. Duas amostras com rótulos idênticos fazem o
+// coletor recusar a raspagem inteira — o desfecho que o rótulo de grupo
+// existe para evitar.
+const PathSeparator = " / "
+
 // Group é um conjunto de monitores. Monitor pertence a um grupo folha ou a
 // "Sem grupo".
 type Group struct {
@@ -51,6 +60,11 @@ func (g Group) Validate() error {
 	}
 	if len(name) > maxGroupNameLength {
 		return invalid("name", fmt.Sprintf("não pode passar de %d caracteres", maxGroupNameLength))
+	}
+	// A barra sozinha já basta para recusar: aceitar "a/b" e recusar só
+	// "a / b" convidaria a achar que o problema é o espaço.
+	if strings.Contains(name, "/") {
+		return invalid("name", "não pode conter barra: ela separa os níveis no caminho do grupo")
 	}
 	if err := ValidateSlug(g.Slug); err != nil {
 		return err
@@ -181,7 +195,7 @@ func (t GroupTree) Path(id int64) string {
 	if !ok {
 		return g.Name
 	}
-	return pai.Name + " / " + g.Name
+	return pai.Name + PathSeparator + g.Name
 }
 
 // CheckPlacement confere se o grupo cabe na árvore no lugar pedido.

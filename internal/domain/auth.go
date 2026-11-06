@@ -84,13 +84,28 @@ func ValidatePassword(password string) error {
 	return nil
 }
 
+// MinPasswordHashCost é o piso do custo do bcrypt.
+//
+// Doze, e não o bcrypt.DefaultCost (dez): dez é o padrão da biblioteca
+// desde quando GPU era mais lenta, e a recomendação corrente pede doze.
+// A diferença é fator quatro por candidata para quem vazou o banco — que
+// é o cenário contra o qual este custo existe, e o mesmo contra o qual
+// internal/secretbox cifra o resto.
+const MinPasswordHashCost = 12
+
 // PasswordHashCost é o custo do bcrypt.
 //
 // Ajustável porque o valor certo depende do hardware: o objetivo é que
 // verificar uma senha demore o suficiente para inviabilizar força bruta,
-// e o que era caro há cinco anos é barato hoje. Testes o reduzem para não
-// pagar esse custo deliberado em cada caso.
-var PasswordHashCost = bcrypt.DefaultCost
+// e o que era caro há cinco anos é barato hoje. Quem instala sobe por
+// UPWATCH_PASSWORD_HASH_COST; abaixo do piso a configuração é recusada
+// na partida. Testes o reduzem para não pagar esse custo deliberado em
+// cada caso.
+//
+// Antes isto dizia "ajustável" sem existir variável nenhuma que o
+// ajustasse: só os testes escreviam aqui, e quem instalava teria de
+// recompilar.
+var PasswordHashCost = MinPasswordHashCost
 
 // SetPassword grava o hash da senha.
 //
@@ -115,6 +130,17 @@ func (u User) CheckPassword(password string) bool {
 		return false
 	}
 	return bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)) == nil
+}
+
+// NeedsRehash diz se o hash guardado está num custo abaixo do atual.
+//
+// Subir PasswordHashCost não alcança hash nenhum já gravado: a conta só
+// ganharia o custo novo se a pessoa trocasse a senha por conta própria, e
+// ninguém troca a senha porque o projeto mudou um padrão. Quem chama
+// regrava no login, que é o único momento em que a senha em claro existe.
+func (u User) NeedsRehash() bool {
+	custo, err := bcrypt.Cost([]byte(u.PasswordHash))
+	return err == nil && custo < PasswordHashCost
 }
 
 // MarshalJSON serializa a conta sem qualquer vestígio da senha.

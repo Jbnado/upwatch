@@ -174,6 +174,11 @@ func (s *Service) Login(ctx context.Context, username, password string) (LoginRe
 		return LoginResult{}, ErrInvalidCredentials
 	}
 
+	// Senha certa e hash em custo antigo: regrava agora, que é o único
+	// momento em que a senha em claro existe. Depois da conferência, de
+	// propósito — uma tentativa recusada não toca no hash.
+	s.rehashIfWeak(ctx, u, password)
+
 	// As falhas só zeram quando o login termina. Zerar já na senha certa
 	// deixaria quem a tem errar códigos sem nunca chegar ao bloqueio,
 	// bastando digitar a senha de novo a cada quatro palpites.
@@ -187,6 +192,23 @@ func (s *Service) Login(ctx context.Context, username, password string) (LoginRe
 		return LoginResult{}, err
 	}
 	return LoginResult{Session: secret}, nil
+}
+
+// rehashIfWeak regrava o hash da senha quando o custo guardado está
+// abaixo do atual.
+//
+// Erro aqui não pode derrubar o login: o hash antigo continua valendo, e
+// a entrada seguinte tenta de novo. Mesmo tratamento do TouchLastUsed,
+// e pelo mesmo motivo — falhar num registro acessório não é motivo para
+// recusar quem apresentou a credencial certa.
+func (s *Service) rehashIfWeak(ctx context.Context, u domain.User, password string) {
+	if !u.NeedsRehash() {
+		return
+	}
+	if err := u.SetPassword(password); err != nil {
+		return
+	}
+	_ = s.store.Users().SetPasswordHash(ctx, u.ID, u.PasswordHash)
 }
 
 // checkDecoy faz a comparação de bcrypt que a conta inexistente não tem.

@@ -77,6 +77,11 @@ func run() error {
 		return err
 	}
 
+	// O custo do bcrypt é padrão de produção, não constante de compilação:
+	// a configuração é a única coisa que pode subi-lo, e precisa alcançar o
+	// domínio antes de qualquer senha ser gravada ou conferida.
+	domain.PasswordHashCost = cfg.PasswordHashCost
+
 	st, err := openStore(cfg)
 	if err != nil {
 		return err

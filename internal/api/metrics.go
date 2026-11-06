@@ -273,6 +273,11 @@ func family(b *strings.Builder, nome, tipo, ajuda string) {
 // Um nome de monitor com aspas ou quebra de linha quebraria a exposição
 // inteira: o Prometheus descarta a coleta e nenhuma métrica chega, nem as
 // das séries saudáveis.
+// Os outros bytes de controle não quebram a coleta, e por isso faltavam:
+// \r sobrescreve a linha anterior e ESC reprograma o terminal de quem lê
+// a exposição crua, que é o caso comum porque /metrics é aberto por
+// padrão. Não dá forja de série — a aspa é escapada, então não há como
+// fechar o valor e abrir outro —, mas falsifica o que o humano vê.
 func quote(v string) string {
 	var b strings.Builder
 	b.Grow(len(v) + 2)
@@ -286,7 +291,13 @@ func quote(v string) string {
 			b.WriteString(`\\`)
 		case '\n':
 			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
 		default:
+			if r < 0x20 || r == 0x7f {
+				fmt.Fprintf(&b, `\\x%02x`, r)
+				continue
+			}
 			b.WriteRune(r)
 		}
 	}

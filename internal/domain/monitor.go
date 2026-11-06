@@ -193,9 +193,19 @@ type Monitor struct {
 
 // Validate confere as invariantes do monitor e devolve *ValidationError
 // apontando o primeiro campo inválido.
+// MaxMonitorNameLength limita o nome do monitor, como maxGroupNameLength
+// faz com o do grupo. O nome vai no rótulo do Prometheus.
+const MaxMonitorNameLength = 120
+
 func (m Monitor) Validate() error {
 	if strings.TrimSpace(m.Name) == "" {
 		return invalid("name", "não pode ser vazio")
+	}
+	// Teto como o do nome de grupo, que já tinha. Sem ele o nome ia até o
+	// limite do corpo da requisição, e ele sai no rótulo do Prometheus —
+	// numa exposição que é aberta por padrão.
+	if len(m.Name) > MaxMonitorNameLength {
+		return invalid("name", fmt.Sprintf("não pode passar de %d caracteres", MaxMonitorNameLength))
 	}
 	if !m.Type.Valid() {
 		return invalid("type", "tipo de monitor desconhecido")
