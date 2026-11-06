@@ -120,11 +120,11 @@ func TestCompleteLoginOpensSession(t *testing.T) {
 	e := f.withTOTP(t)
 	ctx := context.Background()
 
-	secret, err := f.svc.CompleteLogin(ctx, f.challenge(t), f.code(t, e.secret))
+	entrou, err := f.svc.CompleteLogin(ctx, f.challenge(t), f.code(t, e.secret))
 	if err != nil {
 		t.Fatalf("CompleteLogin returned unexpected error: %v", err)
 	}
-	u, err := f.svc.AuthenticateSession(ctx, secret)
+	u, err := f.svc.AuthenticateSession(ctx, entrou.Session)
 	if err != nil || u.ID != e.user.ID {
 		t.Errorf("AuthenticateSession = %v, %v; want a conta %d", u, err, e.user.ID)
 	}
@@ -353,18 +353,18 @@ func TestDisablingTOTPRevokesOtherSessions(t *testing.T) {
 	e := f.withTOTP(t)
 	ctx := context.Background()
 
-	current, _ := f.svc.CompleteLogin(ctx, f.challenge(t), f.code(t, e.secret))
+	desta, _ := f.svc.CompleteLogin(ctx, f.challenge(t), f.code(t, e.secret))
 	f.clock.Advance(totp.Period)
-	other, _ := f.svc.CompleteLogin(ctx, f.challenge(t), f.code(t, e.secret))
+	outra, _ := f.svc.CompleteLogin(ctx, f.challenge(t), f.code(t, e.secret))
 	f.clock.Advance(totp.Period)
 
-	if err := f.svc.DisableTOTP(ctx, e.user.ID, current, goodPassword, f.code(t, e.secret)); err != nil {
+	if err := f.svc.DisableTOTP(ctx, e.user.ID, desta.Session, goodPassword, f.code(t, e.secret)); err != nil {
 		t.Fatalf("DisableTOTP returned unexpected error: %v", err)
 	}
-	if _, err := f.svc.AuthenticateSession(ctx, current); err != nil {
+	if _, err := f.svc.AuthenticateSession(ctx, desta.Session); err != nil {
 		t.Errorf("a sessão de quem desligou caiu: %v", err)
 	}
-	if _, err := f.svc.AuthenticateSession(ctx, other); !errors.Is(err, auth.ErrUnauthenticated) {
+	if _, err := f.svc.AuthenticateSession(ctx, outra.Session); !errors.Is(err, auth.ErrUnauthenticated) {
 		t.Errorf("a outra sessão sobreviveu: error = %v", err)
 	}
 }
@@ -400,7 +400,7 @@ func TestAdminResetDisablesAndRevokesSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser returned unexpected error: %v", err)
 	}
-	session, _ := f.svc.CompleteLogin(ctx, f.challenge(t), f.code(t, e.secret))
+	entrou, _ := f.svc.CompleteLogin(ctx, f.challenge(t), f.code(t, e.secret))
 
 	if err := f.svc.ResetTOTP(ctx, e.user.ID, e.user.ID); !errors.Is(err, auth.ErrResetOwnTOTP) {
 		t.Errorf("reset da própria conta error = %v, want ErrResetOwnTOTP", err)
@@ -408,7 +408,7 @@ func TestAdminResetDisablesAndRevokesSessions(t *testing.T) {
 	if err := f.svc.ResetTOTP(ctx, other.ID, e.user.ID); err != nil {
 		t.Fatalf("ResetTOTP returned unexpected error: %v", err)
 	}
-	if _, err := f.svc.AuthenticateSession(ctx, session); !errors.Is(err, auth.ErrUnauthenticated) {
+	if _, err := f.svc.AuthenticateSession(ctx, entrou.Session); !errors.Is(err, auth.ErrUnauthenticated) {
 		t.Errorf("a sessão da conta sobreviveu ao reset: error = %v", err)
 	}
 	if res, err := f.svc.Login(ctx, "admin", goodPassword); err != nil || res.NeedsSecondFactor() {

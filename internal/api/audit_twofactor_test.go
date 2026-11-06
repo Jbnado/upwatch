@@ -82,3 +82,80 @@ func TestAuditLogsTwoFactorResetByAdmin(t *testing.T) {
 	linha := reg.comAção(t, "2fa.desligada_por_admin")
 	exigeCampos(t, linha, "admin", "observadora", "127.0.0.1")
 }
+
+// ---------- contorno do aplicativo autenticador ----------
+
+// Entrar com código de recuperação é passar por cima do aplicativo
+// autenticador. É o que faz quem perdeu o celular e é o que faz quem
+// roubou a lista de códigos, e das duas maneiras a conta entra sem o
+// segundo fator que a instalação exige.
+//
+// O login certo com o aplicativo não gera linha de propósito: registrar
+// todo login encheria o log e esconderia o que importa. Este gera, e a
+// linha precisa dizer qual conta — a sessão ainda não existia quando o
+// pedido chegou, então não há conta no contexto da requisição.
+func TestAuditLogsRecoveryCodeLogin(t *testing.T) {
+	s, reg := servidorComLog(t, nil)
+	s.setup(t)
+	_, recuperação := s.enroll(t)
+
+	resp := s.do(t, http.MethodPost, "/api/v1/auth/login", map[string]any{
+		"username": "admin", "password": adminPassword,
+	})
+	assertStatus(t, resp, http.StatusOK)
+	desafio := decode[map[string]any](t, resp)["challenge"].(string)
+
+	resp = s.do(t, http.MethodPost, "/api/v1/auth/login/2fa", map[string]any{
+		"challenge": desafio, "code": recuperação[0],
+	})
+	assertStatus(t, resp, http.StatusOK)
+
+	linha := reg.comAção(t, "2fa.recuperacao_usada")
+	exigeCampos(t, linha, "admin", "admin", "127.0.0.1")
+}
+
+// Login com o aplicativo não pode sair como recuperação: a linha existe
+// para separar quem entrou pelo segundo fator de quem entrou por cima
+// dele, e um login comum marcado como contorno faria o log acusar todo
+// mundo.
+func TestAuditDoesNotCallAnAuthenticatorLoginARecovery(t *testing.T) {
+	s, reg := servidorComLog(t, nil)
+	s.setup(t)
+	segredo, _ := s.enroll(t)
+
+	resp := s.do(t, http.MethodPost, "/api/v1/auth/login", map[string]any{
+		"username": "admin", "password": adminPassword,
+	})
+	assertStatus(t, resp, http.StatusOK)
+	desafio := decode[map[string]any](t, resp)["challenge"].(string)
+
+	resp = s.do(t, http.MethodPost, "/api/v1/auth/login/2fa", map[string]any{
+		"challenge": desafio, "code": s.totpCode(t, segredo),
+	})
+	assertStatus(t, resp, http.StatusOK)
+
+	reg.recusaAção(t, "2fa.recuperacao_usada")
+}
+
+// Código de recuperação recusado é tentativa, não contorno. Marcá-lo
+// como contorno diria que alguém entrou quando ninguém entrou, e é essa
+// a linha que faria alguém revogar as sessões de quem errou de digitar.
+func TestAuditDoesNotLogARefusedRecoveryCode(t *testing.T) {
+	s, reg := servidorComLog(t, nil)
+	s.setup(t)
+	s.enroll(t)
+
+	resp := s.do(t, http.MethodPost, "/api/v1/auth/login", map[string]any{
+		"username": "admin", "password": adminPassword,
+	})
+	assertStatus(t, resp, http.StatusOK)
+	desafio := decode[map[string]any](t, resp)["challenge"].(string)
+
+	resp = s.do(t, http.MethodPost, "/api/v1/auth/login/2fa", map[string]any{
+		"challenge": desafio, "code": "aaaa-bbbb-cccc-dddd",
+	})
+	assertStatus(t, resp, http.StatusUnauthorized)
+
+	reg.comAção(t, "login.codigo_errado")
+	reg.recusaAção(t, "2fa.recuperacao_usada")
+}

@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 
+	"github.com/Jbnado/upwatch/internal/audit"
 	"github.com/Jbnado/upwatch/internal/domain"
 )
 
@@ -76,7 +77,7 @@ func (a *API) handleTOTPEnable(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	a.audit(r, age2FALigada, u.Username)
+	a.audit(r, audit.Ação2FALigada, u.Username)
 	writeRecoveryCodes(w, codes)
 }
 
@@ -100,7 +101,7 @@ func (a *API) handleTOTPRecoveryCodes(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	a.audit(r, age2FARecuperaçãoNova, u.Username)
+	a.audit(r, audit.Ação2FARecuperaçãoNova, u.Username)
 	writeRecoveryCodes(w, codes)
 }
 
@@ -116,7 +117,7 @@ func (a *API) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	a.audit(r, age2FADesligada, u.Username)
+	a.audit(r, audit.Ação2FADesligada, u.Username)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -139,7 +140,7 @@ func (a *API) handleResetUserTOTP(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	a.audit(r, age2FADesligadaPorAdmin, target.Username)
+	a.audit(r, audit.Ação2FADesligadaPorAdmin, target.Username)
 	w.WriteHeader(http.StatusNoContent)
 }
 
