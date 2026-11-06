@@ -260,6 +260,7 @@ configuração nenhuma e uma instalação séria versiona o YAML.
 | `UPWATCH_RETENTION_DAILY` | `17520h` | Retenção do agregado diário |
 | `UPWATCH_ROLLUP_INTERVAL` | `5m` | De quanto em quanto a agregação roda |
 | `UPWATCH_WORKERS` | `50` | Teto de verificações simultâneas |
+| `UPWATCH_PASSWORD_HASH_COST` | `12` | Custo do bcrypt das senhas. Maior encarece cada tentativa de quem vazou o banco, e cada login. Abaixo de 12 a partida é recusada |
 | `UPWATCH_SESSION_TTL` | `168h` | Validade da sessão da interface |
 | `UPWATCH_REMINDER_INTERVAL` | `0` | De quanto em quanto uma queda aberta e não reconhecida é relembrada, para monitor e grupo sem intervalo próprio; `0` desliga, e o mínimo é `5m` |
 | `UPWATCH_SECURE_COOKIES` | `false` | Marca o cookie como Secure e liga o HSTS; ligue ao servir por HTTPS |
@@ -509,10 +510,13 @@ As ações:
 | `limite.bloqueio` | origem barrada pelo limite por origem (429) |
 | `setup.token_errado` | token de configuração recusado no `POST /setup` |
 | `metrics.token_errado` | token recusado no `/metrics` |
+| `push.token_errado` | token recusado no `/push`, o único endpoint sem login com credencial própria |
 | `senha.trocada` | conta trocou a própria senha |
+| `senha.atual_errada` | senha atual recusada ao tentar trocá-la, o que é o que faz quem está com uma sessão roubada |
 | `token.criado` / `token.revogado` | credencial de API emitida ou apagada |
 | `usuario.criado` | conta criada |
 | `usuario.acesso_trocado` | papel ou escopo de uma conta alterado |
+| `usuario.removido` | conta apagada |
 | `2fa.ligada` / `2fa.desligada` | segundo fator ligado ou desligado pela própria conta |
 | `2fa.recuperacao_trocada` | códigos de recuperação gerados de novo |
 | `2fa.recuperacao_usada` | login entrou com um código de recuperação, por cima do aplicativo autenticador |

@@ -29,8 +29,11 @@ const (
 
 	AçãoSenhaTrocada       = "senha.trocada"
 	AçãoUsuárioCriado      = "usuario.criado"
+	AçãoUsuárioRemovido    = "usuario.removido"
 	AçãoAcessoTrocado      = "usuario.acesso_trocado"
 	AçãoSetupTokenErrado   = "setup.token_errado"
+	AçãoPushTokenErrado    = "push.token_errado"
+	AçãoSenhaAtualErrada   = "senha.atual_errada"
 	AçãoMetricsTokenErrado = "metrics.token_errado"
 
 	Ação2FALigada                      = "2fa.ligada"
@@ -40,6 +43,14 @@ const (
 	Ação2FADesligadaPorAdmin           = "2fa.desligada_por_admin"
 	Ação2FADesligadaPelaLinhaDeComando = "2fa.desligada_pela_linha_de_comando"
 )
+
+// MaxAtorLength limita o campo ator da linha.
+//
+// O mesmo teto do nome de conta (domain.MaxUsernameLength), repetido
+// aqui em vez de importado para o pacote de auditoria não depender do
+// domínio: ele existe para ser chamado de qualquer lugar, inclusive da
+// linha de comando.
+const MaxAtorLength = 64
 
 // AtorAnônimo é o ator das ações sem conta identificada.
 const AtorAnônimo = "anônimo"
@@ -85,6 +96,15 @@ func Registra(l *slog.Logger, e Evento) {
 	}
 	if e.Ator == "" {
 		e.Ator = AtorAnônimo
+	}
+	// Truncado porque o ator pode vir do corpo da requisição: o login
+	// registra o nome oferecido, e o corpo aceito vai a 1 MiB. Não há
+	// forja de linha — o handler do slog escapa \n e aspas —, mas trinta
+	// requisições de rajada com um nome enorme enchem o coletor de quem
+	// paga por volume. O limite é o do nome de conta: acima dele não há
+	// conta nenhuma.
+	if len(e.Ator) > MaxAtorLength {
+		e.Ator = e.Ator[:MaxAtorLength] + "…"
 	}
 	l.Info("evento de segurança",
 		"ação", e.Ação,
