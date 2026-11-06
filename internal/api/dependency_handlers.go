@@ -310,13 +310,22 @@ var errDependentsOutOfScope = errors.New("api: monitor com dependentes fora do e
 // este grupo não pode, mexendo no pai, decidir se os alertas do outro
 // grupo chegam. Os netos contam: a queda do pai cala a cadeia inteira.
 //
-// "Mexer no pai" são quatro rotas, não duas. Trocar o alvo e apagar são
+// Quatro rotas chamam esta guarda, não duas. Trocar o alvo e apagar são
 // as óbvias; trocar de pai e soltar do pai mudam o mesmo que elas, porque
 // é o parent_id que decide quem cala quem. Pendurar o monitor numa sonda
 // caída do próprio grupo silencia a cadeia inteira abaixo dele sem nunca
 // tocar no monitor de fora, e soltá-lo do pai dessilencia o que estava
 // calado — numa ferramenta de alerta, as duas direções são o mesmo
-// defeito. Por isso a guarda é chamada pelas quatro.
+// defeito.
+//
+// A travessia é só para baixo, e é de propósito: o que esta guarda
+// protege são os alertas de quem está **abaixo** do monitor mexido, que
+// podem ser de outro grupo. O pai anterior do próprio monitor não é
+// conferido aqui. Trocar quem cala este monitor muda só os alertas dele,
+// que são do grupo de quem está pedindo — e a mesma troca já é permitida
+// pelo PUT quando a conta nomeia um pai que ela enxerga (ver
+// keepHiddenParent, que trata o caso de o formulário voltar sem o
+// parent_id). As duas rotas, portanto, concordam.
 //
 // Recebe vários ids porque a rota em lote confere até MaxPageSize
 // monitores de uma vez, e a instalação é lida uma vez por requisição.
