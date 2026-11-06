@@ -39,7 +39,9 @@ func (a *API) auditAs(r *http.Request, ator, ação, alvo string) {
 	})
 }
 
-// atorDe identifica a conta da requisição, ou devolve o ator anônimo.
+// rotaDesconhecida é a rota de quem chegou sem casar com nenhuma.
+const rotaDesconhecida = "(sem rota)"
+
 // rotaDe identifica a rota pelo padrão com que ela foi registrada, e
 // não pelo caminho que chegou na requisição.
 //
@@ -49,19 +51,23 @@ func (a *API) auditAs(r *http.Request, ator, ação, alvo string) {
 // o funil escrever exatamente o que ele existe para manter fora:
 // "/api/v1/push/<token-real>" no lugar de "/api/v1/push/{token}".
 //
-// O padrão vem do roteador. Fora de uma rota casada ele é vazio, e aí o
-// caminho cru é o que resta — mas o registro acontece dentro dos
-// handlers e das middlewares de rota, que o chi roda depois do
-// roteamento, então na prática o padrão está sempre lá.
+// Sem padrão devolve rotaDesconhecida, e nunca o caminho. Cair no
+// caminho cru seria cair justamente no vazamento que esta função existe
+// para fechar, e o caso é alcançável: recoverPanic é middleware do mux,
+// que o chi roda ANTES de procurar a rota, então um pânico em qualquer
+// middleware global chega aqui sem rota casada. Perder o endereço do
+// defeito custa a quem investiga; perder o segredo custa a quem é dono
+// dele.
 func rotaDe(r *http.Request) string {
 	if rc := chi.RouteContext(r.Context()); rc != nil {
 		if padrão := rc.RoutePattern(); padrão != "" {
 			return padrão
 		}
 	}
-	return r.URL.Path
+	return rotaDesconhecida
 }
 
+// atorDe identifica a conta da requisição, ou devolve o ator anônimo.
 func atorDe(r *http.Request) string {
 	if u, ok := userFrom(r.Context()); ok {
 		return u.Username

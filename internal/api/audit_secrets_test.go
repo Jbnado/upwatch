@@ -116,8 +116,14 @@ func TestAuditNeverLogsSecrets(t *testing.T) {
 	mresp.Body.Close()
 
 	// Monitor push: o segredo dele viaja no caminho da URL, então todo
-	// fluxo que registre o caminho o registra. O passeio não passava por
-	// aqui, e foi essa ausência que deixou a linha do 429 vazar o token.
+	// fluxo que registre o caminho o registra, e o passeio não passava por
+	// aqui.
+	//
+	// Isto não é o que pega a linha do 429 — o passeio não estoura
+	// limitador nenhum, e quem cobre aquele caso é
+	// TestAuditDoesNotLogThePushTokenWhenTheOriginIsBlocked. O que esta
+	// perna garante é o resto: um registro novo no caminho do push, em
+	// qualquer handler daqui, passa a ser pego aqui.
 	pushID := s.createMonitor(t, pushMonitorBody("fila de pedidos", pushToken))
 	assertStatus(t, s.do(t, http.MethodPost, "/api/v1/push/"+pushToken, nil), http.StatusOK)
 	assertStatus(t, s.do(t, http.MethodPost, "/api/v1/push/"+pushToken+"-errado", nil),

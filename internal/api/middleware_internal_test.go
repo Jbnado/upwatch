@@ -35,7 +35,9 @@ func TestRecoverPanicLogsTheRoutePatternNotThePath(t *testing.T) {
 
 	const segredo = "token-do-cron-que-nao-pode-vazar"
 	r := chi.NewRouter()
-	r.Use(recoverPanic)
+	// securityHeaders junto, como em produção: o que um teste tira do meio
+	// é o que ele deixa de cobrir.
+	r.Use(recoverPanic, securityHeaders)
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Post("/push/{token}", func(http.ResponseWriter, *http.Request) {
 			panic("defeito proposital no handler")
@@ -59,5 +61,44 @@ func TestRecoverPanicLogsTheRoutePatternNotThePath(t *testing.T) {
 	// ninguém sabe o que investigar.
 	if !strings.Contains(log, "/push/{token}") {
 		t.Errorf("o log do pânico não diz qual rota quebrou:\n%s", log)
+	}
+}
+
+// recoverPanic é middleware do mux, e o chi roda a pilha do mux ANTES de
+// procurar a rota — ao contrário das middlewares de rota. Então um pânico
+// numa middleware global chega ao registro sem rota casada, e é aí que o
+// caminho cru, com o token dentro, voltaria ao log.
+//
+// Em produção há dois quadros nesse lugar, securityHeaders e sameOrigin.
+// Nenhum entra em pânico hoje; o terceiro que alguém acrescentar pode.
+func TestRecoverPanicLogsNoPathWhenNothingMatchedYet(t *testing.T) {
+	buf := capturaLogPadrão(t)
+
+	const segredo = "token-do-cron-que-nao-pode-vazar"
+	r := chi.NewRouter()
+	r.Use(recoverPanic, func(http.Handler) http.Handler {
+		return http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			panic("defeito antes do roteamento")
+		})
+	})
+	r.Route("/api/v1", func(r chi.Router) {
+		r.Post("/push/{token}", func(http.ResponseWriter, *http.Request) {})
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/v1/push/"+segredo, nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+	log := buf.String()
+	if !strings.Contains(log, "pânico no handler") {
+		t.Fatalf("o pânico não foi registrado:\n%s", log)
+	}
+	if strings.Contains(log, segredo) {
+		t.Errorf("o log do pânico trouxe o token do caminho:\n%s", log)
+	}
+	if !strings.Contains(log, rotaDesconhecida) {
+		t.Errorf("o log não diz que não houve rota casada:\n%s", log)
 	}
 }

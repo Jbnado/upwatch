@@ -152,9 +152,10 @@ func TestAuditLogsRateLimitBlock(t *testing.T) {
 // terceiro e fica guardado por meses, com um público de leitura bem maior
 // que o do banco.
 //
-// Não precisa de atacante. O teto do push é generoso de propósito, para
-// "uma máquina com dezenas de crons reportando no mesmo minuto" — e é
-// exatamente esse pico normal que estoura o balde e grava o token.
+// Não precisa de intenção, só de volume: o balde do push são 300 fichas
+// por origem, então qualquer coisa que passe disso atrás do mesmo
+// endereço — um CI compartilhado, um NAT com muitos crons, uma
+// retentativa em laço — grava o token sem ninguém atacar nada.
 func TestAuditDoesNotLogThePushTokenWhenTheOriginIsBlocked(t *testing.T) {
 	s, reg := servidorComLog(t, nil)
 	s.setup(t)
@@ -173,12 +174,11 @@ func TestAuditDoesNotLogThePushTokenWhenTheOriginIsBlocked(t *testing.T) {
 	if strings.Contains(linha, pushToken) {
 		t.Errorf("a linha de auditoria trouxe o token do monitor push: %s", linha)
 	}
-	// E tem de continuar dizendo qual rota foi barrada: tirar o segredo não
-	// pode custar a utilidade do registro, senão quem coleta perde o evento.
-	if !strings.Contains(linha, "push") {
-		t.Errorf("a linha não identifica mais a rota do push: %s", linha)
-	}
-	exigeCampos(t, linha, atorAnônimoNoLog, "", "127.0.0.1")
+	// O alvo fixado, e não só "contém push": o valor é determinístico, e
+	// passar "" para exigeCampos desliga a checagem em silêncio em vez de
+	// afirmar algo. Tirar o segredo não pode custar a utilidade do
+	// registro, senão quem coleta perde o evento.
+	exigeCampos(t, linha, atorAnônimoNoLog, "/api/v1/push/{token}", "127.0.0.1")
 }
 
 // pushBurstDoTeste é o teto da rajada do push mais folga. Repetido aqui de
