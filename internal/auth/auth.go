@@ -297,10 +297,19 @@ func (s *Service) ChangePassword(ctx context.Context, userID int64, current, nex
 	}
 	// Só a senha: regravar a conta lida acima devolveria o papel e o
 	// escopo de antes, desfazendo uma revogação feita nesse meio-tempo.
-	if err := s.store.Users().SetPasswordHash(ctx, userID, u.PasswordHash); err != nil {
+	// Revogar antes de gravar: se a revogação falhar, a senha não mudou e
+	// repetir funciona com a antiga. Na ordem inversa o chamador recebe
+	// erro com a senha nova já em vigor, e a tentativa seguinte é recusada
+	// por "senha atual errada" — queimando tentativas do bloqueio.
+	//
+	// Credential vazia: aqui cai tudo, inclusive a credencial que está
+	// pedindo. É o que a interface e a especificação dizem da sessão
+	// ("inclusive esta"), e trocar a senha porque ela pode ter vazado não
+	// combina com preservar nada.
+	if err := s.revokeCredentials(ctx, userID, Credential{}); err != nil {
 		return err
 	}
-	return s.revokeCredentials(ctx, userID, "")
+	return s.store.Users().SetPasswordHash(ctx, userID, u.PasswordHash)
 }
 
 // ---------- tokens ----------

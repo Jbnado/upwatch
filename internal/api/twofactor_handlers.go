@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/Jbnado/upwatch/internal/audit"
+	"github.com/Jbnado/upwatch/internal/auth"
 	"github.com/Jbnado/upwatch/internal/domain"
 )
 
@@ -12,6 +13,18 @@ import (
 // Tudo aqui é da conta que pede, nunca de outra: o {id} não aparece nas
 // rotas, e o desligamento por um administrador mora em /users/{id}/2fa,
 // sob as regras de quem pode mexer em qual conta.
+
+// credencialDe é a credencial que está fazendo a requisição, e que por
+// isso sobrevive à revogação.
+//
+// Uma das duas: resolveUser dá precedência absoluta ao Bearer, então uma
+// requisição com Authorization não é sessão nenhuma.
+func credencialDe(r *http.Request) auth.Credential {
+	if t, ok := bearerToken(r); ok {
+		return auth.Credential{Token: t}
+	}
+	return auth.Credential{Session: sessionSecret(r)}
+}
 
 // sessionSecret é o segredo da sessão da requisição, vazio quando ela
 // veio por token de API. É a sessão que fica quando as outras caem.
@@ -72,7 +85,7 @@ func (a *API) handleTOTPEnable(w http.ResponseWriter, r *http.Request) {
 	}
 
 	u := mustUser(r)
-	codes, err := a.auth.ConfirmTOTP(r.Context(), u.ID, sessionSecret(r), body.Code)
+	codes, err := a.auth.ConfirmTOTP(r.Context(), u.ID, credencialDe(r), body.Code)
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -113,7 +126,7 @@ func (a *API) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 	}
 
 	u := mustUser(r)
-	if err := a.auth.DisableTOTP(r.Context(), u.ID, sessionSecret(r), body.Password, body.Code); err != nil {
+	if err := a.auth.DisableTOTP(r.Context(), u.ID, credencialDe(r), body.Password, body.Code); err != nil {
 		writeStoreError(w, err)
 		return
 	}

@@ -471,6 +471,15 @@ func (r *tokenRepo) DeleteByUser(ctx context.Context, userID int64) error {
 	return nil
 }
 
+// DeleteOthers revoga os tokens da conta menos o de keep.
+func (r *tokenRepo) DeleteOthers(ctx context.Context, userID int64, keep string) error {
+	if _, err := r.db.ExecContext(ctx,
+		`DELETE FROM api_token WHERE user_id = ? AND token_hash <> ?`, userID, keep); err != nil {
+		return fmt.Errorf("sqlstore: apagando os outros tokens do usuário %d: %w", userID, err)
+	}
+	return nil
+}
+
 func (r *tokenRepo) TouchLastUsed(ctx context.Context, id int64, at time.Time) error {
 	if _, err := r.db.ExecContext(ctx,
 		`UPDATE api_token SET last_used_at = ? WHERE id = ?`, toMillis(at), id); err != nil {

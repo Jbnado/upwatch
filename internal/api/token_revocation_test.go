@@ -65,3 +65,67 @@ func TestEnablingTOTPRevokesTheAPITokensViaAPI(t *testing.T) {
 	// A sessão de quem está ligando continua: é ela que acabou de ligar.
 	assertStatus(t, s.do(t, http.MethodGet, "/api/v1/auth/me", nil), http.StatusOK)
 }
+
+// A credencial que está fazendo a mudança sobrevive a ela. Para a sessão
+// isso já era verdade e está na especificação: "as outras sessões da conta
+// são encerradas; a desta requisição continua". Um cliente que chega por
+// token é o único que esse endpoint serve por fora da interface, e sem
+// isto ele recebe 200 com os códigos de recuperação e descobre depois que
+// a própria credencial morreu — silenciosamente, porque a resposta é de
+// sucesso.
+func TestEnablingTOTPByTokenKeepsTheCallingToken(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+
+	chamador := criaToken(t, s, "ci")
+	outro := criaToken(t, s, "automacao-antiga")
+
+	resp := s.withToken(t, chamador, http.MethodPost, "/api/v1/auth/2fa/setup",
+		map[string]any{"password": adminPassword})
+	assertStatus(t, resp, http.StatusOK)
+	segredo := decode[struct {
+		Secret string `json:"secret"`
+	}](t, resp).Secret
+
+	assertStatus(t, s.withToken(t, chamador, http.MethodPost, "/api/v1/auth/2fa/enable",
+		map[string]any{"code": s.totpCode(t, segredo)}), http.StatusOK)
+
+	exigeToken(t, s, chamador, http.StatusOK)
+	// E os outros caem, que é o ponto da revogação.
+	exigeToken(t, s, outro, http.StatusUnauthorized)
+}
+
+// Desligar o fator pela mesma credencial, pelo mesmo motivo.
+func TestDisablingTOTPByTokenKeepsTheCallingToken(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+	segredo, _ := s.enroll(t)
+
+	chamador := criaToken(t, s, "ci")
+	outro := criaToken(t, s, "automacao-antiga")
+
+	assertStatus(t, s.withToken(t, chamador, http.MethodPost, "/api/v1/auth/2fa/disable",
+		map[string]any{"password": adminPassword, "code": s.totpCode(t, segredo)}), http.StatusNoContent)
+
+	exigeToken(t, s, chamador, http.StatusOK)
+	exigeToken(t, s, outro, http.StatusUnauthorized)
+}
+
+// A troca de senha é a exceção, e é deliberada: ela derruba tudo, inclusive
+// a credencial que está pedindo. É o que a interface e a especificação
+// dizem da sessão ("inclusive esta"), e vale igual para o token — trocar a
+// senha porque ela pode ter vazado não combina com preservar nada.
+//
+// Pinado para ninguém "consertar" a assimetria sem mudar o contrato junto.
+func TestChangingThePasswordByTokenRevokesTheCallingTokenToo(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+
+	chamador := criaToken(t, s, "ci")
+	assertStatus(t, s.withToken(t, chamador, http.MethodPost, "/api/v1/auth/password",
+		map[string]any{
+			"current_password": adminPassword, "new_password": "uma-senha-nova-bem-longa",
+		}), http.StatusNoContent)
+
+	exigeToken(t, s, chamador, http.StatusUnauthorized)
+}

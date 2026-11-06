@@ -435,7 +435,11 @@ aponte `UPWATCH_SECRET_KEY_FILE` para a nova antes de subir.
 O segredo da verificação em duas etapas também é cifrado com esta chave
 e entra na troca. Se a chave se perder, `forget-secrets` apaga também o
 segundo fator de todas as contas: elas voltam a entrar só com a senha
-até cadastrar o aplicativo de novo.
+até cadastrar o aplicativo de novo. E revoga as credenciais junto —
+todas as sessões e todos os tokens de API da instalação. Desligar o
+segundo fator de todo mundo e deixar as credenciais de pé faria a
+resposta ao incidente parecer completa sem ser: quem já estava dentro
+continuaria dentro, agora sem o fator no caminho.
 
 ## Verificação em duas etapas
 
@@ -471,7 +475,8 @@ upwatch disable-2fa admin
 ```
 
 Na imagem: `docker compose run --rm upwatch disable-2fa admin`. As
-sessões da conta são encerradas, e ela volta a entrar só com a senha.
+credenciais da conta são revogadas — sessões e tokens de API —, e ela
+volta a entrar só com a senha.
 
 ## Registro de eventos de segurança
 

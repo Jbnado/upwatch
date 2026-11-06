@@ -318,7 +318,9 @@ func (s *Service) BeginTOTP(ctx context.Context, userID int64, password string) 
 // justamente à proteção nova, e o token menos ainda, porque é ele que o
 // segundo fator não cobre. keep é o segredo da sessão de quem está
 // ligando, que fica; vazio derruba todas.
-func (s *Service) ConfirmTOTP(ctx context.Context, userID int64, keep, code string) ([]string, error) {
+func (s *Service) ConfirmTOTP(
+	ctx context.Context, userID int64, atual Credential, code string,
+) ([]string, error) {
 	f, err := s.store.TwoFactor().Get(ctx, userID)
 	if errors.Is(err, store.ErrNotFound) {
 		return nil, ErrTOTPNotEnabled
@@ -338,13 +340,17 @@ func (s *Service) ConfirmTOTP(ctx context.Context, userID int64, keep, code stri
 	if err != nil {
 		return nil, err
 	}
+	// Revogar antes de ligar. Na ordem inversa, uma revogação que falhe
+	// deixa o fator ligado e descarta os dez códigos de recuperação no
+	// retorno de erro: a conta passa a exigir um segundo fator cujos
+	// códigos ninguém recebeu, e repetir responde que já está ligado.
+	if err := s.revokeCredentials(ctx, userID, atual); err != nil {
+		return nil, err
+	}
 	if err := s.store.TwoFactor().Enable(ctx, userID, step, hashes, s.clock.Now().UTC()); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, ErrTOTPEnabled
 		}
-		return nil, err
-	}
-	if err := s.revokeCredentials(ctx, userID, keep); err != nil {
 		return nil, err
 	}
 	return codes, nil
@@ -370,8 +376,16 @@ func (s *Service) RegenerateRecoveryCodes(ctx context.Context, userID int64, pas
 
 // DisableTOTP desliga o próprio fator, com a mesma prova de
 // RegenerateRecoveryCodes, e derruba as outras sessões como ConfirmTOTP.
-func (s *Service) DisableTOTP(ctx context.Context, userID int64, keep, password, code string) error {
+func (s *Service) DisableTOTP(
+	ctx context.Context, userID int64, atual Credential, password, code string,
+) error {
 	if err := s.proveAccount(ctx, userID, password, code); err != nil {
+		return err
+	}
+	// Revogar antes de desligar, pelo mesmo motivo do ConfirmTOTP: o
+	// Disable usa requireAffected, então um retry depois de desligar
+	// responde "não está ligada" e a revogação nunca acontece.
+	if err := s.revokeCredentials(ctx, userID, atual); err != nil {
 		return err
 	}
 	if err := s.store.TwoFactor().Disable(ctx, userID); err != nil {
@@ -380,7 +394,7 @@ func (s *Service) DisableTOTP(ctx context.Context, userID int64, keep, password,
 		}
 		return err
 	}
-	return s.revokeCredentials(ctx, userID, keep)
+	return nil
 }
 
 // ResetTOTP desliga o fator de outra conta, para quem perdeu o celular e
@@ -396,13 +410,16 @@ func (s *Service) ResetTOTP(ctx context.Context, actorID, userID int64) error {
 	if actorID == userID {
 		return ErrResetOwnTOTP
 	}
+	if err := s.revokeCredentials(ctx, userID, Credential{}); err != nil {
+		return err
+	}
 	if err := s.store.TwoFactor().Disable(ctx, userID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return ErrTOTPNotEnabled
 		}
 		return err
 	}
-	return s.revokeCredentials(ctx, userID, "")
+	return nil
 }
 
 // ResetTOTPByUsername é a saída de quem não tem mais ninguém para pedir:
@@ -413,13 +430,16 @@ func (s *Service) ResetTOTPByUsername(ctx context.Context, username string) erro
 	if err != nil {
 		return err
 	}
+	if err := s.revokeCredentials(ctx, u.ID, Credential{}); err != nil {
+		return err
+	}
 	if err := s.store.TwoFactor().Disable(ctx, u.ID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return ErrTOTPNotEnabled
 		}
 		return err
 	}
-	return s.revokeCredentials(ctx, u.ID, "")
+	return nil
 }
 
 // SweepExpiredChallenges remove os desafios de login vencidos.
@@ -459,6 +479,20 @@ func (s *Service) proveAccount(ctx context.Context, userID int64, password, code
 	return nil
 }
 
+// Credential é a credencial que está fazendo a mudança, e que por isso
+// sobrevive a ela.
+//
+// Uma das duas, nunca as duas: a requisição chega por cookie ou por
+// Bearer. Campos nomeados, e não duas strings em sequência, porque
+// trocá-las de lugar preservaria a credencial errada sem o compilador
+// reclamar — e a errada aqui é a que deveria cair.
+type Credential struct {
+	// Session é o segredo do cookie.
+	Session string
+	// Token é o segredo do token de API.
+	Token string
+}
+
 // revokeCredentials corta o acesso da conta depois de uma mudança que
 // existe para cortar acesso: trocar a senha, ligar, desligar ou resetar
 // o segundo fator.
@@ -471,14 +505,24 @@ func (s *Service) proveAccount(ctx context.Context, userID int64, password, code
 // senha e ao segundo fator ligado depois — com a vítima vendo o painel
 // dizer que estava resolvido.
 //
-// keep é a sessão de quem está mexendo, que fica. Token não tem
-// equivalente: quem está na interface não está usando token, então não
-// há o que preservar.
-func (s *Service) revokeCredentials(ctx context.Context, userID int64, keep string) error {
-	if err := s.revokeOthers(ctx, userID, keep); err != nil {
+// A credencial de atual sobrevive, nos dois tipos. Dizer "quem está na
+// interface não usa token" era falso: authenticate aceita Bearer em
+// toda rota autenticada, e ligar o segundo fator por token devolvia 200
+// com os códigos de recuperação depois de matar o próprio chamador.
+//
+// Token antes de sessão: se uma das duas falhar, é melhor sobrar a
+// sessão, que vence e passa pelo segundo fator no próximo login, do que
+// o token, que não faz nem uma coisa nem outra.
+func (s *Service) revokeCredentials(ctx context.Context, userID int64, atual Credential) error {
+	if atual.Token == "" {
+		if err := s.store.Tokens().DeleteByUser(ctx, userID); err != nil {
+			return err
+		}
+	} else if err := s.store.Tokens().DeleteOthers(
+		ctx, userID, domain.HashToken(atual.Token)); err != nil {
 		return err
 	}
-	return s.store.Tokens().DeleteByUser(ctx, userID)
+	return s.revokeOthers(ctx, userID, atual.Session)
 }
 
 // revokeOthers derruba as sessões da conta menos a de keep.

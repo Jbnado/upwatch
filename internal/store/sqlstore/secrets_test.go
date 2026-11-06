@@ -537,6 +537,16 @@ func TestForgetSecretsDropsTOTP(t *testing.T) {
 		ctx := context.Background()
 		lost := b.mustOpen(t, keysOf(newKey(t)))
 		id := enrollTOTP(t, lost, "JBSWY3DPEHPK3PXP")
+		if err := lost.Sessions().Create(ctx, domain.Session{
+			UserID: id, Hash: domain.HashToken(sessãoDeTeste),
+			ExpiresAt: time.Now().Add(time.Hour), CreatedAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("Create returned unexpected error: %v", err)
+		}
+		tok := domain.APIToken{UserID: id, Name: "ci", Hash: domain.HashToken(tokenDeTeste)}
+		if err := lost.Tokens().Create(ctx, &tok); err != nil {
+			t.Fatalf("Create returned unexpected error: %v", err)
+		}
 		_ = lost.Close()
 
 		n, err := sqlstore.ForgetSecrets(b.driver, b.dsn)
@@ -555,5 +565,23 @@ func TestForgetSecretsDropsTOTP(t *testing.T) {
 		if err != nil || u.TOTPEnabled {
 			t.Errorf("conta depois de esquecer = (%+v, %v), want mantida sem segundo fator", u, err)
 		}
+
+		// Desligar o segundo fator de todas as contas e deixar as
+		// credenciais de pé é a resposta ao incidente parecendo completa
+		// sem ser: quem estava com uma sessão ou um token continua dentro,
+		// agora sem o fator no caminho. E o token não vence.
+		if ss, err := s.Sessions().Get(ctx, domain.HashToken(sessãoDeTeste)); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("sessão depois de esquecer = (%+v, %v), want ErrNotFound", ss, err)
+		}
+		if tk, err := s.Tokens().GetByHash(ctx, domain.HashToken(tokenDeTeste)); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("token depois de esquecer = (%+v, %v), want ErrNotFound", tk, err)
+		}
 	})
 }
+
+// Credenciais do teste do forget-secrets, nomeadas para as asserções
+// poderem procurá-las depois de o comando rodar.
+const (
+	sessãoDeTeste = "sessao-de-teste-suficientemente-longa"
+	tokenDeTeste  = "token-de-teste-suficientemente-longo"
+)

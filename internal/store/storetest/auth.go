@@ -40,6 +40,7 @@ func authCases() []conformanceCase {
 		{"TokenListIsScopedToUser", testTokenListIsScopedToUser},
 		{"TokenDelete", testTokenDelete},
 		{"TokenDeleteByUser", testTokenDeleteByUser},
+		{"TokenDeleteOthers", testTokenDeleteOthers},
 		{"TokenTouchLastUsed", testTokenTouchLastUsed},
 		{"TokenRoundTripsExpiry", testTokenRoundTripsExpiry},
 	}
@@ -574,43 +575,41 @@ func testTokenDelete(t *testing.T, newStore Factory) {
 	}
 }
 
-// Saber quando o token foi usado pela última vez é o que permite revogar
-// credenciais esquecidas com segurança.
 // Revogar em massa é o que a troca de senha e as ações de segundo fator
 // fazem com as sessões, e passaram a fazer com os tokens: a credencial que
 // um invasor emitiu não pode atravessar a resposta ao incidente. E tem de
 // alcançar só a conta pedida, senão responder a um incidente derruba a
 // automação da instalação inteira.
+//
+// Confere por GetByHash, e não contando o que List devolve: o contrato é
+// "o token deixa de autenticar", e é GetByHash que autentica (ver
+// testTokenDelete). Um backend que marcasse o token de um jeito que List
+// respeita e GetByHash não passaria a contagem com a credencial viva.
 func testTokenDeleteByUser(t *testing.T, newStore Factory) {
 	s := newStore(t)
 	ctx := context.Background()
 	target := mustCreateUser(t, s, "admin")
 	other := mustCreateUser(t, s, "operador")
-	mustCreateToken(t, s, target.ID, "ci")
-	mustCreateToken(t, s, target.ID, "backup")
-	mustCreateToken(t, s, other.ID, "dele")
+	_, meu := mustCreateToken(t, s, target.ID, "ci")
+	_, outroMeu := mustCreateToken(t, s, target.ID, "backup")
+	_, dele := mustCreateToken(t, s, other.ID, "dele")
 
 	if err := s.Tokens().DeleteByUser(ctx, target.ID); err != nil {
 		t.Fatalf("DeleteByUser returned unexpected error: %v", err)
 	}
 
-	meus, err := s.Tokens().List(ctx, target.ID)
-	if err != nil {
-		t.Fatalf("List returned unexpected error: %v", err)
+	for _, tok := range []domain.Token{meu, outroMeu} {
+		if _, err := s.Tokens().GetByHash(ctx, tok.Hash); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("token revogado ainda autentica: %v", err)
+		}
 	}
-	if len(meus) != 0 {
-		t.Errorf("sobraram %d tokens da conta", len(meus))
-	}
-	dele, err := s.Tokens().List(ctx, other.ID)
-	if err != nil {
-		t.Fatalf("List returned unexpected error: %v", err)
-	}
-	if len(dele) != 1 {
-		t.Errorf("tokens da outra conta = %d, queria 1 intacto", len(dele))
+	if _, err := s.Tokens().GetByHash(ctx, dele.Hash); err != nil {
+		t.Errorf("token de outra conta deixou de autenticar: %v", err)
 	}
 
 	// Conta sem token nenhum não é erro: a troca de senha de quem nunca
-	// emitiu token chama isto do mesmo jeito.
+	// emitiu token chama isto do mesmo jeito. A primeira chamada apaga o
+	// token que other tem; a segunda é que exercita o caso de zero.
 	if err := s.Tokens().DeleteByUser(ctx, other.ID); err != nil {
 		t.Fatalf("DeleteByUser returned unexpected error: %v", err)
 	}
@@ -618,6 +617,36 @@ func testTokenDeleteByUser(t *testing.T, newStore Factory) {
 		t.Errorf("DeleteByUser numa conta sem tokens falhou: %v", err)
 	}
 }
+
+// DeleteOthers preserva a credencial que está fazendo a mudança, que é o
+// que liga ou desliga o segundo fator por token de API. Sem isso aquela
+// chamada devolve sucesso e mata o próprio chamador.
+func testTokenDeleteOthers(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	target := mustCreateUser(t, s, "admin")
+	other := mustCreateUser(t, s, "operador")
+	_, chamador := mustCreateToken(t, s, target.ID, "ci")
+	_, antigo := mustCreateToken(t, s, target.ID, "automacao-antiga")
+	_, dele := mustCreateToken(t, s, other.ID, "dele")
+
+	if err := s.Tokens().DeleteOthers(ctx, target.ID, chamador.Hash); err != nil {
+		t.Fatalf("DeleteOthers returned unexpected error: %v", err)
+	}
+
+	if _, err := s.Tokens().GetByHash(ctx, chamador.Hash); err != nil {
+		t.Errorf("o token que pediu a mudança deixou de autenticar: %v", err)
+	}
+	if _, err := s.Tokens().GetByHash(ctx, antigo.Hash); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("token revogado ainda autentica: %v", err)
+	}
+	if _, err := s.Tokens().GetByHash(ctx, dele.Hash); err != nil {
+		t.Errorf("token de outra conta deixou de autenticar: %v", err)
+	}
+}
+
+// Saber quando o token foi usado pela última vez é o que permite revogar
+// credenciais esquecidas com segurança.
 
 func testTokenTouchLastUsed(t *testing.T, newStore Factory) {
 	s := newStore(t)
