@@ -99,6 +99,10 @@ var embeddedIPv4Prefixes = []netip.Prefix{
 	netip.MustParsePrefix("64:ff9b::/96"),
 	netip.MustParsePrefix("64:ff9b:1::/48"),
 	netip.MustParsePrefix("2002::/16"),
+	// Teredo (2001::/32, RFC 4380), o mecanismo de transição irmão do
+	// 6to4: também embute um IPv4, e também na parte do endereço que um
+	// extrator ingênuo erraria.
+	netip.MustParsePrefix("2001::/32"),
 	netip.MustParsePrefix("::/96"),
 	netip.MustParsePrefix("::ffff:0:0:0/96"),
 }

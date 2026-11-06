@@ -55,9 +55,9 @@ services:
       UPWATCH_RETENTION_DAILY: 17520h
     security_opt:
       - no-new-privileges:true
-    # Mesmo endurecimento do arranjo com SQLite, e aqui não há nem volume
-    # de dados: o estado todo mora no PostgreSQL, então só /tmp precisa
-    # ser gravável.
+    # Mesmo endurecimento do arranjo com SQLite para este serviço, e aqui
+    # não há nem volume de dados: o estado todo mora no PostgreSQL, então
+    # só /tmp precisa ser gravável. O serviço postgres tem o dele abaixo.
     cap_drop:
       - ALL
     read_only: true
@@ -65,8 +65,31 @@ services:
       - /tmp:rw,noexec,nosuid,size=64m
 
   postgres:
+    # Sem digest fixo, ao contrário do Dockerfile do projeto, e de
+    # propósito: lá o digest é reprodutibilidade de uma imagem que nós
+    # publicamos; aqui é a implantação de quem usa, e uma tag que recebe
+    # correção de segurança no `docker compose pull` vale mais do que uma
+    # versão congelada que ninguém volta para repinar.
     image: postgres:17-alpine
     restart: unless-stopped
+    # O banco guarda tudo: as credenciais dos monitores, as dos canais e
+    # os segredos do segundo fator. Ficava sem endurecimento nenhum
+    # enquanto o serviço acima tinha os três, e o comentário de lá dava a
+    # entender que valia para os dois.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # O entrypoint do postgres troca de usuário e ajusta o dono do
+    # diretório de dados, então precisa destes de volta. read_only fica
+    # fora por isso mesmo: o initdb escreve em /var/lib/postgresql e em
+    # /var/run/postgresql.
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
     secrets:
       - postgres_password
     environment:

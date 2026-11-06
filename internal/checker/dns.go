@@ -125,7 +125,7 @@ func (c *DNSChecker) Check(ctx context.Context, m domain.Monitor) Result {
 		return refused
 	}
 	if err != nil {
-		return down("consultando %s: %v", server, err)
+		return down("%s", causaDeConsulta(cfg.Resolver, server, err))
 	}
 
 	values := answerValues(resp.Answer)
@@ -147,6 +147,9 @@ func (c *DNSChecker) Check(ctx context.Context, m domain.Monitor) Result {
 	if resp.Rcode != dns.RcodeSuccess {
 		res.Status = domain.StatusDown
 		res.Message = fmt.Sprintf("resolvedor respondeu %s", dns.RcodeToString[resp.Rcode])
+		if m.RestrictInternal {
+			res.Message = causaSemResposta
+		}
 		return res
 	}
 
@@ -155,10 +158,13 @@ func (c *DNSChecker) Check(ctx context.Context, m domain.Monitor) Result {
 	}
 
 	if len(values) == 0 {
+		res.Status = domain.StatusDown
 		// O nome existe mas não tem o registro pedido; para quem depende
 		// dele, o serviço continua inalcançável.
-		res.Status = domain.StatusDown
 		res.Message = fmt.Sprintf("nenhum registro %s para %s", typeName, m.Target)
+		if m.RestrictInternal {
+			res.Message = causaSemResposta
+		}
 		return res
 	}
 
@@ -174,6 +180,46 @@ func (c *DNSChecker) Check(ctx context.Context, m domain.Monitor) Result {
 
 	res.Status = domain.StatusUp
 	return res
+}
+
+// causaSemResposta é a causa única das recusas de um monitor restrito.
+//
+// Sem ela o desfecho distinguia três casos: nome que não existe, nome que
+// existe só com endereço interno, e nome sem o registro pedido. Esconder
+// o valor da resposta não bastava — a causa dizia qual dos três, e quem
+// pode trocar o alvo do monitor enumerava a zona interna um nome por vez,
+// perguntando por db, vault, gitlab e lendo a diferença.
+//
+// Trocar ErrInternalTarget pela mensagem de "nenhum registro" também não
+// resolveria: continuaria dizendo que o nome existe, só com outras
+// palavras. O que fecha o oráculo é as três recusas serem indistinguíveis.
+//
+// O custo é real e vale dizer: quem administra só um grupo perde a
+// diferença entre "o nome não existe" e "não tem o registro pedido". A
+// restrição só vale para monitor criado por conta de escopo restrito, que
+// é justamente a que poderia usar o oráculo.
+const causaSemResposta = "o nome não resolve para um endereço que este monitor possa usar"
+
+// causaDeConsulta descreve a falha da consulta sem entregar o resolvedor.
+//
+// guard.go declara o princípio: o texto não traz o endereço, porque dizer
+// para onde o nome resolveu do lado de dentro entregaria o DNS interno do
+// servidor a uma conta que só tem um grupo. Valia no caminho da recusa e
+// não no da falha — e o resolvedor do sistema vem do resolv.conf do
+// contêiner, que é justamente o DNS de dentro. A causa ia para o
+// heartbeat, legível em GET /monitors/{id}/heartbeats por quem é dono do
+// grupo, e bastava um timeout de 1ms para produzi-la a cada batida.
+//
+// Com resolvedor escolhido no cadastro o endereço é conhecido de quem
+// cadastrou, e aí ele fica: esconder ali só atrapalharia o diagnóstico.
+func causaDeConsulta(escolhido, server string, err error) string {
+	if escolhido != "" {
+		return fmt.Sprintf("consultando %s: %v", server, err)
+	}
+	if classe, ok := commonNetClass(err); ok {
+		return "consultando o resolvedor do sistema: " + classe
+	}
+	return "consultando o resolvedor do sistema: a consulta falhou"
 }
 
 // restrictedAnswers recorta a resposta de um monitor restrito, salvo por

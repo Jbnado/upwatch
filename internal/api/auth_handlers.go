@@ -227,6 +227,17 @@ func (a *API) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 
 	u := mustUser(r)
 	if err := a.auth.ChangePassword(r.Context(), u.ID, body.Current, body.Next); err != nil {
+		// Quem está com um cookie roubado e tenta adivinhar a senha atual
+		// aqui não gerava linha nenhuma: a rota de login registra o
+		// palpite, esta não registrava. E o 429 por tentativas só era
+		// registrado no login, então uma conta travada aparecia no log sem
+		// causa.
+		switch {
+		case errors.Is(err, auth.ErrInvalidCredentials):
+			a.audit(r, audit.AçãoSenhaAtualErrada, u.Username)
+		case errors.Is(err, auth.ErrTooManyAttempts):
+			a.audit(r, audit.AçãoContaBloqueada, u.Username)
+		}
 		writeStoreError(w, err)
 		return
 	}

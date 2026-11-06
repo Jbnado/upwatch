@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/Jbnado/upwatch/internal/audit"
 	"github.com/Jbnado/upwatch/internal/domain"
@@ -127,10 +128,24 @@ func (a *API) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// O nome é lido antes de apagar, e é por isso que esta leitura
+	// existe: depois não há mais linha para consultar, e um alvo que
+	// saísse como número deixaria a auditoria sem o que ela serve para
+	// responder. Erro aqui não impede o apagar — quem decide isso é o
+	// DeleteUser logo abaixo.
+	nome := strconv.FormatInt(id, 10)
+	if u, err := a.store.Users().Get(r.Context(), id); err == nil {
+		nome = u.Username
+	}
+
 	if err := a.auth.DeleteUser(r.Context(), id); err != nil {
 		writeStoreError(w, err)
 		return
 	}
+	// Sem esta linha, um administrador apaga a conta de outro e não
+	// deixa rastro — e a conta apagada é justamente a que não pode mais
+	// ser consultada para reconstruir o que havia.
+	a.audit(r, audit.AçãoUsuárioRemovido, nome)
 	w.WriteHeader(http.StatusNoContent)
 }
 
