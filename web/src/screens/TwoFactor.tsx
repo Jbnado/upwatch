@@ -316,7 +316,7 @@ function Ligada({
               ? "Os códigos atuais deixam de valer. Confirme com a senha e um código."
               : status.required
                 ? "Esta instalação exige a verificação de administradores: desligada, você só volta a usar a interface depois de cadastrar de novo. Confirme com a senha e um código."
-                : "O login volta a pedir só a senha, e as outras sessões abertas são encerradas. Confirme com a senha e um código."}
+                : "O login volta a pedir só a senha. As outras sessões abertas e os tokens de API da conta são revogados — esta sessão continua. Confirme com a senha e um código."}
           </p>
           {erro && <Alert>{erro}</Alert>}
           <Field label="senha">

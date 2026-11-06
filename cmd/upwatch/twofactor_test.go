@@ -49,7 +49,7 @@ func comDoisFatores(t *testing.T, cfg config.Config, username string) {
 	if err != nil {
 		t.Fatalf("totp.Code returned unexpected error: %v", err)
 	}
-	if _, err := svc.ConfirmTOTP(ctx, u.ID, "", code); err != nil {
+	if _, err := svc.ConfirmTOTP(ctx, u.ID, auth.Credential{}, code); err != nil {
 		t.Fatalf("ConfirmTOTP returned unexpected error: %v", err)
 	}
 }

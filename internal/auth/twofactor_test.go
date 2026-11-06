@@ -29,7 +29,7 @@ func (f *fixture) withTOTP(t *testing.T) enrolled {
 	if err != nil {
 		t.Fatalf("BeginTOTP returned unexpected error: %v", err)
 	}
-	codes, err := f.svc.ConfirmTOTP(ctx, u.ID, "", f.code(t, e.Secret))
+	codes, err := f.svc.ConfirmTOTP(ctx, u.ID, auth.Credential{}, f.code(t, e.Secret))
 	if err != nil {
 		t.Fatalf("ConfirmTOTP returned unexpected error: %v", err)
 	}
@@ -284,7 +284,7 @@ func TestEnablingTOTPRevokesOtherSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BeginTOTP returned unexpected error: %v", err)
 	}
-	if _, err := f.svc.ConfirmTOTP(ctx, u.ID, current, f.code(t, e.Secret)); err != nil {
+	if _, err := f.svc.ConfirmTOTP(ctx, u.ID, auth.Credential{Session: current}, f.code(t, e.Secret)); err != nil {
 		t.Fatalf("ConfirmTOTP returned unexpected error: %v", err)
 	}
 
@@ -311,7 +311,7 @@ func TestConfirmRejectsWrongCode(t *testing.T) {
 	ctx := context.Background()
 
 	e, _ := f.svc.BeginTOTP(ctx, u.ID, goodPassword)
-	if _, err := f.svc.ConfirmTOTP(ctx, u.ID, "", wrongCode(f.code(t, e.Secret))); !errors.Is(err, auth.ErrInvalidCode) {
+	if _, err := f.svc.ConfirmTOTP(ctx, u.ID, auth.Credential{}, wrongCode(f.code(t, e.Secret))); !errors.Is(err, auth.ErrInvalidCode) {
 		t.Fatalf("error = %v, want ErrInvalidCode", err)
 	}
 	// Sem confirmação, o login segue só com a senha.
@@ -334,13 +334,13 @@ func TestDisableNeedsPasswordAndCode(t *testing.T) {
 	e := f.withTOTP(t)
 	ctx := context.Background()
 
-	if err := f.svc.DisableTOTP(ctx, e.user.ID, "", "senha-errada-porem-longa", f.code(t, e.secret)); !errors.Is(err, auth.ErrInvalidCredentials) {
+	if err := f.svc.DisableTOTP(ctx, e.user.ID, auth.Credential{}, "senha-errada-porem-longa", f.code(t, e.secret)); !errors.Is(err, auth.ErrInvalidCredentials) {
 		t.Errorf("senha errada error = %v, want ErrInvalidCredentials", err)
 	}
-	if err := f.svc.DisableTOTP(ctx, e.user.ID, "", goodPassword, wrongCode(f.code(t, e.secret))); !errors.Is(err, auth.ErrInvalidCode) {
+	if err := f.svc.DisableTOTP(ctx, e.user.ID, auth.Credential{}, goodPassword, wrongCode(f.code(t, e.secret))); !errors.Is(err, auth.ErrInvalidCode) {
 		t.Errorf("código errado error = %v, want ErrInvalidCode", err)
 	}
-	if err := f.svc.DisableTOTP(ctx, e.user.ID, "", goodPassword, e.recovery[0]); err != nil {
+	if err := f.svc.DisableTOTP(ctx, e.user.ID, auth.Credential{}, goodPassword, e.recovery[0]); err != nil {
 		t.Fatalf("DisableTOTP returned unexpected error: %v", err)
 	}
 	if res, err := f.svc.Login(ctx, "admin", goodPassword); err != nil || res.NeedsSecondFactor() {
@@ -358,7 +358,7 @@ func TestDisablingTOTPRevokesOtherSessions(t *testing.T) {
 	outra, _ := f.svc.CompleteLogin(ctx, f.challenge(t), f.code(t, e.secret))
 	f.clock.Advance(totp.Period)
 
-	if err := f.svc.DisableTOTP(ctx, e.user.ID, desta.Session, goodPassword, f.code(t, e.secret)); err != nil {
+	if err := f.svc.DisableTOTP(ctx, e.user.ID, auth.Credential{Session: desta.Session}, goodPassword, f.code(t, e.secret)); err != nil {
 		t.Fatalf("DisableTOTP returned unexpected error: %v", err)
 	}
 	if _, err := f.svc.AuthenticateSession(ctx, desta.Session); err != nil {

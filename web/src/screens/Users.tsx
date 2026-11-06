@@ -83,7 +83,8 @@ export function Users({ eu }: { eu: User }) {
   async function desligarSegundoFator(u: User) {
     if (
       !confirm(
-        `Desligar a verificação em duas etapas de "${u.username}"? As sessões dela são encerradas, e ela volta a entrar só com a senha até cadastrar o aplicativo de novo.`,
+        `Desligar a verificação em duas etapas de "${u.username}"? As sessões dela são encerradas e os tokens de API dela são revogados` +
+          " — a automação dela para de funcionar e precisa de token novo. Ela volta a entrar só com a senha até cadastrar o aplicativo de novo.",
       )
     )
       return;

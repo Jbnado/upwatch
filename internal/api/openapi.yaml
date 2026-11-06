@@ -442,8 +442,9 @@ paths:
       summary: Confirma o cadastro com um código do aplicativo
       description: |
         Liga o segundo fator e devolve dez códigos de recuperação, que não
-        aparecem de novo. As outras sessões da conta são encerradas; a
-        desta requisição continua.
+        aparecem de novo. As outras credenciais da conta são revogadas —
+        sessões e tokens de API; a credencial desta requisição continua,
+        seja ela cookie ou token.
       requestBody:
         required: true
         content:
@@ -496,8 +497,9 @@ paths:
       tags: [auth]
       summary: Desliga a verificação em duas etapas da conta
       description: |
-        Exige a senha e um código válido. As outras sessões da conta são
-        encerradas; a desta requisição continua.
+        Exige a senha e um código válido. As outras credenciais da conta
+        são revogadas — sessões e tokens de API; a credencial desta
+        requisição continua, seja ela cookie ou token.
       requestBody:
         required: true
         content:
@@ -520,9 +522,13 @@ paths:
       tags: [auth]
       summary: Troca a senha
       description: |
-        Encerra todas as sessões abertas, inclusive a desta requisição.
-        Trocar a senha porque ela pode ter vazado não adianta se quem a
-        obteve continuar logado.
+        Revoga todas as credenciais da conta: sessões e tokens de API,
+        inclusive a credencial desta requisição. Trocar a senha porque ela
+        pode ter vazado não adianta se quem a obteve continuar logado, nem
+        se o token que ele emitiu continuar valendo — e o token não vence
+        por padrão.
+
+        Automação que usa token de API precisa de token novo depois disto.
 
         A senha atual errada conta no bloqueio da conta, como no login.
       requestBody:
@@ -536,7 +542,7 @@ paths:
                 current_password: { type: string }
                 new_password: { type: string, minLength: 12, maxLength: 72 }
       responses:
-        "204": { description: Senha trocada e sessões encerradas }
+        "204": { description: Senha trocada; sessões e tokens revogados }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "429":
@@ -737,8 +743,13 @@ paths:
       tags: [auth]
       summary: Desliga a verificação em duas etapas de outra conta
       description: |
-        Para quem perdeu o celular e os códigos de recuperação. Encerra
-        todas as sessões da conta, e fica no log com quem fez.
+        Para quem perdeu o celular e os códigos de recuperação. Revoga
+        todas as credenciais da conta — sessões e tokens de API —, e fica
+        no log com quem fez.
+
+        A automação da conta para de funcionar e precisa de token novo. É
+        deliberado: o token é a credencial que o segundo fator não cobre,
+        e um reset também responde a incidente.
 
         A própria conta devolve 409: ela desliga o segundo fator por
         `POST /api/v1/auth/2fa/disable`, que pede senha e código. Conta sem
@@ -749,7 +760,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/PathID"
       responses:
-        "204": { description: Segundo fator desligado e sessões encerradas }
+        "204": { description: Segundo fator desligado; sessões e tokens revogados }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }

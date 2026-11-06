@@ -292,6 +292,20 @@ type TokenRepo interface {
 	GetByHash(ctx context.Context, hash string) (domain.APIToken, error)
 	List(ctx context.Context, userID int64) ([]domain.APIToken, error)
 	Delete(ctx context.Context, id int64) error
+	// DeleteByUser revoga todos os tokens de uma conta, usado quando a
+	// senha muda e quando o segundo fator é ligado, desligado ou
+	// resetado. Espelha SessionRepo.DeleteByUser pelo mesmo motivo, e
+	// por um que é mais forte aqui: o token não vence por padrão e não
+	// passa pelo segundo fator, então sobrevivendo a essas mudanças ele
+	// é a credencial mais poderosa das duas a atravessar a resposta ao
+	// incidente. Conta sem token nenhum não é erro.
+	DeleteByUser(ctx context.Context, userID int64) error
+	// DeleteOthers revoga os tokens da conta menos o de keep, que é o
+	// hash do que está fazendo a requisição. Espelha
+	// SessionRepo.DeleteOthers: a credencial que faz a mudança sobrevive
+	// a ela, e um cliente que chega por token é o único que alguns
+	// endpoints servem por fora da interface.
+	DeleteOthers(ctx context.Context, userID int64, keep string) error
 	// TouchLastUsed registra o uso, para o operador identificar tokens
 	// esquecidos antes de revogá-los.
 	TouchLastUsed(ctx context.Context, id int64, at time.Time) error

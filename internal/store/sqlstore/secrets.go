@@ -403,6 +403,20 @@ func ForgetSecrets(driver, dsn string) (int, error) {
 			return fmt.Errorf("sqlstore: contando segundos fatores apagados: %w", err)
 		}
 		erased += int(n)
+
+		// As credenciais vão com eles. Desligar o segundo fator de todas as
+		// contas e deixar sessão e token de pé seria a resposta ao
+		// incidente parecendo completa sem ser: quem já estava dentro
+		// continua dentro, agora sem o fator no caminho, e o token de API
+		// não vence nem passava pelo fator antes. Perda de chave é
+		// incidente; todos entram de novo com a senha.
+		if _, err := t.ExecContext(ctx, `DELETE FROM api_token`); err != nil {
+			return fmt.Errorf("sqlstore: revogando tokens de API: %w", err)
+		}
+		if _, err := t.ExecContext(ctx, `DELETE FROM session`); err != nil {
+			return fmt.Errorf("sqlstore: encerrando sessões: %w", err)
+		}
+
 		_, err = t.ExecContext(ctx, `DELETE FROM secret_key_check`)
 		return err
 	})
