@@ -145,6 +145,47 @@ func TestAuditLogsRateLimitBlock(t *testing.T) {
 	exigeCampos(t, linha, atorAnônimoNoLog, "/api/v1/auth/login", "127.0.0.1")
 }
 
+// O segredo do monitor push viaja no caminho da URL — é assim que um cron
+// reporta sem carregar credencial de interface. A linha do 429 identificava
+// a rota pelo caminho da requisição, que é o caminho já instanciado, então
+// o token válido ia para o log. E log sai da máquina: vai para coletor de
+// terceiro e fica guardado por meses, com um público de leitura bem maior
+// que o do banco.
+//
+// Não precisa de intenção, só de volume: o balde do push são 300 fichas
+// por origem, então qualquer coisa que passe disso atrás do mesmo
+// endereço — um CI compartilhado, um NAT com muitos crons, uma
+// retentativa em laço — grava o token sem ninguém atacar nada.
+func TestAuditDoesNotLogThePushTokenWhenTheOriginIsBlocked(t *testing.T) {
+	s, reg := servidorComLog(t, nil)
+	s.setup(t)
+	s.createMonitor(t, pushMonitorBody("fila de pedidos", pushToken))
+
+	var last *http.Response
+	for i := 0; i <= pushBurstDoTeste; i++ {
+		last = s.do(t, http.MethodPost, "/api/v1/push/"+pushToken, nil)
+		if last.StatusCode == http.StatusTooManyRequests {
+			break
+		}
+	}
+	assertStatus(t, last, http.StatusTooManyRequests)
+
+	linha := reg.comAção(t, "limite.bloqueio")
+	if strings.Contains(linha, pushToken) {
+		t.Errorf("a linha de auditoria trouxe o token do monitor push: %s", linha)
+	}
+	// O alvo fixado, e não só "contém push": o valor é determinístico, e
+	// passar "" para exigeCampos desliga a checagem em silêncio em vez de
+	// afirmar algo. Tirar o segredo não pode custar a utilidade do
+	// registro, senão quem coleta perde o evento.
+	exigeCampos(t, linha, atorAnônimoNoLog, "/api/v1/push/{token}", "127.0.0.1")
+}
+
+// pushBurstDoTeste é o teto da rajada do push mais folga. Repetido aqui de
+// propósito, como atorAnônimoNoLog: se o teto do pacote mudar, o laço para
+// de alcançar o 429 e o teste falha em vez de passar sem conferir nada.
+const pushBurstDoTeste = 320
+
 // O 429 por conta é outro evento que o por origem: um diz que um endereço
 // está insistindo, o outro que uma conta específica está sob ataque. Quem
 // lê o log depois precisa saber qual dos dois aconteceu.

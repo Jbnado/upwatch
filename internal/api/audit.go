@@ -3,6 +3,8 @@ package api
 import (
 	"net/http"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/Jbnado/upwatch/internal/audit"
 )
 
@@ -35,6 +37,34 @@ func (a *API) auditAs(r *http.Request, ator, ação, alvo string) {
 		Alvo:   alvo,
 		Origem: a.origins.origin(r),
 	})
+}
+
+// rotaDesconhecida é a rota de quem chegou sem casar com nenhuma.
+const rotaDesconhecida = "(sem rota)"
+
+// rotaDe identifica a rota pelo padrão com que ela foi registrada, e
+// não pelo caminho que chegou na requisição.
+//
+// A diferença é um segredo. O caminho do /push carrega o token do
+// monitor — decisão declarada, porque é assim que um cron reporta sem
+// credencial de interface —, então registrar o caminho instanciado faz
+// o funil escrever exatamente o que ele existe para manter fora:
+// "/api/v1/push/<token-real>" no lugar de "/api/v1/push/{token}".
+//
+// Sem padrão devolve rotaDesconhecida, e nunca o caminho. Cair no
+// caminho cru seria cair justamente no vazamento que esta função existe
+// para fechar, e o caso é alcançável: recoverPanic é middleware do mux,
+// que o chi roda ANTES de procurar a rota, então um pânico em qualquer
+// middleware global chega aqui sem rota casada. Perder o endereço do
+// defeito custa a quem investiga; perder o segredo custa a quem é dono
+// dele.
+func rotaDe(r *http.Request) string {
+	if rc := chi.RouteContext(r.Context()); rc != nil {
+		if padrão := rc.RoutePattern(); padrão != "" {
+			return padrão
+		}
+	}
+	return rotaDesconhecida
 }
 
 // atorDe identifica a conta da requisição, ou devolve o ator anônimo.

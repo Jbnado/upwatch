@@ -115,6 +115,22 @@ func TestAuditNeverLogsSecrets(t *testing.T) {
 	}
 	mresp.Body.Close()
 
+	// Monitor push: o segredo dele viaja no caminho da URL, então todo
+	// fluxo que registre o caminho o registra, e o passeio não passava por
+	// aqui.
+	//
+	// Isto não é o que pega a linha do 429 — o passeio não estoura
+	// limitador nenhum, e quem cobre aquele caso é
+	// TestAuditDoesNotLogThePushTokenWhenTheOriginIsBlocked. O que esta
+	// perna garante é o resto: um registro novo no caminho do push, em
+	// qualquer handler daqui, passa a ser pego aqui.
+	pushID := s.createMonitor(t, pushMonitorBody("fila de pedidos", pushToken))
+	assertStatus(t, s.do(t, http.MethodPost, "/api/v1/push/"+pushToken, nil), http.StatusOK)
+	assertStatus(t, s.do(t, http.MethodPost, "/api/v1/push/"+pushToken+"-errado", nil),
+		http.StatusUnauthorized)
+	assertStatus(t, s.do(t, http.MethodDelete, "/api/v1/monitors/"+itoa(pushID), nil),
+		http.StatusNoContent)
+
 	// Troca de senha por último: encerra a sessão.
 	cookieUsado := s.cookie.Value
 	assertStatus(t, s.do(t, http.MethodPost, "/api/v1/auth/password", map[string]any{
@@ -140,6 +156,7 @@ func TestAuditNeverLogsSecrets(t *testing.T) {
 		"segredo do token de API":    segredoToken,
 		"desafio do segundo passo":   desafio,
 		"cookie de sessão":           cookieUsado,
+		"token do monitor push":      pushToken,
 	}
 	log := reg.texto()
 	for nome, segredo := range segredos {
