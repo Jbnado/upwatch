@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Grupos de monitores.
@@ -58,13 +59,22 @@ func (g Group) Validate() error {
 	if name == "" {
 		return invalid("name", "não pode ser vazio")
 	}
-	if len(name) > maxGroupNameLength {
+	if utf8.RuneCountInString(name) > maxGroupNameLength {
 		return invalid("name", fmt.Sprintf("não pode passar de %d caracteres", maxGroupNameLength))
 	}
-	// A barra sozinha já basta para recusar: aceitar "a/b" e recusar só
-	// "a / b" convidaria a achar que o problema é o espaço.
-	if strings.Contains(name, "/") {
-		return invalid("name", "não pode conter barra: ela separa os níveis no caminho do grupo")
+	// Só o separador inteiro, com os espaços. Recusar qualquer barra
+	// pegaria "E/S", "24/7" e "TI/Infra", que nunca colidiram com caminho
+	// nenhum — "TI/Infra" não é "TI / Infra" —, e quebraria o salvamento
+	// desses grupos num campo que a tela de lembrete nem mostra.
+	if strings.Contains(name, PathSeparator) {
+		return invalid("name", fmt.Sprintf(
+			"não pode conter %q, que separa os níveis no caminho do grupo", PathSeparator))
+	}
+	// No nome cru, e não no aparado: o TrimSpace come os controles das
+	// pontas, e aí eles passariam pela validação para serem gravados por
+	// quem não apara.
+	if err := semControles("name", g.Name); err != nil {
+		return err
 	}
 	if err := ValidateSlug(g.Slug); err != nil {
 		return err

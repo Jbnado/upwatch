@@ -83,11 +83,12 @@ func TestMetricsEscapeHostileLabel(t *testing.T) {
 	s := newServer(t)
 	s.setup(t)
 
-	// Um nome com aspas ou quebra de linha quebraria a exposição inteira:
-	// o Prometheus descarta a coleta e nenhuma métrica chega, nem as das
-	// séries saudáveis.
+	// Um nome com aspas quebraria a exposição inteira: o Prometheus
+	// descarta a coleta e nenhuma métrica chega, nem as das séries
+	// saudáveis. Aspa e barra invertida seguem permitidas no nome, e o
+	// escape na saída é o que as segura.
 	resp := s.do(t, http.MethodPost, "/api/v1/monitors", map[string]any{
-		"name": `alvo "com" \aspas` + "\n e quebra", "type": "http",
+		"name": `alvo "com" \aspas`, "type": "http",
 		"target": "https://exemplo.com", "interval_seconds": 60, "timeout_seconds": 10,
 	})
 	assertStatus(t, resp, http.StatusCreated)
@@ -104,12 +105,13 @@ func TestMetricsEscapeHostileLabel(t *testing.T) {
 			t.Fatalf("aspas desbalanceadas na exposição: %q", linha)
 		}
 	}
-	if strings.Contains(corpo, "\n e quebra") {
-		t.Errorf("quebra de linha não escapada:\n%s", corpo)
-	}
-	if !strings.Contains(corpo, `\n`) {
-		t.Errorf("a quebra deveria virar sequência de escape:\n%s", corpo)
-	}
+	// A quebra de linha, essa é recusada no cadastro: escapá-la na saída
+	// exigiria um escape que o formato de exposição não define, e
+	// qualquer um que se invente colide com o texto literal equivalente.
+	assertStatus(t, s.do(t, http.MethodPost, "/api/v1/monitors", map[string]any{
+		"name": "alvo\n e quebra", "type": "http",
+		"target": "https://exemplo.com", "interval_seconds": 60, "timeout_seconds": 10,
+	}), http.StatusBadRequest)
 }
 
 func TestMetricsCountIncidents(t *testing.T) {

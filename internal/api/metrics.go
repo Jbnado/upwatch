@@ -273,11 +273,16 @@ func family(b *strings.Builder, nome, tipo, ajuda string) {
 // Um nome de monitor com aspas ou quebra de linha quebraria a exposição
 // inteira: o Prometheus descarta a coleta e nenhuma métrica chega, nem as
 // das séries saudáveis.
-// Os outros bytes de controle não quebram a coleta, e por isso faltavam:
-// \r sobrescreve a linha anterior e ESC reprograma o terminal de quem lê
-// a exposição crua, que é o caso comum porque /metrics é aberto por
-// padrão. Não dá forja de série — a aspa é escapada, então não há como
-// fechar o valor e abrir outro —, mas falsifica o que o humano vê.
+// Só estes três, que são os que o formato de exposição define. Tentei
+// acrescentar \r e \xNN para os outros bytes de controle, e era pior: o
+// coletor conhece apenas \\, \" e \n e devolve o resto intacto, então
+// um nome com ESC e um nome com o texto literal "\x1b" viravam o mesmo
+// rótulo. Duas amostras com rótulos iguais fazem o Prometheus recusar a
+// raspagem inteira — exatamente o que este escape existe para evitar.
+//
+// Escape que colapsa entradas distintas é pior que escape nenhum. O byte
+// de controle é barrado na entrada, em domain.Monitor.Validate e
+// domain.Group.Validate, que é onde dá para recusar sem colidir.
 func quote(v string) string {
 	var b strings.Builder
 	b.Grow(len(v) + 2)
@@ -291,13 +296,7 @@ func quote(v string) string {
 			b.WriteString(`\\`)
 		case '\n':
 			b.WriteString(`\n`)
-		case '\r':
-			b.WriteString(`\r`)
 		default:
-			if r < 0x20 || r == 0x7f {
-				fmt.Fprintf(&b, `\\x%02x`, r)
-				continue
-			}
 			b.WriteRune(r)
 		}
 	}

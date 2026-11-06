@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // MinInterval é o menor intervalo aceito entre dois checks do mesmo monitor.
@@ -191,11 +192,31 @@ type Monitor struct {
 	RearmedAt time.Time `json:"rearmed_at"`
 }
 
+// MaxMonitorNameLength limita o nome do monitor, como maxGroupNameLength faz
+// com o do grupo. O nome vai no rótulo do Prometheus.
+const MaxMonitorNameLength = 120
+
+// semControles recusa byte de controle no texto.
+//
+// Nome vai para o rótulo do Prometheus, e ali o formato de exposição define
+// três escapes, e só eles. Qualquer outro escape que se invente colide
+// com o texto literal que o coletor desfaz para a mesma coisa, e duas
+// amostras com rótulos iguais fazem a raspagem inteira ser recusada. Por isso
+// o controle é barrado aqui, na entrada, em vez de escapado na saída.
+//
+// E fecha o que motivou a procura: ESC reprograma o terminal de quem lê
+// /metrics cru, e CR sobrescreve a linha anterior.
+func semControles(campo, valor string) error {
+	for _, r := range valor {
+		if r < 0x20 || r == 0x7f {
+			return invalid(campo, "não pode conter caractere de controle")
+		}
+	}
+	return nil
+}
+
 // Validate confere as invariantes do monitor e devolve *ValidationError
 // apontando o primeiro campo inválido.
-// MaxMonitorNameLength limita o nome do monitor, como maxGroupNameLength
-// faz com o do grupo. O nome vai no rótulo do Prometheus.
-const MaxMonitorNameLength = 120
 
 func (m Monitor) Validate() error {
 	if strings.TrimSpace(m.Name) == "" {
@@ -204,8 +225,14 @@ func (m Monitor) Validate() error {
 	// Teto como o do nome de grupo, que já tinha. Sem ele o nome ia até o
 	// limite do corpo da requisição, e ele sai no rótulo do Prometheus —
 	// numa exposição que é aberta por padrão.
-	if len(m.Name) > MaxMonitorNameLength {
+	//
+	// Contado em runes, e não em bytes: a mensagem fala em caracteres, e um
+	// nome em português recusado na metade do que ela promete é defeito.
+	if utf8.RuneCountInString(m.Name) > MaxMonitorNameLength {
 		return invalid("name", fmt.Sprintf("não pode passar de %d caracteres", MaxMonitorNameLength))
+	}
+	if err := semControles("name", m.Name); err != nil {
+		return err
 	}
 	if !m.Type.Valid() {
 		return invalid("type", "tipo de monitor desconhecido")
