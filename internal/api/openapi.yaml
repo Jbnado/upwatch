@@ -921,6 +921,7 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/Monitor" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
@@ -974,12 +975,15 @@ paths:
       description: |
         O monitor `childID` deixa de depender do monitor do caminho e
         volta a avisar por conta própria. Responde 404 se ele não existe,
-        está fora do escopo ou depende de outro pai.
+        está fora do escopo ou depende de outro pai, e 403 se dele
+        dependem monitores de outros grupos: soltá-lo dessilencia o que
+        estava calado, e isso é alertar o pager de quem não pediu.
       parameters:
         - { $ref: "#/components/parameters/PathID" }
         - { $ref: "#/components/parameters/PathChildID" }
       responses:
         "204": { description: Dependente desligado }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /api/v1/summaries:

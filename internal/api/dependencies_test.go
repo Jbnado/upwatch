@@ -350,6 +350,179 @@ func TestScopedAdminCannotChangeAParentWithDependentsOutsideItsScope(t *testing.
 	assertStatus(t, c.s.do(t, http.MethodDelete, "/api/v1/monitors/"+itoa(pai), nil), http.StatusNoContent)
 }
 
+// A guarda da #111 leu "mexer no pai" como trocar o alvo, pausar ou
+// apagar, e cobriu as duas rotas que fazem isso. Mexer no pai também é
+// trocar de pai, e isso acontece por outra rota: pendurar o monitor numa
+// sonda caída do próprio grupo cala a cadeia inteira abaixo dele — netos
+// de outros grupos incluídos — sem nunca tocar no monitor de fora.
+func TestScopedAdminCannotReparentAMonitorWithDependentsOutsideItsScope(t *testing.T) {
+	c := novoCenarioEscopo(t)
+	adm := c.s.como(c.retAdmin)
+
+	// O monitor de dentro do escopo que tem dependente de fora.
+	filho := c.s.createMonitor(t, monitorNoGrupo("verificacao", &c.retProd))
+	assertStatus(t, c.s.do(t, http.MethodPost, "/api/v1/monitors/"+itoa(filho)+"/children",
+		map[string]any{"monitor_ids": []int64{c.foraAgrupado}}), http.StatusOK)
+
+	// A sonda do próprio grupo que viraria o pai novo.
+	sonda := c.s.createMonitor(t, monitorNoGrupo("sonda", &c.retProd))
+
+	resp := adm.do(t, http.MethodPost, "/api/v1/monitors/"+itoa(sonda)+"/children",
+		map[string]any{"monitor_ids": []int64{filho}})
+	assertStatus(t, resp, http.StatusForbidden)
+	if corpo := readBody(t, resp); strings.Contains(corpo, "segredo-rpa") || strings.Contains(corpo, itoa(c.foraAgrupado)) {
+		t.Errorf("the refusal names the dependent: %s", corpo)
+	}
+	if pai := c.s.paiDe(t, filho); pai != nil {
+		t.Errorf("parent_id = %v, want it kept without a parent", pai)
+	}
+
+	// Controle: o monitor sem dependente de fora continua sendo pendurado
+	// pela conta restrita. Guarda que custa o uso normal vira guarda que
+	// alguém desliga.
+	solto := c.s.createMonitor(t, monitorNoGrupo("bff-interno", &c.retProd))
+	assertStatus(t, adm.do(t, http.MethodPost, "/api/v1/monitors/"+itoa(sonda)+"/children",
+		map[string]any{"monitor_ids": []int64{solto}}), http.StatusOK)
+
+	// Controle: quem alcança tudo continua montando a dependência entre
+	// grupos, que é o caso de uso de que a guarda não pode tirar.
+	assertStatus(t, c.s.do(t, http.MethodPost, "/api/v1/monitors/"+itoa(sonda)+"/children",
+		map[string]any{"monitor_ids": []int64{filho}}), http.StatusOK)
+}
+
+// O espelho da mesma escrita: soltar o filho do pai também decide se o
+// alerta do outro grupo chega. Dessilencia o que estava calado e despeja
+// a fila no pager de quem não pediu, o que numa ferramenta de alerta é
+// tão ruim quanto o silêncio.
+func TestScopedAdminCannotUnlinkAChildWithDependentsOutsideItsScope(t *testing.T) {
+	c := novoCenarioEscopo(t)
+	adm := c.s.como(c.retAdmin)
+
+	sonda := c.s.createMonitor(t, monitorNoGrupo("sonda", &c.retProd))
+	filho := c.s.createMonitor(t, monitorNoGrupo("verificacao", &c.retProd))
+	assertStatus(t, c.s.do(t, http.MethodPost, "/api/v1/monitors/"+itoa(sonda)+"/children",
+		map[string]any{"monitor_ids": []int64{filho}}), http.StatusOK)
+	assertStatus(t, c.s.do(t, http.MethodPost, "/api/v1/monitors/"+itoa(filho)+"/children",
+		map[string]any{"monitor_ids": []int64{c.foraAgrupado}}), http.StatusOK)
+
+	assertStatus(t, adm.do(t, http.MethodDelete,
+		"/api/v1/monitors/"+itoa(sonda)+"/children/"+itoa(filho), nil), http.StatusForbidden)
+	if pai := c.s.paiDe(t, filho); pai == nil || *pai != sonda {
+		t.Errorf("parent_id = %v, want %d kept", pai, sonda)
+	}
+
+	// Controle: filho sem dependente de fora continua sendo solto pela
+	// conta restrita.
+	solto := c.s.createMonitor(t, monitorNoGrupo("bff-interno", &c.retProd))
+	assertStatus(t, c.s.do(t, http.MethodPost, "/api/v1/monitors/"+itoa(sonda)+"/children",
+		map[string]any{"monitor_ids": []int64{solto}}), http.StatusOK)
+	assertStatus(t, adm.do(t, http.MethodDelete,
+		"/api/v1/monitors/"+itoa(sonda)+"/children/"+itoa(solto), nil), http.StatusNoContent)
+
+	// Controle: quem alcança tudo continua soltando.
+	assertStatus(t, c.s.do(t, http.MethodDelete,
+		"/api/v1/monitors/"+itoa(sonda)+"/children/"+itoa(filho), nil), http.StatusNoContent)
+}
+
+// A rota aceita até store.MaxPageSize monitores por pedido, e a guarda tem
+// de olhar todos. Sem este cenário, trocar o laço por ids[:1] passa a
+// suíte inteira — conferido por mutação.
+//
+// O monitor com dependente de fora vem em segundo lugar de propósito.
+func TestScopedAdminCannotReparentABatchHidingADependentOutsideItsScope(t *testing.T) {
+	c := novoCenarioEscopo(t)
+	adm := c.s.como(c.retAdmin)
+
+	limpo := c.s.createMonitor(t, monitorNoGrupo("sem-dependente", &c.retProd))
+	comDependente := c.s.createMonitor(t, monitorNoGrupo("com-dependente", &c.retProd))
+	assertStatus(t, c.s.do(t, http.MethodPost, "/api/v1/monitors/"+itoa(comDependente)+"/children",
+		map[string]any{"monitor_ids": []int64{c.foraAgrupado}}), http.StatusOK)
+	sonda := c.s.createMonitor(t, monitorNoGrupo("sonda", &c.retProd))
+
+	assertStatus(t, adm.do(t, http.MethodPost, "/api/v1/monitors/"+itoa(sonda)+"/children",
+		map[string]any{"monitor_ids": []int64{limpo, comDependente}}), http.StatusForbidden)
+
+	// E nada do lote foi gravado: recusa pela metade deixaria a árvore num
+	// estado que ninguém pediu.
+	if pai := c.s.paiDe(t, limpo); pai != nil {
+		t.Errorf("parent_id do monitor limpo = %v, queria nenhum: o lote recusado gravou parte", pai)
+	}
+}
+
+// "Os netos contam" vale nas rotas novas também: a queda do pai cala a
+// cadeia inteira, não só o filho direto. Sem este cenário, tirar a
+// expansão da fila só derruba o teste do #111 — conferido por mutação.
+func TestScopedAdminCannotReparentAMonitorWithAGrandchildOutsideItsScope(t *testing.T) {
+	c := novoCenarioEscopo(t)
+	adm := c.s.como(c.retAdmin)
+
+	meio := c.s.createMonitor(t, monitorNoGrupo("verificacao", &c.retProd))
+	assertStatus(t, c.s.do(t, http.MethodPost, "/api/v1/monitors/"+itoa(meio)+"/children",
+		map[string]any{"monitor_ids": []int64{c.foraAgrupado}}), http.StatusOK)
+	topo := c.s.createMonitor(t, monitorNoGrupo("topo", &c.retProd))
+	assertStatus(t, c.s.do(t, http.MethodPost, "/api/v1/monitors/"+itoa(topo)+"/children",
+		map[string]any{"monitor_ids": []int64{meio}}), http.StatusOK)
+	sonda := c.s.createMonitor(t, monitorNoGrupo("sonda", &c.retProd))
+
+	// O dependente de fora está dois níveis abaixo de topo.
+	assertStatus(t, adm.do(t, http.MethodPost, "/api/v1/monitors/"+itoa(sonda)+"/children",
+		map[string]any{"monitor_ids": []int64{topo}}), http.StatusForbidden)
+	if pai := c.s.paiDe(t, topo); pai != nil {
+		t.Errorf("parent_id de topo = %v, queria nenhum", pai)
+	}
+}
+
+// O controle que faltava, e é o que separa esta guarda de uma que recusasse
+// qualquer dependente: dependente só de dentro do escopo não bloqueia nada.
+// Sem ele, fazer a travessia devolver sempre true passa nas duas rotas
+// novas — conferido por mutação.
+func TestScopedAdminCanReparentAMonitorWithDependentsInsideItsScope(t *testing.T) {
+	c := novoCenarioEscopo(t)
+	adm := c.s.como(c.retAdmin)
+
+	pai := c.s.createMonitor(t, monitorNoGrupo("verificacao", &c.retProd))
+	filhoDeDentro := c.s.createMonitor(t, monitorNoGrupo("filho-de-dentro", &c.retProd))
+	assertStatus(t, c.s.do(t, http.MethodPost, "/api/v1/monitors/"+itoa(pai)+"/children",
+		map[string]any{"monitor_ids": []int64{filhoDeDentro}}), http.StatusOK)
+	sonda := c.s.createMonitor(t, monitorNoGrupo("sonda", &c.retProd))
+
+	assertStatus(t, adm.do(t, http.MethodPost, "/api/v1/monitors/"+itoa(sonda)+"/children",
+		map[string]any{"monitor_ids": []int64{pai}}), http.StatusOK)
+	if p := c.s.paiDe(t, pai); p == nil || *p != sonda {
+		t.Errorf("parent_id = %v, queria %d", p, sonda)
+	}
+	// E soltar também, que é a outra rota.
+	assertStatus(t, adm.do(t, http.MethodDelete,
+		"/api/v1/monitors/"+itoa(sonda)+"/children/"+itoa(pai), nil), http.StatusNoContent)
+}
+
+// A autorização vem antes do ramo que conta como a árvore está montada.
+// Um lote que fecharia ciclo e contém monitor com dependente de fora é
+// recusado por escopo — 403 —, e não com o 400 que nomeia o monitor.
+//
+// Sem este cenário, mover a guarda para depois da conferência de ciclo
+// passa a suíte inteira — conferido por mutação.
+func TestScopedAdminGetsScopeRefusalBeforeTheCycleComplaint(t *testing.T) {
+	c := novoCenarioEscopo(t)
+	adm := c.s.como(c.retAdmin)
+
+	topo := c.s.createMonitor(t, monitorNoGrupo("topo", &c.retProd))
+	assertStatus(t, c.s.do(t, http.MethodPost, "/api/v1/monitors/"+itoa(topo)+"/children",
+		map[string]any{"monitor_ids": []int64{c.foraAgrupado}}), http.StatusOK)
+	sonda := c.s.createMonitor(t, monitorNoGrupo("sonda", &c.retProd))
+	assertStatus(t, c.s.do(t, http.MethodPost, "/api/v1/monitors/"+itoa(topo)+"/children",
+		map[string]any{"monitor_ids": []int64{sonda}}), http.StatusOK)
+
+	// Pendurar topo em sonda fecharia o ciclo topo → sonda → topo, e topo
+	// tem dependente de fora. A recusa por escopo tem de vir primeiro.
+	resp := adm.do(t, http.MethodPost, "/api/v1/monitors/"+itoa(sonda)+"/children",
+		map[string]any{"monitor_ids": []int64{topo}})
+	assertStatus(t, resp, http.StatusForbidden)
+	if corpo := readBody(t, resp); strings.Contains(corpo, "ciclo") {
+		t.Errorf("a recusa contou como a árvore está montada: %s", corpo)
+	}
+}
+
 // O fluxo ao vivo também não leva o parent_id de fora: ligar o monitor de
 // dentro a um pai de fora chega como atualização do monitor, sem o pai.
 func TestEventStreamHidesAParentOutsideTheScope(t *testing.T) {
