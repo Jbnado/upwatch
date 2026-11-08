@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Grupos de monitores.
@@ -22,6 +23,15 @@ import (
 // maxGroupNameLength limita o nome. Nome de grupo vai em cartão e em
 // cabeçalho; frase não cabe em nenhum dos dois.
 const maxGroupNameLength = 60
+
+// PathSeparator separa os níveis em GroupTree.Path.
+//
+// Exportado porque é contrato, não detalhe: o caminho vai como rótulo no
+// Prometheus, e nome que contenha o separador produz o mesmo rótulo de um
+// caminho de dois níveis. Duas amostras com rótulos idênticos fazem o
+// coletor recusar a raspagem inteira — o desfecho que o rótulo de grupo
+// existe para evitar.
+const PathSeparator = " / "
 
 // Group é um conjunto de monitores. Monitor pertence a um grupo folha ou a
 // "Sem grupo".
@@ -49,8 +59,22 @@ func (g Group) Validate() error {
 	if name == "" {
 		return invalid("name", "não pode ser vazio")
 	}
-	if len(name) > maxGroupNameLength {
+	if utf8.RuneCountInString(name) > maxGroupNameLength {
 		return invalid("name", fmt.Sprintf("não pode passar de %d caracteres", maxGroupNameLength))
+	}
+	// Só o separador inteiro, com os espaços. Recusar qualquer barra
+	// pegaria "E/S", "24/7" e "TI/Infra", que nunca colidiram com caminho
+	// nenhum — "TI/Infra" não é "TI / Infra" —, e quebraria o salvamento
+	// desses grupos num campo que a tela de lembrete nem mostra.
+	if strings.Contains(name, PathSeparator) {
+		return invalid("name", fmt.Sprintf(
+			"não pode conter %q, que separa os níveis no caminho do grupo", PathSeparator))
+	}
+	// No nome cru, e não no aparado: o TrimSpace come os controles das
+	// pontas, e aí eles passariam pela validação para serem gravados por
+	// quem não apara.
+	if err := semControles("name", g.Name); err != nil {
+		return err
 	}
 	if err := ValidateSlug(g.Slug); err != nil {
 		return err
@@ -181,7 +205,7 @@ func (t GroupTree) Path(id int64) string {
 	if !ok {
 		return g.Name
 	}
-	return pai.Name + " / " + g.Name
+	return pai.Name + PathSeparator + g.Name
 }
 
 // CheckPlacement confere se o grupo cabe na árvore no lugar pedido.

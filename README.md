@@ -509,10 +509,13 @@ As ações:
 | `limite.bloqueio` | origem barrada pelo limite por origem (429) |
 | `setup.token_errado` | token de configuração recusado no `POST /setup` |
 | `metrics.token_errado` | token recusado no `/metrics` |
+| `push.token_errado` | token recusado no `/push`, o único endpoint sem login com credencial própria |
 | `senha.trocada` | conta trocou a própria senha |
+| `senha.atual_errada` | senha atual recusada ao tentar trocá-la, o que é o que faz quem está com uma sessão roubada |
 | `token.criado` / `token.revogado` | credencial de API emitida ou apagada |
 | `usuario.criado` | conta criada |
 | `usuario.acesso_trocado` | papel ou escopo de uma conta alterado |
+| `usuario.removido` | conta apagada |
 | `2fa.ligada` / `2fa.desligada` | segundo fator ligado ou desligado pela própria conta |
 | `2fa.recuperacao_trocada` | códigos de recuperação gerados de novo |
 | `2fa.recuperacao_usada` | login entrou com um código de recuperação, por cima do aplicativo autenticador |

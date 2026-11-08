@@ -174,6 +174,10 @@ func (h *HTTP) ValidateConfig(raw json.RawMessage) error {
 	}
 
 	if cfg.BodyRegex != "" {
+		if len(cfg.BodyRegex) > MaxBodyRegexLength {
+			return fmt.Errorf("checker: body_regex tem %d caracteres; o máximo é %d",
+				len(cfg.BodyRegex), MaxBodyRegexLength)
+		}
 		if _, err := regexp.Compile(cfg.BodyRegex); err != nil {
 			return fmt.Errorf("checker: expressão regular inválida em body_regex: %w", err)
 		}

@@ -328,7 +328,16 @@ func (a *application) run(ctx context.Context, cfg config.Config) error {
 		// Sem prazo de leitura de cabeçalho, uma conexão aberta e ociosa
 		// segura um descritor indefinidamente.
 		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       120 * time.Second,
+		// ReadTimeout cobre o corpo, que o ReadHeaderTimeout não cobre: um
+		// cliente que manda os cabeçalhos e depois escoa o corpo byte a
+		// byte segura uma goroutine e um descritor indefinidamente.
+		//
+		// Sem WriteTimeout de propósito: o fluxo de eventos (SSE) vive
+		// dias numa aba aberta, e um prazo de escrita o cortaria. O prazo
+		// por resposta, onde ele faz falta, é assunto do handler.
+		ReadTimeout:    30 * time.Second,
+		MaxHeaderBytes: 64 << 10,
+		IdleTimeout:    120 * time.Second,
 	}
 
 	erros := make(chan error, 1)

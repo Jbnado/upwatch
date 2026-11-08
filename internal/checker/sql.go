@@ -21,6 +21,15 @@ import (
 // rodando a cada minuto vira carga no banco que se queria vigiar.
 const MaxSQLQueryLength = 4096
 
+// MaxBodyRegexLength limita o padrão de body_regex.
+//
+// O regexp do Go é RE2, linear e sem backtracking, então não há explosão
+// catastrófica. O que sobra é O(m·n) na máquina NFA, com m preso só ao
+// teto do corpo da requisição (1 MiB) e n até MaxBodyBytes, reexecutado a
+// cada intervalo dentro do pool que precisa verificar todo o resto. Os
+// outros campos interpretados já têm teto; este não tinha.
+const MaxBodyRegexLength = 4096
+
 // defaultSQLQuery é a consulta quando nenhuma é configurada: prova que o
 // banco aceita sessão e executa, sem tocar em tabela nenhuma.
 const defaultSQLQuery = "SELECT 1"
@@ -182,7 +191,7 @@ func sqlFailure(m domain.Monitor, meta map[string]string, password, stage string
 	}
 	class, known := classify(err)
 	if !known {
-		class, known = commonSQLClass(err)
+		class, known = commonNetClass(err)
 	}
 	if !known {
 		class = "falhou (detalhe no log do servidor)"
@@ -202,10 +211,15 @@ func sqlFailure(m domain.Monitor, meta map[string]string, password, stage string
 	return Result{Status: domain.StatusDown, Message: stage + ": " + class, Meta: meta}
 }
 
-// commonSQLClass classifica as falhas que não vêm do servidor de banco.
+// commonNetClass classifica as falhas que não vêm do servidor consultado.
 // O texto do sistema operacional é local e pode aparecer; o do servidor,
 // não.
-func commonSQLClass(err error) (string, bool) {
+//
+// Vale para mais que SQL: nenhuma destas classes traz endereço, e é por
+// isso que o checker de DNS também passa por aqui (ver causaDeConsulta).
+// *net.DNSError.Error() monta "lookup <nome> on <servidor>: ...", então
+// imprimir o erro cru entregaria o resolvedor de dentro.
+func commonNetClass(err error) (string, bool) {
 	var dnsErr *net.DNSError
 	var opErr *net.OpError
 	var netErr net.Error
