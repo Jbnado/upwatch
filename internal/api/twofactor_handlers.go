@@ -67,7 +67,7 @@ func (a *API) handleTOTPSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	e, err := a.auth.BeginTOTP(r.Context(), mustUser(r).ID, body.Password)
+	e, err := a.auth.BeginTOTP(r.Context(), mustUser(r).ID, body.Password, a.origins.origin(r))
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -109,7 +109,7 @@ func (a *API) handleTOTPRecoveryCodes(w http.ResponseWriter, r *http.Request) {
 	}
 
 	u := mustUser(r)
-	codes, err := a.auth.RegenerateRecoveryCodes(r.Context(), u.ID, body.Password, body.Code)
+	codes, err := a.auth.RegenerateRecoveryCodes(r.Context(), u.ID, body.Password, body.Code, a.origins.origin(r))
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -126,7 +126,7 @@ func (a *API) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 	}
 
 	u := mustUser(r)
-	if err := a.auth.DisableTOTP(r.Context(), u.ID, credencialDe(r), body.Password, body.Code); err != nil {
+	if err := a.auth.DisableTOTP(r.Context(), u.ID, credencialDe(r), body.Password, body.Code, a.origins.origin(r)); err != nil {
 		writeStoreError(w, err)
 		return
 	}

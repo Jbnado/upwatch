@@ -76,6 +76,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	domain.PasswordHashCost = cfg.PasswordHashCost
 
 	st, err := openStore(cfg)
 	if err != nil {
@@ -214,6 +215,9 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 	})
 
 	authSvc := auth.New(st, auth.Options{Clock: real, SessionTTL: cfg.SessionTTL})
+	if err := authSvc.CalibrateLogin(context.Background()); err != nil {
+		return nil, err
+	}
 
 	// Sem token e com conta restrita, /metrics recusa toda raspagem. Avisar
 	// no início poupa quem opera de descobrir pelo alerta de coleta parada.

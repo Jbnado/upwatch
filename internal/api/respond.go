@@ -13,6 +13,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	"github.com/Jbnado/upwatch/internal/auth"
 	"github.com/Jbnado/upwatch/internal/domain"
@@ -133,6 +134,7 @@ func writeStoreError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, codeConflict,
 			"para desligar a sua verificação em duas etapas, use os ajustes da sua conta")
 	case errors.Is(err, auth.ErrTooManyAttempts):
+		w.Header().Set("Retry-After", strconv.FormatInt(int64(auth.LockoutWindow.Seconds()), 10))
 		writeError(w, http.StatusTooManyRequests, codeTooManyReqs,
 			"tentativas demais; aguarde antes de tentar novamente")
 	default:

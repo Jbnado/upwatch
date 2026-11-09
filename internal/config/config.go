@@ -32,6 +32,9 @@ const envPrefix = "UPWATCH_"
 
 // Config são as opções de uma instalação.
 type Config struct {
+	// PasswordHashCost é o custo do bcrypt para novas senhas e regravações.
+	PasswordHashCost int `yaml:"password_hash_cost"`
+
 	// Listen é o endereço do servidor HTTP.
 	Listen string `yaml:"listen"`
 
@@ -136,7 +139,8 @@ type Retention struct {
 // argumentos tem que subir e monitorar.
 func Default() Config {
 	return Config{
-		Listen: ":8080",
+		PasswordHashCost: domain.MinPasswordHashCost,
+		Listen:           ":8080",
 		Database: Database{
 			Driver: "sqlite",
 			DSN:    "/data/upwatch.db",
@@ -234,6 +238,9 @@ func applyEnv(cfg *Config) error {
 	if err := num(&cfg.Workers, "WORKERS"); err != nil {
 		return err
 	}
+	if err := num(&cfg.PasswordHashCost, "PASSWORD_HASH_COST"); err != nil {
+		return err
+	}
 	if err := boolean(&cfg.SecureCookies, "SECURE_COOKIES"); err != nil {
 		return err
 	}
@@ -255,6 +262,9 @@ func applyEnv(cfg *Config) error {
 
 // Validate recusa combinações que só falhariam depois, em produção.
 func (c Config) Validate() error {
+	if c.PasswordHashCost < domain.MinPasswordHashCost || c.PasswordHashCost > domain.MaxPasswordHashCost {
+		return fmt.Errorf("config: password_hash_cost precisa ficar entre %d e %d", domain.MinPasswordHashCost, domain.MaxPasswordHashCost)
+	}
 	if strings.TrimSpace(c.Listen) == "" {
 		return fmt.Errorf("config: listen não pode ser vazio")
 	}

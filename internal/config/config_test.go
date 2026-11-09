@@ -3,12 +3,57 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Jbnado/upwatch/internal/config"
 	"github.com/Jbnado/upwatch/internal/testdir"
 )
+
+func TestPasswordHashCostSources(t *testing.T) {
+	if got := config.Default().PasswordHashCost; got != 12 {
+		t.Errorf("custo padrão = %d, esperado 12", got)
+	}
+	path := writeFile(t, "password_hash_cost: 13\n")
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PasswordHashCost != 13 {
+		t.Errorf("custo do arquivo = %d, esperado 13", cfg.PasswordHashCost)
+	}
+	t.Setenv("UPWATCH_PASSWORD_HASH_COST", "14")
+	cfg, err = config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PasswordHashCost != 14 {
+		t.Errorf("custo do ambiente = %d, esperado 14", cfg.PasswordHashCost)
+	}
+}
+
+func TestPasswordHashCostRejectsUnsafeValuesAtStartup(t *testing.T) {
+	for _, raw := range []string{"0", "11", "15", "31", "32", "inválido"} {
+		t.Run(raw, func(t *testing.T) {
+			t.Setenv("UPWATCH_PASSWORD_HASH_COST", raw)
+			_, err := config.Load("")
+			if err == nil {
+				t.Fatalf("custo %q aceito na partida", raw)
+			}
+			if raw != "inválido" && (!strings.Contains(err.Error(), "12") || !strings.Contains(err.Error(), "14")) {
+				t.Errorf("erro não explica intervalo 12..14: %v", err)
+			}
+		})
+	}
+	for _, cost := range []int{12, 13, 14} {
+		cfg := config.Default()
+		cfg.PasswordHashCost = cost
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("custo %d recusado: %v", cost, err)
+		}
+	}
+}
 
 // writeFile grava um arquivo de configuração temporário.
 func writeFile(t *testing.T, conteudo string) string {

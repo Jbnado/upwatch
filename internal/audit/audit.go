@@ -23,6 +23,8 @@ const (
 	AçãoLoginCódigoErrado = "login.codigo_errado"
 	AçãoLimiteBloqueio    = "limite.bloqueio"
 	AçãoContaBloqueada    = "login.conta_bloqueada"
+	AçãoParBloqueado      = "login.par_bloqueado"
+	AçãoOrigemBloqueada   = "login.origem_bloqueada"
 
 	AçãoTokenCriado   = "token.criado"
 	AçãoTokenRevogado = "token.revogado"

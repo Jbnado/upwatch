@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/Jbnado/upwatch/internal/clock"
@@ -22,8 +21,8 @@ const (
 	// DefaultSessionTTL é a validade de um login na interface.
 	DefaultSessionTTL = 7 * 24 * time.Hour
 
-	// MaxLoginAttempts é quantas falhas seguidas uma conta tolera antes de
-	// ser bloqueada temporariamente.
+	// MaxLoginAttempts é quantas falhas seguidas um par de conta e origem
+	// tolera antes de ser bloqueado temporariamente.
 	MaxLoginAttempts = 5
 
 	// LockoutWindow é a duração do bloqueio.
@@ -44,7 +43,7 @@ var (
 	// desconhecido.
 	ErrUnauthenticated = errors.New("auth: não autenticado")
 
-	// ErrTooManyAttempts indica conta temporariamente bloqueada.
+	// ErrTooManyAttempts indica bloqueio temporário de tentativas.
 	ErrTooManyAttempts = errors.New("auth: tentativas demais; tente novamente mais tarde")
 
 	// ErrLastAdmin recusa remover ou rebaixar o último administrador.
@@ -62,6 +61,8 @@ var (
 type Options struct {
 	SessionTTL time.Duration
 	Clock      clock.Clock
+	// LoginFloor injeta um piso de espera; zero desliga a espera nos testes.
+	LoginFloor time.Duration
 }
 
 // Service reúne as operações de identidade.
@@ -70,10 +71,11 @@ type Service struct {
 	clock      clock.Clock
 	sessionTTL time.Duration
 
-	attempts *attempts
+	attempts   *attempts
+	loginFloor time.Duration
 
-	decoyOnce sync.Once
-	decoy     string
+	decoy      string
+	decoyError error
 }
 
 // New cria o serviço de autenticação.
@@ -84,12 +86,15 @@ func New(s store.MetadataStore, opts Options) *Service {
 	if opts.Clock == nil {
 		opts.Clock = clock.Real()
 	}
-	return &Service{
+	svc := &Service{
 		store:      s,
 		clock:      opts.Clock,
 		sessionTTL: opts.SessionTTL,
 		attempts:   newAttempts(opts.Clock),
+		loginFloor: opts.LoginFloor,
 	}
+	svc.decoyError = svc.prepareDecoy(domain.PasswordHashCost)
+	return svc
 }
 
 // ---------- primeiro acesso ----------
@@ -141,7 +146,7 @@ func (s *Service) CreateInitialAdmin(ctx context.Context, username, password str
 //
 // A senha errada responde igual com ou sem segundo fator: só quem acerta
 // a senha descobre que a conta tem um.
-func (s *Service) Login(ctx context.Context, username, password string) (LoginResult, error) {
+func (s *Service) Login(ctx context.Context, username, password string, origins ...string) (result LoginResult, err error) {
 	username = strings.TrimSpace(username)
 
 	// Nome maior que o aceito no cadastro não é de conta nenhuma. Recusar
@@ -150,11 +155,25 @@ func (s *Service) Login(ctx context.Context, username, password string) (LoginRe
 		return LoginResult{}, ErrInvalidCredentials
 	}
 
-	att, err := s.attempts.reserve(username)
+	att, err := s.attempts.reserve(username, requestOrigin(origins))
 	if err != nil {
 		return LoginResult{}, err
 	}
 	defer att.release()
+	deadline := time.Now().Add(s.loginFloor)
+	var rehash *domain.User
+	defer func() {
+		if cancelled := waitLoginFloor(ctx, deadline); cancelled != nil {
+			result, err = LoginResult{}, cancelled
+			return
+		}
+		if err == nil && rehash != nil {
+			s.rehashPassword(ctx, *rehash, password)
+		}
+	}()
+	if s.decoyError != nil {
+		return LoginResult{}, s.decoyError
+	}
 
 	u, err := s.store.Users().GetByUsername(ctx, username)
 	if err != nil {
@@ -172,6 +191,9 @@ func (s *Service) Login(ctx context.Context, username, password string) (LoginRe
 	if !u.CheckPassword(password) {
 		att.fail()
 		return LoginResult{}, ErrInvalidCredentials
+	}
+	if u.NeedsRehash() {
+		rehash = &u
 	}
 
 	// As falhas só zeram quando o login termina. Zerar já na senha certa
@@ -191,18 +213,10 @@ func (s *Service) Login(ctx context.Context, username, password string) (LoginRe
 
 // checkDecoy faz a comparação de bcrypt que a conta inexistente não tem.
 //
-// O hash é gerado uma vez, no custo configurado: com um hash vazio a
+// O hash é preparado antes da primeira requisição: com um hash vazio a
 // comparação voltaria na hora, e a diferença de tempo diria quais nomes
 // são de conta.
 func (s *Service) checkDecoy(password string) {
-	s.decoyOnce.Do(func() {
-		// Senha sorteada, que ninguém digita. Se o sorteio falhar o hash
-		// fica vazio e a comparação só perde o disfarce; o login segue.
-		var u domain.User
-		if tok, err := domain.NewToken(); err == nil && u.SetPassword(tok.Secret) == nil {
-			s.decoy = u.PasswordHash
-		}
-	})
 	domain.User{PasswordHash: s.decoy}.CheckPassword(password)
 }
 
@@ -271,14 +285,14 @@ func (s *Service) SweepExpiredSessions(ctx context.Context) (int64, error) {
 // pode ter vazado não adianta se quem a obteve continuar logado — nem se o
 // token de API que ele emitiu continuar valendo, e esse não vence por
 // padrão. Sessões e tokens, portanto (ver revokeCredentials).
-func (s *Service) ChangePassword(ctx context.Context, userID int64, current, next string) error {
+func (s *Service) ChangePassword(ctx context.Context, userID int64, current, next string, origins ...string) error {
 	u, err := s.store.Users().Get(ctx, userID)
 	if err != nil {
 		return err
 	}
 	// A senha atual errada conta no bloqueio, como no login: uma sessão
 	// roubada não pode virar banco de testes para adivinhar a senha.
-	att, err := s.attempts.reserve(u.Username)
+	att, err := s.attempts.reserve(u.Username, requestOrigin(origins))
 	if err != nil {
 		return err
 	}

@@ -58,7 +58,7 @@ func TestStaleRecordsAreSwept(t *testing.T) {
 	ctx := context.Background()
 
 	for i := range 200 {
-		_, _ = s.Login(ctx, fmt.Sprintf("ninguem-%03d", i), "senha-errada-porem-longa")
+		_, _ = s.Login(ctx, fmt.Sprintf("ninguem-%03d", i), "senha-errada-porem-longa", fmt.Sprint("origem-", i))
 	}
 	if n := s.attempts.size(); n != 200 {
 		t.Fatalf("registros = %d, want 200", n)
@@ -72,40 +72,20 @@ func TestStaleRecordsAreSwept(t *testing.T) {
 	}
 }
 
-// O mapa não passa do teto, mesmo com nomes novos sem parar.
-func TestTrackedAccountsAreCapped(t *testing.T) {
+// A pressão de memória não antecipa o fim de um bloqueio ativo.
+func TestFullMapOfLockedPairsPreservesLockout(t *testing.T) {
 	a := newAttempts(clock.NewFake(internalEpoch))
-
-	for i := range maxTrackedAccounts + 100 {
-		att, err := a.reserve(fmt.Sprintf("conta-%d", i))
-		if err != nil {
-			t.Fatalf("reserve #%d = %v, want nil", i, err)
-		}
-		att.fail()
+	for i := range maxTrackedPairs {
+		failOrigin(t, a, fmt.Sprint("conta-", i), fmt.Sprint("rede-", i), 5)
 	}
-	if n := a.size(); n > maxTrackedAccounts {
-		t.Errorf("registros = %d, want no máximo %d", n, maxTrackedAccounts)
+	requireLimited(t, a, "nova", "nova-rede")
+	if n := a.size(); n != maxTrackedPairs {
+		t.Fatalf("pares = %d; teto = %d", n, maxTrackedPairs)
 	}
-}
-
-// Com o mapa cheio só de contas bloqueadas, nenhuma é esquecida: a
-// tentativa nova é recusada.
-func TestFullMapOfLockedAccountsRefuses(t *testing.T) {
-	fake := clock.NewFake(internalEpoch)
-	a := newAttempts(fake)
-	a.records = make(map[attemptKey]*attemptRecord, maxTrackedAccounts)
-	for i := range maxTrackedAccounts {
-		a.records[keyFor(fmt.Sprintf("conta-%d", i))] = &attemptRecord{
-			failures: MaxLoginAttempts, lastFailure: fake.Now(), lockedTill: fake.Now().Add(LockoutWindow),
-		}
-	}
-	a.lastSweep = fake.Now()
-
-	if _, err := a.reserve("nova"); !errors.Is(err, ErrTooManyAttempts) {
-		t.Errorf("reserve = %v, want ErrTooManyAttempts", err)
-	}
-	if n := a.size(); n != maxTrackedAccounts {
-		t.Errorf("registros = %d, want %d", n, maxTrackedAccounts)
+	requireLimited(t, a, "conta-0", "rede-0")
+	requireLimited(t, a, fmt.Sprint("conta-", maxTrackedPairs-1), fmt.Sprint("rede-", maxTrackedPairs-1))
+	if len(a.origins.records) > maxTrackedOrigins || len(a.accounts.records) > maxTrackedAccounts {
+		t.Fatal("agregados passaram do teto próprio")
 	}
 }
 

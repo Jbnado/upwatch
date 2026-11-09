@@ -94,13 +94,13 @@ func (a *API) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := a.auth.Login(r.Context(), body.Username, body.Password)
+	res, err := a.auth.Login(r.Context(), body.Username, body.Password, a.origins.origin(r))
 	if err != nil {
 		switch {
 		case errors.Is(err, auth.ErrInvalidCredentials):
 			a.auditAs(r, body.Username, audit.AçãoLoginSenhaErrada, "/auth/login")
 		case errors.Is(err, auth.ErrTooManyAttempts):
-			a.auditAs(r, body.Username, audit.AçãoContaBloqueada, "/auth/login")
+			a.auditLoginBlock(r, body.Username, "/auth/login", err)
 		}
 		writeStoreError(w, err)
 		return
@@ -127,8 +127,11 @@ func (a *API) handleLoginSecondFactor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	entrou, err := a.auth.CompleteLogin(r.Context(), body.Challenge, body.Code)
+	entrou, err := a.auth.CompleteLogin(r.Context(), body.Challenge, body.Code, a.origins.origin(r))
 	if err != nil {
+		if errors.Is(err, auth.ErrTooManyAttempts) {
+			a.auditLoginBlock(r, "", "/auth/login/2fa", err)
+		}
 		var código *auth.InvalidCodeError
 		if errors.As(err, &código) {
 			a.auditAs(r, código.Username, audit.AçãoLoginCódigoErrado, "/auth/login/2fa")
@@ -226,7 +229,7 @@ func (a *API) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	u := mustUser(r)
-	if err := a.auth.ChangePassword(r.Context(), u.ID, body.Current, body.Next); err != nil {
+	if err := a.auth.ChangePassword(r.Context(), u.ID, body.Current, body.Next, a.origins.origin(r)); err != nil {
 		// Quem está com um cookie roubado e tenta adivinhar a senha atual
 		// aqui não gerava linha nenhuma: a rota de login registra o
 		// palpite, esta não registrava. E o 429 por tentativas só era
@@ -236,7 +239,7 @@ func (a *API) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, auth.ErrInvalidCredentials):
 			a.audit(r, audit.AçãoSenhaAtualErrada, u.Username)
 		case errors.Is(err, auth.ErrTooManyAttempts):
-			a.audit(r, audit.AçãoContaBloqueada, u.Username)
+			a.auditLoginBlock(r, u.Username, u.Username, err)
 		}
 		writeStoreError(w, err)
 		return

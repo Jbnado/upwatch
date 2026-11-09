@@ -196,6 +196,10 @@ type UserRepo interface {
 	// senha devolvia o escopo que um administrador acabara de retirar, e
 	// a troca de acesso devolvia a senha que a pessoa acabara de trocar.
 	SetPasswordHash(ctx context.Context, id int64, hash string) error
+	// SetPasswordHashIf regrava só o hash, sem alterar UpdatedAt, quando
+	// expected ainda é o valor armazenado. Devolve ErrConflict se nenhuma
+	// conta corresponder, preservando uma troca de senha concorrente.
+	SetPasswordHashIf(ctx context.Context, id int64, expected, next string) error
 
 	// SetAccess grava o papel e, quando não nulo, o escopo — nada mais.
 	// Escopo nulo mantém o gravado.

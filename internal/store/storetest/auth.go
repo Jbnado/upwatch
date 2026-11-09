@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -22,6 +23,8 @@ func authCases() []conformanceCase {
 		{"UserGetByUsername", testUserGetByUsername},
 		{"UserGetByUsernameMissingReturnsNotFound", testUserGetByUsernameMissingReturnsNotFound},
 		{"UserSetPasswordHashTouchesOnlyThePassword", testUserSetPasswordHashTouchesOnlyThePassword},
+		{"UserSetPasswordHashIfKeepsConcurrentPassword", testUserSetPasswordHashIfKeepsConcurrentPassword},
+		{"UserSetPasswordHashIfTouchesOnlyHash", testUserSetPasswordHashIfTouchesOnlyHash},
 		{"UserSetAccessKeepsThePassword", testUserSetAccessKeepsThePassword},
 		{"UserSetAccessAndDeleteKeepAFullAdmin", testUserSetAccessAndDeleteKeepAFullAdmin},
 		{"UserConcurrentDemotionsKeepAFullAdmin", testUserConcurrentDemotionsKeepAFullAdmin},
@@ -43,6 +46,65 @@ func authCases() []conformanceCase {
 		{"TokenDeleteOthers", testTokenDeleteOthers},
 		{"TokenTouchLastUsed", testTokenTouchLastUsed},
 		{"TokenRoundTripsExpiry", testTokenRoundTripsExpiry},
+	}
+}
+
+func testUserSetPasswordHashIfKeepsConcurrentPassword(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	u := mustCreateUser(t, s, "bia")
+	next := u
+	if err := next.SetPassword("outra-senha-bem-longa"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Users().SetPasswordHash(ctx, u.ID, next.PasswordHash); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Users().SetPasswordHashIf(ctx, u.ID, u.PasswordHash, "hash-obsoleto"); !errors.Is(err, store.ErrConflict) {
+		t.Errorf("hash esperado vencido retornou %v, esperado conflito", err)
+	}
+	got, err := s.Users().Get(ctx, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.CheckPassword("outra-senha-bem-longa") || got.CheckPassword("uma-senha-bem-longa") {
+		t.Error("a regravação sobrescreveu a troca de senha concorrente")
+	}
+	if err := s.Users().SetPasswordHashIf(ctx, 9999, u.PasswordHash, "novo-hash"); !errors.Is(err, store.ErrConflict) {
+		t.Errorf("conta ausente retornou %v, esperado conflito", err)
+	}
+}
+
+func testUserSetPasswordHashIfTouchesOnlyHash(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	mustCreateUser(t, s, "admin")
+	g := mustCreateGroup(t, s, "RPA", nil)
+	u := mustCreateUser(t, s, "bia")
+	scope := domain.Scope{Restricted: true, GroupIDs: []int64{g.ID}}
+	if err := s.Users().SetAccess(ctx, u.ID, domain.RoleViewer, &scope); err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.Users().Get(ctx, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A precisão dos dois bancos é de milissegundos: uma escrita indevida
+	// no carimbo precisa ocorrer num instante diferente para ser detectada.
+	time.Sleep(5 * time.Millisecond)
+	if err := s.Users().SetPasswordHashIf(ctx, u.ID, u.PasswordHash, "hash-regravado"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Users().Get(ctx, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PasswordHash != "hash-regravado" {
+		t.Errorf("hash não foi regravado: %q", got.PasswordHash)
+	}
+	got.PasswordHash = before.PasswordHash
+	if !reflect.DeepEqual(got, before) {
+		t.Errorf("regravação alterou outros campos: antes %+v; depois %+v", before, got)
 	}
 }
 
