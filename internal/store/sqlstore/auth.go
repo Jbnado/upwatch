@@ -145,6 +145,23 @@ func (r *userRepo) SetPasswordHash(ctx context.Context, id int64, hash string) e
 	return requireAffected(res, fmt.Sprintf("usuário %d", id))
 }
 
+// SetPasswordHashIf preserva alterações concorrentes e o carimbo da conta.
+func (r *userRepo) SetPasswordHashIf(ctx context.Context, id int64, expected, next string) error {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE app_user SET password_hash = ? WHERE id = ? AND password_hash = ?`, next, id, expected)
+	if err != nil {
+		return fmt.Errorf("sqlstore: regravando senha da conta %d: %w", id, err)
+	}
+	count, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("sqlstore: conferindo regravação da conta %d: %w", id, err)
+	}
+	if count == 0 {
+		return fmt.Errorf("senha da conta %d mudou: %w", id, store.ErrConflict)
+	}
+	return nil
+}
+
 // SetAccess grava papel e, quando informado, escopo, sem tocar na senha.
 func (r *userRepo) SetAccess(ctx context.Context, id int64, role domain.Role, scope *domain.Scope) error {
 	now := time.Now().UTC().Truncate(time.Millisecond)

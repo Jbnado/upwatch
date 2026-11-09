@@ -261,6 +261,7 @@ configuração nenhuma e uma instalação séria versiona o YAML.
 | `UPWATCH_ROLLUP_INTERVAL` | `5m` | De quanto em quanto a agregação roda |
 | `UPWATCH_WORKERS` | `50` | Teto de verificações simultâneas |
 | `UPWATCH_SESSION_TTL` | `168h` | Validade da sessão da interface |
+| `UPWATCH_PASSWORD_HASH_COST` | `12` | Custo bcrypt das senhas novas e atualizadas; aceita de `12` a `14` |
 | `UPWATCH_REMINDER_INTERVAL` | `0` | De quanto em quanto uma queda aberta e não reconhecida é relembrada, para monitor e grupo sem intervalo próprio; `0` desliga, e o mínimo é `5m` |
 | `UPWATCH_SECURE_COOKIES` | `false` | Marca o cookie como Secure e liga o HSTS; ligue ao servir por HTTPS |
 | `UPWATCH_PUBLIC_URL` | vazio | Endereço externo, para o feed da página pública usar URLs absolutas, o cartão do Teams ter o botão "Abrir no UpWatch" e a conferência de origem reconhecer o endereço atrás de proxy |
@@ -336,8 +337,14 @@ privada justamente para alcançá-la.
 
 O login (os dois passos, num balde só: 30 de rajada, 10 por minuto
 depois disso), o `POST /api/v1/setup` e o push limitam a taxa por
-origem, além do bloqueio por conta do login (cinco falhas, quinze
-minutos). Acima do limite, 429 com `Retry-After`. A origem é o endereço
+origem. O login também aceita até cinco falhas por par de conta e origem
+em quinze minutos. Vinte nomes distintos com falha na mesma origem
+barram novos pares desconhecidos por quinze minutos; três origens que
+esgotaram tentativas contra a mesma conta fazem o mesmo. Um par que já
+concluiu o login nos últimos trinta dias continua sujeito ao próprio
+limite de cinco falhas, mas pode tentar quando outro par está bloqueado.
+Esses registros vivem no processo: reiniciar o servidor zera os limites.
+Acima do limite, 429 com `Retry-After`. A origem é o endereço
 da conexão; no IPv6, o bloco /64 inteiro, que é o que um provedor
 entrega a um cliente só.
 
@@ -351,6 +358,13 @@ o cabeçalho: de qualquer conexão, ele deixaria quem ataca escolher a
 própria origem a cada pedido. Declare só o que de fato é o seu proxy, e
 confira que ele sobrescreve ou acrescenta o `X-Forwarded-For` em vez de
 repassar o do cliente sozinho.
+
+O bcrypt usa custo 12 por padrão. Na partida, o servidor calibra um piso
+de resposta para o login com o maior custo de senha já armazenado;
+recusa iniciar se encontrar custo acima de 14. Quando uma senha de custo
+menor é validada, atualiza seu hash sem desfazer uma troca simultânea de
+senha. A calibração acrescenta espera às respostas de login e depende da
+carga da máquina; ela não garante duração idêntica sob qualquer carga.
 
 ## Segredos
 
@@ -504,7 +518,9 @@ As ações:
 | `ação` | Quando |
 |---|---|
 | `login.senha_errada` | senha recusada |
-| `login.conta_bloqueada` | conta barrada por tentativas demais |
+| `login.par_bloqueado` | par de conta e origem barrado por tentativas demais |
+| `login.origem_bloqueada` | origem barrada por falhas com nomes distintos |
+| `login.conta_bloqueada` | conta barrada por falhas em três origens |
 | `login.codigo_errado` | segundo fator recusado (TOTP ou código de recuperação) |
 | `limite.bloqueio` | origem barrada pelo limite por origem (429) |
 | `setup.token_errado` | token de configuração recusado no `POST /setup` |

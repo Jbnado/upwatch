@@ -5,8 +5,50 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/crypto/bcrypt"
+
 	"github.com/Jbnado/upwatch/internal/domain"
 )
+
+func TestPasswordHashCostDefaultsAndBounds(t *testing.T) {
+	if domain.MinPasswordHashCost != 12 || domain.MaxPasswordHashCost != 14 {
+		t.Fatalf("intervalo de custo = %d..%d, esperado 12..14", domain.MinPasswordHashCost, domain.MaxPasswordHashCost)
+	}
+	if domain.PasswordHashCost != 12 {
+		t.Fatalf("custo padrão = %d, esperado 12", domain.PasswordHashCost)
+	}
+}
+
+func TestUserNeedsRehashOnlyForValidLowerCost(t *testing.T) {
+	previous := domain.PasswordHashCost
+	t.Cleanup(func() { domain.PasswordHashCost = previous })
+	domain.PasswordHashCost = bcrypt.MinCost + 1
+	for _, tc := range []struct {
+		name string
+		cost int
+		want bool
+	}{
+		{"menor", bcrypt.MinCost, true},
+		{"igual", bcrypt.MinCost + 1, false},
+		{"maior", bcrypt.MinCost + 2, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hash, err := bcrypt.GenerateFromPassword([]byte("uma-senha-bem-longa"), tc.cost)
+			if err != nil {
+				t.Fatal(err)
+			}
+			u := domain.User{PasswordHash: string(hash)}
+			if got := u.NeedsRehash(); got != tc.want {
+				t.Errorf("NeedsRehash() = %v, esperado %v", got, tc.want)
+			}
+		})
+	}
+	for _, hash := range []string{"", "inválido", "$2a$03$hash-inválido"} {
+		if (domain.User{PasswordHash: hash}).NeedsRehash() {
+			t.Errorf("hash inválido %q pede regravação", hash)
+		}
+	}
+}
 
 func TestUserValidateAcceptsWellFormedUser(t *testing.T) {
 	// O papel é obrigatório: sem ele, uma conta criada por engano cairia

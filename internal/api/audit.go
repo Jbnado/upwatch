@@ -1,12 +1,31 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/Jbnado/upwatch/internal/audit"
+	"github.com/Jbnado/upwatch/internal/auth"
 )
+
+func (a *API) auditLoginBlock(r *http.Request, username, target string, err error) {
+	action := audit.AçãoContaBloqueada
+	var limit *auth.AttemptLimitError
+	if errors.As(err, &limit) {
+		if username == "" {
+			username = limit.Username
+		}
+		switch limit.Scope {
+		case auth.AttemptScopePair:
+			action = audit.AçãoParBloqueado
+		case auth.AttemptScopeOrigin:
+			action = audit.AçãoOrigemBloqueada
+		}
+	}
+	a.auditAs(r, username, action, target)
+}
 
 // audit grava um evento de segurança.
 //

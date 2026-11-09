@@ -113,7 +113,7 @@ type Completion struct {
 	UsedRecoveryCode bool
 }
 
-func (s *Service) CompleteLogin(ctx context.Context, challenge, code string) (Completion, error) {
+func (s *Service) CompleteLogin(ctx context.Context, challenge, code string, origins ...string) (Completion, error) {
 	if challenge == "" {
 		return Completion{}, ErrChallengeInvalid
 	}
@@ -133,7 +133,7 @@ func (s *Service) CompleteLogin(ctx context.Context, challenge, code string) (Co
 		}
 		return Completion{}, err
 	}
-	att, err := s.attempts.reserve(u.Username)
+	att, err := s.attempts.reserve(u.Username, requestOrigin(origins))
 	if err != nil {
 		return Completion{}, err
 	}
@@ -276,7 +276,7 @@ func (s *Service) TOTPStatus(ctx context.Context, userID int64) (TOTPStatus, err
 // Pede a senha, contada no bloqueio. Com a sessão só, quem roubou o
 // cookie cadastraria o próprio aplicativo, e a confirmação, que derruba
 // as outras sessões, deixaria o dono de fora.
-func (s *Service) BeginTOTP(ctx context.Context, userID int64, password string) (Enrollment, error) {
+func (s *Service) BeginTOTP(ctx context.Context, userID int64, password string, origins ...string) (Enrollment, error) {
 	u, err := s.store.Users().Get(ctx, userID)
 	if err != nil {
 		return Enrollment{}, err
@@ -286,7 +286,7 @@ func (s *Service) BeginTOTP(ctx context.Context, userID int64, password string) 
 	if u.TOTPEnabled {
 		return Enrollment{}, ErrTOTPEnabled
 	}
-	att, err := s.attempts.reserve(u.Username)
+	att, err := s.attempts.reserve(u.Username, requestOrigin(origins))
 	if err != nil {
 		return Enrollment{}, err
 	}
@@ -360,8 +360,8 @@ func (s *Service) ConfirmTOTP(
 //
 // Pede senha e código: com a sessão só, quem sentou num computador
 // destravado sairia com dez segundos fatores no bolso.
-func (s *Service) RegenerateRecoveryCodes(ctx context.Context, userID int64, password, code string) ([]string, error) {
-	if err := s.proveAccount(ctx, userID, password, code); err != nil {
+func (s *Service) RegenerateRecoveryCodes(ctx context.Context, userID int64, password, code string, origins ...string) ([]string, error) {
+	if err := s.proveAccount(ctx, userID, password, code, origins...); err != nil {
 		return nil, err
 	}
 	codes, hashes, err := newRecoveryCodes()
@@ -377,9 +377,9 @@ func (s *Service) RegenerateRecoveryCodes(ctx context.Context, userID int64, pas
 // DisableTOTP desliga o próprio fator, com a mesma prova de
 // RegenerateRecoveryCodes, e derruba as outras sessões como ConfirmTOTP.
 func (s *Service) DisableTOTP(
-	ctx context.Context, userID int64, atual Credential, password, code string,
+	ctx context.Context, userID int64, atual Credential, password, code string, origins ...string,
 ) error {
-	if err := s.proveAccount(ctx, userID, password, code); err != nil {
+	if err := s.proveAccount(ctx, userID, password, code, origins...); err != nil {
 		return err
 	}
 	// Revogar antes de desligar, pelo mesmo motivo do ConfirmTOTP: o
@@ -450,7 +450,7 @@ func (s *Service) SweepExpiredChallenges(ctx context.Context) (int64, error) {
 // proveAccount exige a senha e um código válidos da conta. As falhas
 // contam no bloqueio, como no login: uma sessão roubada não pode virar
 // banco de testes para adivinhar a senha.
-func (s *Service) proveAccount(ctx context.Context, userID int64, password, code string) error {
+func (s *Service) proveAccount(ctx context.Context, userID int64, password, code string, origins ...string) error {
 	u, err := s.store.Users().Get(ctx, userID)
 	if err != nil {
 		return err
@@ -458,7 +458,7 @@ func (s *Service) proveAccount(ctx context.Context, userID int64, password, code
 	if !u.TOTPEnabled {
 		return ErrTOTPNotEnabled
 	}
-	att, err := s.attempts.reserve(u.Username)
+	att, err := s.attempts.reserve(u.Username, requestOrigin(origins))
 	if err != nil {
 		return err
 	}

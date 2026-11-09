@@ -69,7 +69,7 @@ func TestAuditLogsAWrongCurrentPassword(t *testing.T) {
 // O 429 por tentativas só era registrado em /auth/login. As mesmas
 // tentativas contadas na troca de senha viravam 429 silencioso, e quem lia
 // o log via uma conta travada sem causa.
-func TestAuditLogsTheAccountLockFromThePasswordChange(t *testing.T) {
+func TestAuditLogsThePairLockFromThePasswordChange(t *testing.T) {
 	s, reg := servidorComLog(t, nil)
 	s.setup(t)
 
@@ -84,7 +84,7 @@ func TestAuditLogsTheAccountLockFromThePasswordChange(t *testing.T) {
 	}
 	assertStatus(t, last, http.StatusTooManyRequests)
 
-	linha := reg.comAção(t, audit.AçãoContaBloqueada)
+	linha := reg.comAção(t, audit.AçãoParBloqueado)
 	exigeCampos(t, linha, "admin", "admin", "127.0.0.1")
 }
 

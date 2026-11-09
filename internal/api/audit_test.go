@@ -127,17 +127,13 @@ func TestAuditLogsFailedLogin(t *testing.T) {
 func TestAuditLogsRateLimitBlock(t *testing.T) {
 	s, reg := servidorComLog(t, nil)
 
-	// Conta diferente a cada palpite, como faz quem espalha a força bruta
-	// para não bater no bloqueio de nenhuma: é esse caso que o limite por
-	// origem existe para pegar, e é o 429 dele que queremos registrado.
+	// Continuar até esgotar o balde HTTP: o bloqueio de nomes distintos
+	// começa antes e tem uma ação de auditoria própria.
 	var last *http.Response
 	for i := 0; i <= 100; i++ {
 		last = s.do(t, http.MethodPost, "/api/v1/auth/login", map[string]any{
 			"username": "conta-" + strconv.Itoa(i), "password": "senha-errada-porem-longa",
 		})
-		if last.StatusCode == http.StatusTooManyRequests {
-			break
-		}
 	}
 	assertStatus(t, last, http.StatusTooManyRequests)
 
@@ -189,7 +185,7 @@ const pushBurstDoTeste = 320
 // O 429 por conta é outro evento que o por origem: um diz que um endereço
 // está insistindo, o outro que uma conta específica está sob ataque. Quem
 // lê o log depois precisa saber qual dos dois aconteceu.
-func TestAuditLogsAccountLockout(t *testing.T) {
+func TestAuditLogsPairLockout(t *testing.T) {
 	s, reg := servidorComLog(t, nil)
 	s.setup(t)
 
@@ -204,11 +200,10 @@ func TestAuditLogsAccountLockout(t *testing.T) {
 	}
 	assertStatus(t, last, http.StatusTooManyRequests)
 
-	linha := reg.comAção(t, "login.conta_bloqueada")
+	linha := reg.comAção(t, "login.par_bloqueado")
 	exigeCampos(t, linha, "admin", "", "127.0.0.1")
 
-	// O bloqueio por conta não é o por origem: confundir os dois faria o
-	// log dizer que um endereço foi barrado quando foi uma conta.
+	// O orçamento do par é diferente do balde HTTP por origem.
 	reg.recusaAção(t, "limite.bloqueio")
 }
 

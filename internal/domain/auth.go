@@ -14,6 +14,11 @@ import (
 )
 
 const (
+	// MinPasswordHashCost é o piso aceito na configuração da instalação.
+	MinPasswordHashCost = 12
+	// MaxPasswordHashCost limita o trabalho por senha a um custo operacional seguro.
+	MaxPasswordHashCost = 14
+
 	// MinPasswordLength é o mínimo aceito.
 	MinPasswordLength = 12
 
@@ -90,7 +95,14 @@ func ValidatePassword(password string) error {
 // verificar uma senha demore o suficiente para inviabilizar força bruta,
 // e o que era caro há cinco anos é barato hoje. Testes o reduzem para não
 // pagar esse custo deliberado em cada caso.
-var PasswordHashCost = bcrypt.DefaultCost
+var PasswordHashCost = MinPasswordHashCost
+
+// NeedsRehash informa se um hash válido usa custo abaixo do configurado.
+// Um custo superior é preservado mesmo depois de uma redução na configuração.
+func (u User) NeedsRehash() bool {
+	cost, err := bcrypt.Cost([]byte(u.PasswordHash))
+	return err == nil && cost < PasswordHashCost
+}
 
 // SetPassword grava o hash da senha.
 //
