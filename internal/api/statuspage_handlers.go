@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -238,6 +240,15 @@ func (a *API) handleUpdateGroup(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	belongs, err := a.statusPageGroupBelongsToPage(r.Context(), pageID, groupID)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if !belongs {
+		writeStoreError(w, store.ErrNotFound)
+		return
+	}
 	if err := a.store.StatusPages().UpdateGroup(r.Context(), g); err != nil {
 		writeStoreError(w, err)
 		return
@@ -246,11 +257,21 @@ func (a *API) handleUpdateGroup(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
-	if _, ok := pathID(w, r); !ok {
+	pageID, ok := pathID(w, r)
+	if !ok {
 		return
 	}
 	groupID, ok := paramID(w, r, "groupID")
 	if !ok {
+		return
+	}
+	belongs, err := a.statusPageGroupBelongsToPage(r.Context(), pageID, groupID)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if !belongs {
+		writeStoreError(w, store.ErrNotFound)
 		return
 	}
 
@@ -259,6 +280,19 @@ func (a *API) handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *API) statusPageGroupBelongsToPage(ctx context.Context, pageID, groupID int64) (bool, error) {
+	groups, err := a.store.StatusPages().Groups(ctx, pageID)
+	if err != nil {
+		return false, err
+	}
+	for _, group := range groups {
+		if group.ID == groupID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // ---------- componentes ----------
@@ -287,7 +321,10 @@ func (a *API) handleSetComponent(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-
+	if strings.TrimSpace(req.Label) == "" {
+		writeFieldError(w, "label", "não pode ser vazio")
+		return
+	}
 	c := domain.StatusPageComponent{
 		PageID: pageID, MonitorID: monitorID,
 		GroupID: req.GroupID, Label: req.Label, Position: req.Position,
@@ -295,6 +332,17 @@ func (a *API) handleSetComponent(w http.ResponseWriter, r *http.Request) {
 	if err := c.Validate(); err != nil {
 		writeStoreError(w, err)
 		return
+	}
+	if req.GroupID != nil {
+		belongs, err := a.statusPageGroupBelongsToPage(r.Context(), pageID, *req.GroupID)
+		if err != nil {
+			writeStoreError(w, err)
+			return
+		}
+		if !belongs {
+			writeStoreError(w, store.ErrNotFound)
+			return
+		}
 	}
 	// Confere que o monitor existe antes de publicar: sem isto, um id
 	// errado criaria um componente que a página pública não conseguiria

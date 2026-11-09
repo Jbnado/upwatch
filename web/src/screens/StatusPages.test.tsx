@@ -103,7 +103,7 @@ describe("StatusPageAdmin", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Abrir prod/ }));
     fireEvent.click(screen.getByRole("checkbox", { name: /^erp.*Retaguarda · prod/ }));
 
-    await waitFor(() => expect(api.setComponent).toHaveBeenCalledWith(1, 21, { label: "" }));
+    await waitFor(() => expect(api.setComponent).toHaveBeenCalledWith(1, 21, { label: "erp" }));
     expect(api.setComponent).not.toHaveBeenCalledWith(1, 23, expect.anything());
   });
 
@@ -111,7 +111,8 @@ describe("StatusPageAdmin", () => {
     comComponentes([{ page_id: 1, monitor_id: 21, group_id: null, label: "", position: 1 }]);
     render(<StatusPageAdmin id={1} />);
 
-    const rotulo = await screen.findByPlaceholderText("erp");
+    const rotulo = await screen.findByRole("textbox", { name: /rótulo público/ });
+    expect(rotulo).toHaveValue("erp");
     fireEvent.change(rotulo, { target: { value: "ERP" } });
     fireEvent.blur(rotulo);
 
@@ -135,7 +136,7 @@ describe("rótulo e seção de um serviço publicado", () => {
     );
     render(<StatusPageAdmin id={1} />);
 
-    const rotulo = await screen.findByPlaceholderText("erp");
+    const rotulo = await screen.findByRole("textbox", { name: /rótulo público/ });
     fireEvent.change(rotulo, { target: { value: "ERP" } });
     fireEvent.blur(rotulo);
     fireEvent.change(screen.getByRole("combobox", { name: "seção" }), { target: { value: "9" } });
@@ -148,6 +149,19 @@ describe("rótulo e seção de um serviço publicado", () => {
     await waitFor(() => expect(api.setComponent).toHaveBeenCalledTimes(2));
     expect(vi.mocked(api.setComponent).mock.calls[1]).toEqual([1, 21, { label: "ERP", group_id: 9 }]);
     pendentes.shift()!();
+  });
+
+  it("preserva o nome público legado ao alterar a seção", async () => {
+    comComponentes([{ page_id: 1, monitor_id: 21, group_id: null, label: "", position: 1 }]);
+    render(<StatusPageAdmin id={1} />);
+
+    fireEvent.change(await screen.findByRole("combobox", { name: "seção" }), {
+      target: { value: "9" },
+    });
+
+    await waitFor(() =>
+      expect(api.setComponent).toHaveBeenCalledWith(1, 21, { label: "erp", group_id: 9 }),
+    );
   });
 });
 
