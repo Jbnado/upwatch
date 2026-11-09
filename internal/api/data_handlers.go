@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Jbnado/upwatch/internal/audit"
 	"io"
 	"mime"
 	"net/http"
@@ -213,8 +214,8 @@ func (a *API) exportCSV(w http.ResponseWriter, r *http.Request, id int64, rng st
 			hb.Timestamp.Format(time.RFC3339),
 			hb.Status.String(),
 			strconv.FormatInt(hb.LatencyMS, 10),
-			hb.ProbeID,
-			hb.Message,
+			csvText(hb.ProbeID),
+			csvText(hb.Message),
 		})
 	})
 	if err != nil {
@@ -222,6 +223,26 @@ func (a *API) exportCSV(w http.ResponseWriter, r *http.Request, id int64, rng st
 		// status; o registro fica no log.
 		writeStreamFailure(w, err)
 	}
+}
+
+// csvText neutraliza o texto livre que vai para uma célula do CSV.
+//
+// O Excel e o LibreOffice leem como fórmula a célula que começa com =, +,
+// -, @, tabulação ou retorno de carro, e a causa de um monitor push é
+// escrita por quem bate no UpWatch: "=HYPERLINK(...)" viraria um link
+// clicável, ou coisa pior, na planilha de quem exportou. O apóstrofo na
+// frente é o que a orientação da OWASP recomenda: a planilha mostra o
+// texto como texto. Só nas colunas de texto — a latência negativa, se
+// existisse, continuaria número.
+func csvText(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + s
+	}
+	return s
 }
 
 func (a *API) exportJSON(w http.ResponseWriter, r *http.Request, id int64, rng store.TimeRange) {
@@ -273,6 +294,12 @@ func (a *API) handlePush(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		// Mesma resposta para token errado e monitor inexistente: separar
 		// os casos permitiria descobrir quais tokens existem.
+		//
+		// O alvo é a rota, não o token: o token é a credencial, e o funil
+		// não recebe credencial (ver rotaDe). O /push é o único endpoint
+		// sem login com credencial própria, e sem esta linha os palpites
+		// nele não apareciam em lugar nenhum.
+		a.audit(r, audit.AçãoPushTokenErrado, rotaDe(r))
 		writeError(w, http.StatusUnauthorized, codeUnauthorized, "token inválido")
 		return
 	}

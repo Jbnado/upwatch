@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/Jbnado/upwatch/internal/domain"
 )
 
 // Tentativas de invasão pela porta aberta.
@@ -333,6 +335,139 @@ func TestAdminRefusesCrossPageComponentRemoval(t *testing.T) {
 	if !strings.Contains(corpo, "API") {
 		t.Errorf("remoção numa página apagou o componente da outra:\n%s", corpo)
 	}
+}
+
+func TestAdminCannotPublishComponentWithoutLabel(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+
+	pageID := createStatusPage(t, s, "sem-rotulo")
+	monitorID := createMonitor(t, s, "api-prod-us-east-1")
+
+	resp := s.do(t, http.MethodPut,
+		"/api/v1/status-pages/"+itoa(pageID)+"/components/"+itoa(monitorID),
+		map[string]any{})
+	assertStatus(t, resp, http.StatusBadRequest)
+
+	s.cookie = nil
+	corpo := readBody(t, s.do(t, http.MethodGet, "/api/v1/public/sem-rotulo", nil))
+	if strings.Contains(corpo, "api-prod-us-east-1") {
+		t.Fatalf("a página publicou o nome interno sem rótulo: %s", corpo)
+	}
+}
+
+func TestLegacyStatusComponentWithoutLabelKeepsRendering(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+
+	pageID := createStatusPage(t, s, "legado-sem-rotulo")
+	monitorID := createMonitor(t, s, "api-legada-interna")
+	if err := s.store.StatusPages().SetComponent(context.Background(), domain.StatusPageComponent{
+		PageID: pageID, MonitorID: monitorID,
+	}); err != nil {
+		t.Fatalf("SetComponent returned unexpected error: %v", err)
+	}
+
+	s.cookie = nil
+	corpo := readBody(t, s.do(t, http.MethodGet, "/api/v1/public/legado-sem-rotulo", nil))
+	if !strings.Contains(corpo, "api-legada-interna") {
+		t.Fatalf("o componente legado sem rótulo deixou de ser exibido: %s", corpo)
+	}
+}
+
+func TestAdminCannotAssignComponentToGroupFromAnotherStatusPage(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+
+	pageA := createStatusPage(t, s, "pagina-a")
+	pageB := createStatusPage(t, s, "pagina-b")
+	monitorID := createMonitor(t, s, "api")
+	groupB := createStatusPageGroup(t, s, pageB, "Grupo B")
+
+	resp := s.do(t, http.MethodPut,
+		"/api/v1/status-pages/"+itoa(pageA)+"/components/"+itoa(monitorID),
+		map[string]any{"label": "API", "group_id": groupB})
+	assertStatus(t, resp, http.StatusNotFound)
+
+	components, err := s.store.StatusPages().Components(context.Background(), pageA)
+	if err != nil {
+		t.Fatalf("Components returned unexpected error: %v", err)
+	}
+	if len(components) != 0 {
+		t.Fatalf("o componente foi salvo na página errada: %+v", components)
+	}
+}
+
+func TestAdminCannotUpdateGroupThroughAnotherStatusPage(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+
+	pageA := createStatusPage(t, s, "pagina-a")
+	pageB := createStatusPage(t, s, "pagina-b")
+	groupB := createStatusPageGroup(t, s, pageB, "Grupo original")
+
+	resp := s.do(t, http.MethodPut,
+		"/api/v1/status-pages/"+itoa(pageA)+"/groups/"+itoa(groupB),
+		map[string]any{"name": "Grupo alterado", "position": 0})
+	assertStatus(t, resp, http.StatusNotFound)
+
+	groups, err := s.store.StatusPages().Groups(context.Background(), pageB)
+	if err != nil {
+		t.Fatalf("Groups returned unexpected error: %v", err)
+	}
+	if len(groups) != 1 || groups[0].Name != "Grupo original" {
+		t.Fatalf("o grupo da outra página foi alterado: %+v", groups)
+	}
+}
+
+func TestAdminCannotDeleteGroupThroughAnotherStatusPage(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+
+	pageA := createStatusPage(t, s, "pagina-a")
+	pageB := createStatusPage(t, s, "pagina-b")
+	groupB := createStatusPageGroup(t, s, pageB, "Grupo original")
+
+	resp := s.do(t, http.MethodDelete,
+		"/api/v1/status-pages/"+itoa(pageA)+"/groups/"+itoa(groupB), nil)
+	assertStatus(t, resp, http.StatusNotFound)
+
+	groups, err := s.store.StatusPages().Groups(context.Background(), pageB)
+	if err != nil {
+		t.Fatalf("Groups returned unexpected error: %v", err)
+	}
+	if len(groups) != 1 || groups[0].ID != groupB {
+		t.Fatalf("o grupo da outra página foi removido: %+v", groups)
+	}
+}
+
+func createStatusPage(t *testing.T, s *server, slug string) int64 {
+	t.Helper()
+	resp := s.do(t, http.MethodPost, "/api/v1/status-pages", map[string]any{
+		"slug": slug, "title": slug,
+	})
+	assertStatus(t, resp, http.StatusCreated)
+	return decode[idResp](t, resp).ID
+}
+
+func createMonitor(t *testing.T, s *server, name string) int64 {
+	t.Helper()
+	resp := s.do(t, http.MethodPost, "/api/v1/monitors", map[string]any{
+		"name": name, "type": "http", "target": "https://exemplo.com",
+		"interval_seconds": 60, "timeout_seconds": 10,
+	})
+	assertStatus(t, resp, http.StatusCreated)
+	return decode[idResp](t, resp).ID
+}
+
+func createStatusPageGroup(t *testing.T, s *server, pageID int64, name string) int64 {
+	t.Helper()
+	resp := s.do(t, http.MethodPost,
+		"/api/v1/status-pages/"+itoa(pageID)+"/groups", map[string]any{
+			"name": name, "position": 0,
+		})
+	assertStatus(t, resp, http.StatusCreated)
+	return decode[idResp](t, resp).ID
 }
 
 func TestDefaultPageAnswersWithoutSlug(t *testing.T) {

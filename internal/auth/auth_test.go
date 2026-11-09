@@ -111,10 +111,11 @@ func TestLoginWithCorrectPasswordIssuesSession(t *testing.T) {
 	f := newFixture(t)
 	f.withAdmin(t)
 
-	secret, err := f.svc.Login(context.Background(), "admin", goodPassword)
+	login, err := f.svc.Login(context.Background(), "admin", goodPassword)
 	if err != nil {
 		t.Fatalf("Login returned unexpected error: %v", err)
 	}
+	secret := login.Session
 	if secret == "" {
 		t.Fatal("Login returned an empty session secret")
 	}
@@ -257,10 +258,11 @@ func TestAuthenticateSessionReturnsTheUser(t *testing.T) {
 	admin := f.withAdmin(t)
 	ctx := context.Background()
 
-	secret, err := f.svc.Login(ctx, "admin", goodPassword)
+	login, err := f.svc.Login(ctx, "admin", goodPassword)
 	if err != nil {
 		t.Fatalf("Login returned unexpected error: %v", err)
 	}
+	secret := login.Session
 
 	got, err := f.svc.AuthenticateSession(ctx, secret)
 	if err != nil {
@@ -287,10 +289,11 @@ func TestAuthenticateSessionRejectsExpiredSession(t *testing.T) {
 	f.withAdmin(t)
 	ctx := context.Background()
 
-	secret, err := f.svc.Login(ctx, "admin", goodPassword)
+	login, err := f.svc.Login(ctx, "admin", goodPassword)
 	if err != nil {
 		t.Fatalf("Login returned unexpected error: %v", err)
 	}
+	secret := login.Session
 	f.clock.Advance(auth.DefaultSessionTTL + time.Minute)
 
 	if _, err := f.svc.AuthenticateSession(ctx, secret); !errors.Is(err, auth.ErrUnauthenticated) {
@@ -303,10 +306,11 @@ func TestLogoutInvalidatesTheSession(t *testing.T) {
 	f.withAdmin(t)
 	ctx := context.Background()
 
-	secret, err := f.svc.Login(ctx, "admin", goodPassword)
+	login, err := f.svc.Login(ctx, "admin", goodPassword)
 	if err != nil {
 		t.Fatalf("Login returned unexpected error: %v", err)
 	}
+	secret := login.Session
 	if err := f.svc.Logout(ctx, secret); err != nil {
 		t.Fatalf("Logout returned unexpected error: %v", err)
 	}
@@ -353,10 +357,11 @@ func TestChangePasswordEndsExistingSessions(t *testing.T) {
 	admin := f.withAdmin(t)
 	ctx := context.Background()
 
-	secret, err := f.svc.Login(ctx, "admin", goodPassword)
+	login, err := f.svc.Login(ctx, "admin", goodPassword)
 	if err != nil {
 		t.Fatalf("Login returned unexpected error: %v", err)
 	}
+	secret := login.Session
 	if err := f.svc.ChangePassword(ctx, admin.ID, goodPassword, "nova-senha-bem-longa"); err != nil {
 		t.Fatalf("ChangePassword returned unexpected error: %v", err)
 	}

@@ -12,6 +12,7 @@ package config
 
 import (
 	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -31,6 +32,9 @@ const envPrefix = "UPWATCH_"
 
 // Config são as opções de uma instalação.
 type Config struct {
+	// PasswordHashCost é o custo do bcrypt para novas senhas e regravações.
+	PasswordHashCost int `yaml:"password_hash_cost"`
+
 	// Listen é o endereço do servidor HTTP.
 	Listen string `yaml:"listen"`
 
@@ -87,6 +91,19 @@ type Config struct {
 	// ganharia uma sonda na rede de dentro dele.
 	RestrictPrivateTargets bool `yaml:"restrict_private_targets"`
 
+	// Require2FAAdmin obriga todo administrador a ter a verificação em
+	// duas etapas: quem entra sem ela só consegue cadastrá-la. Desligado
+	// por padrão, para uma atualização não prender ninguém no cadastro sem
+	// aviso; quem liga decide quando.
+	Require2FAAdmin bool `yaml:"require_2fa_admin"`
+
+	// TrustedProxies são os proxies reversos na frente da instalação, em
+	// CIDR ou endereço solto. Só de uma conexão vinda deles o
+	// X-Forwarded-For é lido, para os limites por origem enxergarem o
+	// cliente e não o proxy. Vazio, o padrão, nunca lê o cabeçalho: de
+	// qualquer um, ele deixaria quem ataca escolher a própria origem.
+	TrustedProxies []string `yaml:"trusted_proxies"`
+
 	// SecretKey é a chave, em base64 de 32 bytes, que cifra as
 	// credenciais dos monitores e canais no banco. Vazia, a instalação
 	// SQLite usa a gerada ao lado do banco (ver secretbox.Resolver).
@@ -122,7 +139,8 @@ type Retention struct {
 // argumentos tem que subir e monitorar.
 func Default() Config {
 	return Config{
-		Listen: ":8080",
+		PasswordHashCost: domain.MinPasswordHashCost,
+		Listen:           ":8080",
 		Database: Database{
 			Driver: "sqlite",
 			DSN:    "/data/upwatch.db",
@@ -220,21 +238,33 @@ func applyEnv(cfg *Config) error {
 	if err := num(&cfg.Workers, "WORKERS"); err != nil {
 		return err
 	}
+	if err := num(&cfg.PasswordHashCost, "PASSWORD_HASH_COST"); err != nil {
+		return err
+	}
 	if err := boolean(&cfg.SecureCookies, "SECURE_COOKIES"); err != nil {
 		return err
 	}
 	if err := boolean(&cfg.RestrictPrivateTargets, "RESTRICT_PRIVATE_TARGETS"); err != nil {
 		return err
 	}
+	if err := boolean(&cfg.Require2FAAdmin, "REQUIRE_2FA_ADMIN"); err != nil {
+		return err
+	}
 
 	if raw, ok := lookup("SENTINEL_TARGETS"); ok {
 		cfg.SentinelTargets = splitList(raw)
+	}
+	if raw, ok := lookup("TRUSTED_PROXIES"); ok {
+		cfg.TrustedProxies = splitList(raw)
 	}
 	return nil
 }
 
 // Validate recusa combinações que só falhariam depois, em produção.
 func (c Config) Validate() error {
+	if c.PasswordHashCost < domain.MinPasswordHashCost || c.PasswordHashCost > domain.MaxPasswordHashCost {
+		return fmt.Errorf("config: password_hash_cost precisa ficar entre %d e %d", domain.MinPasswordHashCost, domain.MaxPasswordHashCost)
+	}
 	if strings.TrimSpace(c.Listen) == "" {
 		return fmt.Errorf("config: listen não pode ser vazio")
 	}
@@ -258,6 +288,10 @@ func (c Config) Validate() error {
 			domain.MinReminderInterval, domain.MaxReminderInterval)
 	}
 
+	if _, err := c.TrustedProxyPrefixes(); err != nil {
+		return err
+	}
+
 	if c.SecretKey != "" {
 		if _, err := secretbox.ParseKey(c.SecretKey); err != nil {
 			return fmt.Errorf("config: %sSECRET_KEY: %w", envPrefix, err)
@@ -267,6 +301,26 @@ func (c Config) Validate() error {
 	// A validação da cascata vive no pacote que a aplica, para não haver
 	// duas versões da mesma regra.
 	return c.RetentionPolicy().Validate()
+}
+
+// TrustedProxyPrefixes lê TrustedProxies. Endereço solto vira o bloco
+// só dele (/32 ou /128).
+func (c Config) TrustedProxyPrefixes() ([]netip.Prefix, error) {
+	out := make([]netip.Prefix, 0, len(c.TrustedProxies))
+	for _, raw := range c.TrustedProxies {
+		raw = strings.TrimSpace(raw)
+		if p, err := netip.ParsePrefix(raw); err == nil {
+			out = append(out, p.Masked())
+			continue
+		}
+		addr, err := netip.ParseAddr(raw)
+		if err != nil {
+			return nil, fmt.Errorf("config: trusted_proxies: %q não é CIDR nem endereço IP", raw)
+		}
+		addr = addr.Unmap()
+		out = append(out, netip.PrefixFrom(addr, addr.BitLen()))
+	}
+	return out, nil
 }
 
 // RetentionPolicy traduz para o formato usado pelo worker.

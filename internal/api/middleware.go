@@ -66,8 +66,12 @@ func recoverPanic(next http.Handler) http.Handler {
 				return
 			}
 
+			// A rota pelo padrão, e não pelo caminho: o caminho do /push
+			// carrega o token do monitor, e o registro do defeito não pode
+			// ser a porta dos fundos por onde o segredo sai da máquina. O
+			// padrão diz qual endpoint quebrou, que é o que se investiga.
 			slog.Error("api: pânico no handler",
-				"erro", p, "método", r.Method, "caminho", r.URL.Path)
+				"erro", p, "método", r.Method, "rota", rotaDe(r))
 			writeError(w, http.StatusInternalServerError, codeInternal, "erro interno")
 		}()
 
@@ -90,6 +94,41 @@ func (a *API) authenticate(next http.Handler) http.Handler {
 
 		ctx := context.WithValue(r.Context(), userContextKey, user)
 		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// mustEnroll informa se a requisição vem de um administrador que precisa
+// cadastrar o segundo fator antes de usar o resto da API.
+//
+// Só sessão: token de API não passa pelo login, e exigir o fator dele
+// quebraria a automação sem proteger nada que o token já não proteja.
+// A conta é relida a cada requisição (ver authenticate), então a
+// restrição cai assim que o cadastro termina, na mesma sessão.
+func (a *API) mustEnroll(r *http.Request) bool {
+	if !a.require2FAAdmin {
+		return false
+	}
+	if _, ok := bearerToken(r); ok {
+		return false
+	}
+	u := mustUser(r)
+	return u.Role == domain.RoleAdmin && !u.TOTPEnabled
+}
+
+// requireEnrollment barra, enquanto o cadastro do segundo fator for
+// obrigatório e não tiver sido feito, tudo o que não for cadastrá-lo.
+//
+// Grupo de rotas, como requireAdmin: as rotas liberadas moram num grupo
+// sem esta guarda, e uma rota nova nasce barrada.
+func (a *API) requireEnrollment(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if a.mustEnroll(r) {
+			writeError(w, http.StatusForbidden, codeTwoFactorEnrollment,
+				"esta instalação exige verificação em duas etapas para administradores; "+
+					"cadastre-a em Ajustes, Verificação em duas etapas")
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 

@@ -26,6 +26,7 @@ import { Channels } from "./Channels";
 import { Groups } from "./Groups";
 import { Maintenance } from "./Maintenance";
 import { StatusPageAdmin, StatusPages } from "./StatusPages";
+import { TwoFactor } from "./TwoFactor";
 import { Users } from "./Users";
 
 /**
@@ -186,6 +187,8 @@ function Secao({
       return <Tokens />;
     case "senha":
       return <Password onSignedOut={onSignedOut} />;
+    case "seguranca":
+      return <TwoFactor />;
   }
 }
 
@@ -339,8 +342,8 @@ function Password({ onSignedOut }: { onSignedOut: () => void }) {
 
     try {
       await api.changePassword(atual, nova);
-      // A troca encerra todas as sessões, inclusive esta — é o objetivo,
-      // não um efeito colateral.
+      // A troca revoga todas as credenciais da conta, sessões e tokens de
+      // API, inclusive esta — é o objetivo, não um efeito colateral.
       onSignedOut();
     } catch (e) {
       setErro(e instanceof ApiError ? e.message : "Não foi possível trocar a senha.");
@@ -352,7 +355,9 @@ function Password({ onSignedOut }: { onSignedOut: () => void }) {
       <div className="flex flex-col gap-1.5">
         <h2 className="text-lead font-medium">Senha</h2>
         <p className="text-body text-ink-2">
-          Trocar a senha encerra todas as sessões abertas, inclusive esta.
+          Trocar a senha encerra todas as sessões abertas, inclusive esta, e
+          revoga os tokens de API da conta. Automação que use um deles
+          precisa de token novo.
         </p>
       </div>
 

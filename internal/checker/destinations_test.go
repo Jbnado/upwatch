@@ -96,8 +96,19 @@ func TestInternalAddr(t *testing.T) {
 		"10.1.2.3", "172.16.0.1", "192.168.1.1", "fd00::1",
 		"169.254.169.254", "fe80::1", "100.100.100.200",
 		"::ffff:127.0.0.1", "::ffff:10.0.0.1",
+		// Faixas reservadas e de teste de equipamento.
+		"198.18.0.1", "198.19.255.254", "192.0.0.1", "240.0.0.1", "255.255.255.255",
+		// IPv6 que embute IPv4: um tradutor no caminho leva de volta a
+		// ele. NAT64, 6to4, IPv4-compatível e SIIT, mesmo com IPv4 de
+		// fora dentro — a faixa inteira fica de fora.
+		"64:ff9b::a9fe:a9fe", "64:ff9b::7f00:1", "64:ff9b::808:808", "64:ff9b:1::a00:1",
+		"2002:7f00:1::1", "2002:a9fe:a9fe::1", "2002:808:808::1",
+		"::7f00:1", "::a9fe:a9fe", "::808:808", "::ffff:0:7f00:1", "::ffff:0:808:808",
+		// Site-local.
+		"fec0::1",
 	}
-	externos := []string{"203.0.113.10", "8.8.8.8", "2001:4860:4860::8888", "172.32.0.1"}
+	externos := []string{"203.0.113.10", "8.8.8.8", "2001:4860:4860::8888", "172.32.0.1",
+		"198.20.0.1", "192.0.1.1", "223.255.255.1", "2600::1"}
 
 	for _, s := range internos {
 		if !checker.InternalAddr(netip.MustParseAddr(s)) {

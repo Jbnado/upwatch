@@ -465,12 +465,20 @@ function Servicos({
     // clique que não pegou.
     setComponents([
       ...components.filter((c) => !saem.includes(c.monitor_id)),
-      ...entram.map((id) => ({ page_id: pageID, monitor_id: id, group_id: null, position: 0 })),
+      ...entram.map((id) => ({
+        page_id: pageID,
+        monitor_id: id,
+        group_id: null,
+        label: monitors.find((monitor) => monitor.id === id)?.name ?? "",
+        position: 0,
+      })),
     ]);
 
     try {
       await Promise.all([
-        ...entram.map((id) => api.setComponent(pageID, id, { label: "" })),
+        ...entram.map((id) =>
+          api.setComponent(pageID, id, { label: monitors.find((monitor) => monitor.id === id)?.name ?? "" }),
+        ),
         ...saem.map((id) => api.removeComponent(pageID, id)),
       ]);
     } catch (e) {
@@ -613,13 +621,14 @@ function ComponenteDetalhe({
   secoes: StatusPageGroup[];
   onChanged: () => Promise<void>;
 }) {
-  const [label, setLabel] = useState(component.label ?? "");
+  const labelInicial = component.label || monitor.name;
+  const [label, setLabel] = useState(labelInicial);
   const [secao, setSecao] = useState<number | null>(component.group_id ?? null);
   // O último par enviado, e a fila das gravações. Rótulo e seção vão
   // sempre juntos e um de cada vez: digitar o rótulo e ir direto à seção
   // dispara duas gravações, e em paralelo o servidor ficava com a que
   // chegasse por último — às vezes a do rótulo, ainda com a seção antiga.
-  const enviado = useRef({ label: component.label ?? "", secao: component.group_id ?? null });
+  const enviado = useRef({ label: labelInicial, secao: component.group_id ?? null });
   const fila = useRef<Promise<unknown>>(Promise.resolve());
 
   function salvar(proximo: { label: string; secao: number | null }) {
@@ -642,7 +651,7 @@ function ComponenteDetalhe({
 
   return (
     <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,11rem)]">
-      <Field label="rótulo público" hint={label ? undefined : `vazio, usa "${monitor.name}"`}>
+      <Field label="rótulo público" hint="Obrigatório. Nome exibido na página pública.">
         <Input
           value={label}
           onChange={(e) => setLabel(e.target.value)}

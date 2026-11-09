@@ -404,6 +404,59 @@ func TestExportProducesCSV(t *testing.T) {
 	}
 }
 
+// A causa de um push é escrita por quem bate no UpWatch; na planilha de
+// quem exportou, ela não pode virar fórmula.
+func TestExportCSVNeutralizesFormulas(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+	id := s.createMonitor(t, newMonitorBody("api"))
+
+	mensagens := []string{
+		`=HYPERLINK("https://exemplo.invalid","clique")`,
+		"+1+1", "-2+3", "@SUM(A1)", "\tsoma", "\rlinha", "status 502",
+	}
+	batch := make([]domain.Heartbeat, 0, len(mensagens))
+	for i, m := range mensagens {
+		batch = append(batch, domain.Heartbeat{
+			MonitorID: id,
+			Timestamp: epoch.Add(-time.Duration(len(mensagens)-i) * time.Minute),
+			Status:    domain.StatusUp,
+			LatencyMS: int64(100 + i),
+			ProbeID:   "=probe",
+			Message:   m,
+		})
+	}
+	if err := s.store.WriteHeartbeats(context.Background(), batch); err != nil {
+		t.Fatalf("WriteHeartbeats returned unexpected error: %v", err)
+	}
+
+	resp := s.do(t, http.MethodGet, "/api/v1/monitors/"+itoa(id)+"/export?format=csv", nil)
+	assertStatus(t, resp, http.StatusOK)
+	rows, err := csv.NewReader(resp.Body).ReadAll()
+	if err != nil {
+		t.Fatalf("the exported CSV is malformed: %v", err)
+	}
+	if len(rows) != len(mensagens)+1 {
+		t.Fatalf("exported %d rows, want %d", len(rows), len(mensagens)+1)
+	}
+	for i, m := range mensagens {
+		row := rows[i+1]
+		want := "'" + m
+		if m == "status 502" {
+			want = m
+		}
+		if row[4] != want {
+			t.Errorf("message cell = %q, want %q", row[4], want)
+		}
+		if row[3] != "'=probe" {
+			t.Errorf("probe_id cell = %q, want %q", row[3], "'=probe")
+		}
+		if row[2] != itoa(int64(100+i)) {
+			t.Errorf("latency cell = %q, want the plain number %d", row[2], 100+i)
+		}
+	}
+}
+
 func TestExportProducesJSON(t *testing.T) {
 	s := newServer(t)
 	s.setup(t)

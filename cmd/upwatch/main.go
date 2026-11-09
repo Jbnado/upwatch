@@ -76,6 +76,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	domain.PasswordHashCost = cfg.PasswordHashCost
 
 	st, err := openStore(cfg)
 	if err != nil {
@@ -118,6 +119,7 @@ func run() error {
 var maintenance = map[string]func([]string) error{
 	"rotate-secret-key": rotateSecretKey,
 	"forget-secrets":    forgetSecrets,
+	"disable-2fa":       disableTwoFactor,
 }
 
 // application reúne as peças em execução.
@@ -213,6 +215,9 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 	})
 
 	authSvc := auth.New(st, auth.Options{Clock: real, SessionTTL: cfg.SessionTTL})
+	if err := authSvc.CalibrateLogin(context.Background()); err != nil {
+		return nil, err
+	}
 
 	// Sem token e com conta restrita, /metrics recusa toda raspagem. Avisar
 	// no início poupa quem opera de descobrir pelo alerta de coleta parada.
@@ -222,9 +227,25 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 		slog.Warn(aviso)
 	}
 
+	// Combinações que sobem sem erro e expõem mais do que parece. Saem na
+	// partida porque é o único momento em que quem instalou está olhando,
+	// e nenhuma delas se anuncia depois: a exposição aberta de /metrics é
+	// silenciosa por definição, e o cookie sem Secure só aparece quando já
+	// foi copiado.
+	for _, aviso := range cfg.DeploymentWarnings() {
+		slog.Warn(aviso)
+	}
+
 	// Resolvido na subida, antes de a porta abrir: não há janela em que o
 	// assistente responda sem token.
 	setupToken, err := resolveSetupToken(context.Background(), authSvc.NeedsSetup, cfg.SetupToken, slog.Default())
+	if err != nil {
+		return nil, err
+	}
+
+	// Validado na leitura da configuração; o erro só voltaria aqui se a
+	// validação tivesse sido pulada.
+	trustedProxies, err := cfg.TrustedProxyPrefixes()
 	if err != nil {
 		return nil, err
 	}
@@ -245,6 +266,8 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 		SetupToken:    setupToken,
 
 		AllowScopedPrivateTargets: !cfg.RestrictPrivateTargets,
+		Require2FAAdmin:           cfg.Require2FAAdmin,
+		TrustedProxies:            trustedProxies,
 	})
 
 	return &application{
@@ -264,7 +287,7 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 			Clock:     real,
 		}),
 		auth:    authSvc,
-		handler: server.New(apiHandler, web.Handler()),
+		handler: server.New(apiHandler, web.Handler(), server.Options{SecureCookies: cfg.SecureCookies}),
 	}, nil
 }
 
@@ -309,7 +332,16 @@ func (a *application) run(ctx context.Context, cfg config.Config) error {
 		// Sem prazo de leitura de cabeçalho, uma conexão aberta e ociosa
 		// segura um descritor indefinidamente.
 		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       120 * time.Second,
+		// ReadTimeout cobre o corpo, que o ReadHeaderTimeout não cobre: um
+		// cliente que manda os cabeçalhos e depois escoa o corpo byte a
+		// byte segura uma goroutine e um descritor indefinidamente.
+		//
+		// Sem WriteTimeout de propósito: o fluxo de eventos (SSE) vive
+		// dias numa aba aberta, e um prazo de escrita o cortaria. O prazo
+		// por resposta, onde ele faz falta, é assunto do handler.
+		ReadTimeout:    30 * time.Second,
+		MaxHeaderBytes: 64 << 10,
+		IdleTimeout:    120 * time.Second,
 	}
 
 	erros := make(chan error, 1)
@@ -386,6 +418,11 @@ func (a *application) sweepSessions(ctx context.Context) {
 				slog.Warn("falha ao limpar sessoes vencidas", "erro", err)
 			} else if n > 0 {
 				slog.Debug("sessoes vencidas removidas", "total", n)
+			}
+			if n, err := a.auth.SweepExpiredChallenges(ctx); err != nil {
+				slog.Warn("falha ao limpar desafios de login vencidos", "erro", err)
+			} else if n > 0 {
+				slog.Debug("desafios de login vencidos removidos", "total", n)
 			}
 		}
 	}

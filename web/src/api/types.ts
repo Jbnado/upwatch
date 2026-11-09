@@ -258,9 +258,38 @@ export type User = {
   /** admin administra; viewer só lê. */
   role: Role;
   scope: Scope;
+  /** A conta tem a verificação em duas etapas ligada. */
+  totp_enabled: boolean;
+  /**
+   * Só em /auth/me: a instalação exige o segundo fator desta conta e ele
+   * ainda não foi cadastrado. Enquanto for verdadeiro, o servidor recusa
+   * tudo que não seja o cadastro.
+   */
+  two_factor_enrollment_required?: boolean;
   created_at: string;
   updated_at: string;
 };
+
+/**
+ * LoginResult é a resposta do login. Com o segundo fator ligado, a senha
+ * certa ainda não abre sessão: devolve o desafio que vai junto do código.
+ */
+export type LoginResult =
+  | { status: "ok" }
+  | { status: "two_factor_required"; challenge: string; expires_at: string };
+
+export type TOTPStatus = {
+  enabled: boolean;
+  /** Cadastro começado e não confirmado. */
+  pending: boolean;
+  recovery_codes_left: number;
+  /** A instalação exige o segundo fator desta conta. */
+  required: boolean;
+};
+
+export type TOTPSetup = { secret: string; uri: string };
+
+export type RecoveryCodes = { recovery_codes: string[] };
 
 export type APIToken = {
   id: number;

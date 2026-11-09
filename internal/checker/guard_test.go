@@ -2,6 +2,7 @@ package checker_test
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -268,5 +269,91 @@ func TestRegistryCanIgnoreTheRestriction(t *testing.T) {
 	reg.IgnoreInternalRestriction()
 	if res := reg.Check(context.Background(), m); res.Status != domain.StatusUp {
 		t.Errorf("got %v %q, want up with the restriction off", res.Status, res.Message)
+	}
+}
+
+// O Control do dialer restrito usa a mesma InternalAddr do cadastro:
+// endereço IPv6 que carrega um IPv4 (NAT64, 6to4, IPv4-compatível,
+// SIIT) e as faixas reservadas são recusados também na conexão. Chamado
+// direto porque discar para eles dependeria da rede de quem roda o teste.
+func TestRestrictedDialRefusesEmbeddedIPv4AndReservedRanges(t *testing.T) {
+	for _, addr := range []string{
+		"[64:ff9b::a00:5]:80", "[64:ff9b:1::a9fe:a9fe]:80", "[2002:a00:5::1]:80",
+		"[::a00:5]:80", "[::ffff:0:a00:5]:80", "[fec0::1]:80",
+		"198.18.0.1:80", "192.0.0.170:80", "240.0.0.1:80", "255.255.255.255:80",
+	} {
+		if err := checker.RefuseInternalForTest(context.Background(), "tcp", addr, nil); !errors.Is(err, checker.ErrInternalTarget) {
+			t.Errorf("refuseInternal(%s) = %v, want ErrInternalTarget", addr, err)
+		}
+	}
+	if err := checker.RefuseInternalForTest(context.Background(), "tcp", "203.0.113.10:80", nil); err != nil {
+		t.Errorf("refuseInternal(203.0.113.10:80) = %v, want nil", err)
+	}
+}
+
+// O monitor DNS restrito sem resolvedor próprio pergunta ao do sistema,
+// que conhece a zona interna. O endereço interno da resposta não pode
+// aparecer na causa nem nos detalhes, e não conta como resposta; o
+// endereço de fora continua aparecendo, e o monitor continua útil.
+func TestRestrictedDNSHidesInternalAnswers(t *testing.T) {
+	srv := newDNSServer(t, answering(
+		mustRR(t, "misto.test. 60 IN A 10.0.0.5"),
+		mustRR(t, "misto.test. 60 IN A 203.0.113.7"),
+	))
+	checker.SetSystemResolverForTest(t, srv.addr)
+
+	res := checker.NewDNS().Check(context.Background(), restricted(dnsMonitor(t, "misto.test", nil)))
+	if res.Status != domain.StatusUp || res.Meta["answers"] != "203.0.113.7" || res.Meta["answer_count"] != "1" {
+		t.Errorf("restricted: got %v %q %v, want up showing only the outside address", res.Status, res.Message, res.Meta)
+	}
+
+	// Sem a restrição, nada muda.
+	res = checker.NewDNS().Check(context.Background(), dnsMonitor(t, "misto.test", nil))
+	if !strings.Contains(res.Meta["answers"], "10.0.0.5") {
+		t.Errorf("unrestricted: Meta[answers] = %q, want the internal address", res.Meta["answers"])
+	}
+}
+
+// Nome que só resolve para dentro: cai como nome sem registro, e o valor
+// esperado igual ao endereço interno não o confirma.
+func TestRestrictedDNSDoesNotConfirmInternalAddresses(t *testing.T) {
+	srv := newDNSServer(t, answering(mustRR(t, "db.corp.internal. 60 IN A 10.0.0.5")))
+	checker.SetSystemResolverForTest(t, srv.addr)
+
+	res := checker.NewDNS().Check(context.Background(), restricted(
+		dnsMonitor(t, "db.corp.internal", map[string]any{"expected_values": []string{"10.0.0.5"}})))
+	if res.Status != domain.StatusDown {
+		t.Errorf("Status = %v, want down", res.Status)
+	}
+	if strings.Contains(res.Meta["answers"], "10.0.0.5") || res.Meta["answer_count"] != "0" {
+		t.Errorf("Meta = %v reveals the internal answer", res.Meta)
+	}
+}
+
+// Registro que não é endereço não tem como ser julgado: pelo resolvedor
+// do sistema, o valor não aparece, mas a comparação com o esperado
+// continua valendo.
+func TestRestrictedDNSHidesNonAddressAnswersFromTheSystemResolver(t *testing.T) {
+	srv := newDNSServer(t, answering(mustRR(t, `cfg.corp.internal. 60 IN TXT "senha-interna"`)))
+	checker.SetSystemResolverForTest(t, srv.addr)
+
+	res := checker.NewDNS().Check(context.Background(), restricted(
+		dnsMonitor(t, "cfg.corp.internal", map[string]any{"record_type": "TXT", "expected_values": []string{"outra"}})))
+	if res.Status != domain.StatusDown {
+		t.Errorf("Status = %v, want down", res.Status)
+	}
+	for k, v := range res.Meta {
+		if strings.Contains(v, "senha-interna") {
+			t.Errorf("Meta[%s] = %q reveals the answer", k, v)
+		}
+	}
+	if strings.Contains(res.Message, "senha-interna") {
+		t.Errorf("Message = %q reveals the answer", res.Message)
+	}
+
+	res = checker.NewDNS().Check(context.Background(), restricted(
+		dnsMonitor(t, "cfg.corp.internal", map[string]any{"record_type": "TXT", "expected_values": []string{"senha-interna"}})))
+	if res.Status != domain.StatusUp {
+		t.Errorf("matching expected value: got %v %q, want up", res.Status, res.Message)
 	}
 }

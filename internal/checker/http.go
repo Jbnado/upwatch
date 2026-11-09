@@ -31,6 +31,19 @@ const userAgent = "UpWatch/0.1 (+https://github.com/Jbnado/upwatch)"
 // redirecionamento virar falha em vez de execução infinita.
 const maxRedirects = 10
 
+// MaxJSONAssertions limita quantas condições um monitor HTTP pode ter.
+//
+// Sem teto, o custo por verificação é escolhido por quem cadastra e pago
+// pela instalação para sempre: cada asserção percorre o JSON já
+// interpretado a cada batida, e a configuração inteira viaja de volta em
+// toda listagem de monitores. O número é alto de propósito — o uso real é
+// de duas a cinco condições —, para recusar só o que não é uso.
+//
+// Conferido no cadastro, e não na verificação: monitor que já exista com
+// mais que isso continua funcionando, em vez de cair de uma vez numa
+// atualização por um limite que não existia quando ele foi criado.
+const MaxJSONAssertions = 50
+
 // HTTPConfig é a configuração específica de um monitor HTTP.
 type HTTPConfig struct {
 	Method  string            `json:"method,omitempty"`
@@ -98,16 +111,21 @@ type HTTP struct {
 	restrictedSecure   *http.Transport
 	restrictedInsecure *http.Transport
 
-	// assertions guarda as asserções JSON já interpretadas por monitor,
-	// junto da configuração de onde vieram: editar o monitor troca a
+	// compiled guarda, por monitor, o que a configuração dele exige
+	// compilar: as asserções JSON e a expressão regular do corpo. Junto
+	// vai a configuração de onde vieram — editar o monitor troca a
 	// configuração e invalida a entrada.
-	mu         sync.Mutex
-	assertions map[int64]cachedAssertions
+	mu       sync.Mutex
+	compiled map[int64]compiledConfig
 }
 
-type cachedAssertions struct {
-	config   string
-	compiled []compiledAssertion
+// compiledConfig é a parte da configuração que custa interpretar.
+type compiledConfig struct {
+	config     string
+	assertions []compiledAssertion
+	// bodyRegex é nulo quando o monitor não tem body_regex, que é o que
+	// diz ao Check para não avaliar a condição.
+	bodyRegex *regexp.Regexp
 }
 
 // NewHTTP cria o checker HTTP.
@@ -120,7 +138,7 @@ func NewHTTP() *HTTP {
 		secure: secure, insecure: insecure,
 		restrictedSecure:   restrictedTransport(secure),
 		restrictedInsecure: restrictedTransport(insecure),
-		assertions:         map[int64]cachedAssertions{},
+		compiled:           map[int64]compiledConfig{},
 	}
 }
 
@@ -156,9 +174,17 @@ func (h *HTTP) ValidateConfig(raw json.RawMessage) error {
 	}
 
 	if cfg.BodyRegex != "" {
+		if len(cfg.BodyRegex) > MaxBodyRegexLength {
+			return fmt.Errorf("checker: body_regex tem %d caracteres; o máximo é %d",
+				len(cfg.BodyRegex), MaxBodyRegexLength)
+		}
 		if _, err := regexp.Compile(cfg.BodyRegex); err != nil {
 			return fmt.Errorf("checker: expressão regular inválida em body_regex: %w", err)
 		}
+	}
+	if len(cfg.JSONAssertions) > MaxJSONAssertions {
+		return fmt.Errorf("checker: json_assertions tem %d condições; o máximo é %d",
+			len(cfg.JSONAssertions), MaxJSONAssertions)
 	}
 	if _, err := compileAssertions(cfg.JSONAssertions); err != nil {
 		return err
@@ -183,7 +209,7 @@ func (h *HTTP) Check(ctx context.Context, m domain.Monitor) Result {
 	if err != nil {
 		return down("configuração inválida: %v", err)
 	}
-	assertions, err := h.assertionsFor(m)
+	compiled, err := h.compiledFor(m)
 	if err != nil {
 		return down("configuração inválida: %v", err)
 	}
@@ -241,17 +267,17 @@ func (h *HTTP) Check(ctx context.Context, m domain.Monitor) Result {
 		return res
 	}
 
-	if msg := evaluateBody(cfg, string(payload)); msg != "" {
+	if msg := evaluateBody(cfg, compiled.bodyRegex, string(payload)); msg != "" {
 		res.Status = domain.StatusDown
 		res.Message = msg
 		return res
 	}
 
-	if len(assertions) > 0 {
+	if len(compiled.assertions) > 0 {
 		// Corpo do tamanho exato do teto quase certamente foi cortado; a
 		// causa precisa dizer isso em vez de culpar o JSON do alvo.
 		truncated := len(payload) == MaxBodyBytes
-		if msg := evaluateJSONAssertions(assertions, payload, truncated); msg != "" {
+		if msg := evaluateJSONAssertions(compiled.assertions, payload, truncated); msg != "" {
 			res.Status = domain.StatusDown
 			res.Message = msg
 			return res
@@ -262,30 +288,47 @@ func (h *HTTP) Check(ctx context.Context, m domain.Monitor) Result {
 	return res
 }
 
-// assertionsFor devolve as asserções JSON do monitor já interpretadas.
-// Interpretar é trabalho do cadastro; o Check roda a cada poucos segundos
-// e só repete o trabalho quando a configuração muda.
-func (h *HTTP) assertionsFor(m domain.Monitor) ([]compiledAssertion, error) {
+// compiledFor devolve as asserções JSON e a expressão regular do monitor
+// já interpretadas. Interpretar é trabalho do cadastro; o Check roda a
+// cada poucos segundos e só repete o trabalho quando a configuração muda.
+//
+// A expressão regular entrou aqui pelo mesmo motivo das asserções: ela era
+// compilada dentro da avaliação do corpo, isto é, a cada verificação. Um
+// monitor de 10 segundos compilava o mesmo padrão 8.640 vezes por dia, e o
+// custo é do tamanho do padrão, não do corpo — quem escreve a expressão
+// mais cara paga mais, para sempre.
+func (h *HTTP) compiledFor(m domain.Monitor) (compiledConfig, error) {
 	h.mu.Lock()
-	cached, ok := h.assertions[m.ID]
+	cached, ok := h.compiled[m.ID]
 	h.mu.Unlock()
 	if ok && cached.config == string(m.Config) {
-		return cached.compiled, nil
+		return cached, nil
 	}
 
 	cfg, err := parseHTTPConfig(m.Config)
 	if err != nil {
-		return nil, err
+		return compiledConfig{}, err
 	}
-	compiled, err := compileAssertions(cfg.JSONAssertions)
+	assertions, err := compileAssertions(cfg.JSONAssertions)
 	if err != nil {
-		return nil, err
+		return compiledConfig{}, err
+	}
+	var bodyRegex *regexp.Regexp
+	if cfg.BodyRegex != "" {
+		if bodyRegex, err = regexp.Compile(cfg.BodyRegex); err != nil {
+			return compiledConfig{}, fmt.Errorf("expressão regular inválida em body_regex: %w", err)
+		}
 	}
 
+	entrada := compiledConfig{
+		config:     string(m.Config),
+		assertions: assertions,
+		bodyRegex:  bodyRegex,
+	}
 	h.mu.Lock()
-	h.assertions[m.ID] = cachedAssertions{config: string(m.Config), compiled: compiled}
+	h.compiled[m.ID] = entrada
 	h.mu.Unlock()
-	return compiled, nil
+	return entrada, nil
 }
 
 // client monta um cliente com o timeout e a política de redirecionamento
@@ -319,21 +362,19 @@ func (h *HTTP) client(cfg HTTPConfig, restrict bool) *http.Client {
 
 // evaluateBody devolve a causa da reprovação, ou string vazia se o corpo
 // satisfaz todas as condições.
-func evaluateBody(cfg HTTPConfig, body string) string {
+//
+// A expressão regular vem compilada de fora: ela é a mesma a cada
+// verificação do mesmo monitor, e compilá-la aqui seria pagar o cadastro
+// de novo em toda batida. Nula quando o monitor não tem body_regex.
+func evaluateBody(cfg HTTPConfig, bodyRegex *regexp.Regexp, body string) string {
 	if cfg.BodyContains != "" && !strings.Contains(body, cfg.BodyContains) {
 		return fmt.Sprintf("corpo não contém %q", cfg.BodyContains)
 	}
 	if cfg.BodyNotContains != "" && strings.Contains(body, cfg.BodyNotContains) {
 		return fmt.Sprintf("corpo contém o termo proibido %q", cfg.BodyNotContains)
 	}
-	if cfg.BodyRegex != "" {
-		re, err := regexp.Compile(cfg.BodyRegex)
-		if err != nil {
-			return fmt.Sprintf("expressão regular inválida: %v", err)
-		}
-		if !re.MatchString(body) {
-			return fmt.Sprintf("corpo não casa com %q", cfg.BodyRegex)
-		}
+	if bodyRegex != nil && !bodyRegex.MatchString(body) {
+		return fmt.Sprintf("corpo não casa com %q", cfg.BodyRegex)
 	}
 	return ""
 }

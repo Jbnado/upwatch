@@ -55,9 +55,29 @@ services:
     # já roda como usuário sem privilégio.
     security_opt:
       - no-new-privileges:true
+    # Nenhuma capacidade do kernel. O binário é estático, escuta numa
+    # porta alta e não muda de usuário — não há o que ele faça com
+    # CHOWN, SETUID, DAC_OVERRIDE ou NET_BIND_SERVICE, que vêm por padrão
+    # e servem de degrau depois de uma execução remota de código.
+    cap_drop:
+      - ALL
+    # Sistema de arquivos da imagem só para leitura: o binário, os
+    # certificados raiz e a base de fusos não mudam em execução, e com
+    # isso nada que chegue de fora é escrito no contêiner para ser
+    # executado depois. O volume de /data continua gravável — é ele que
+    # recebe o banco.
+    read_only: true
+    # O que sobra de escrita é /tmp: o SQLite pode precisar de arquivo
+    # temporário para ordenação grande e para VACUUM. Em tmpfs, e não no
+    # volume, porque é descartável por natureza. noexec e nosuid porque o
+    # motivo de ler a imagem só para leitura seria perdido se o lugar
+    # gravável aceitasse binário.
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
     # O ICMP é a única verificação que precisaria de privilégio de rede.
     # Descomente se for usar monitor de ping; sem isso, os demais tipos
-    # funcionam normalmente.
+    # funcionam normalmente. O cap_add volta só esta capacidade, sem
+    # desfazer o cap_drop acima.
     # cap_add:
     #   - NET_RAW
 

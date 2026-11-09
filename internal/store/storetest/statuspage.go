@@ -1052,3 +1052,34 @@ func testMonitorListTagFilterEscapesWildcards(t *testing.T, newStore Factory) {
 		})
 	}
 }
+
+func testMonitorListTagFilterHandlesBackslash(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	comTags(t, s, "com-curinga", `\%`)
+	comTags(t, s, "parecido", `\x`)
+	comTags(t, s, "so-barra", `\`)
+
+	// A barra invertida é o caractere de escape do próprio LIKE, e dentro
+	// do array JSON ela aparece dobrada. Se o padrão ignorar um dos dois
+	// lados, "\%" volta a valer como curinga e traz "\x" junto, e uma
+	// etiqueta de barra sozinha deixa um escape pendurado no fim do
+	// padrão — o PostgreSQL recusa isso com erro, não com lista demais.
+	casos := map[string]string{
+		`\%`: "com-curinga",
+		`\`:  "so-barra",
+		`\x`: "parecido",
+	}
+	for tag, esperado := range casos {
+		t.Run(tag, func(t *testing.T) {
+			page, err := s.Monitors().List(ctx, store.MonitorFilter{Tag: tag})
+			if err != nil {
+				t.Fatalf("listando: %v", err)
+			}
+			if len(page.Items) != 1 || page.Items[0].Name != esperado {
+				t.Fatalf("filtro por %q veio %+v", tag, page.Items)
+			}
+		})
+	}
+}

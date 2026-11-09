@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api } from "./api/client";
+import { api, ENROLLMENT_REQUIRED } from "./api/client";
 import { ApiError, type User } from "./api/types";
 import { Gate, Mark } from "./screens/Gate";
 import { GroupScreen } from "./screens/GroupScreen";
@@ -8,6 +8,7 @@ import { MonitorDetail } from "./screens/MonitorDetail";
 import { MonitorForm } from "./screens/MonitorForm";
 import { Settings } from "./screens/Settings";
 import { Status } from "./screens/Status";
+import { TwoFactor } from "./screens/TwoFactor";
 import { TextLink } from "./components/ui";
 import { navigate, useRoute } from "./lib/router";
 
@@ -45,6 +46,12 @@ export function App() {
     void resolve();
   }, [resolve, publica]);
 
+  useEffect(() => {
+    const reler = () => void resolve();
+    window.addEventListener(ENROLLMENT_REQUIRED, reler);
+    return () => window.removeEventListener(ENROLLMENT_REQUIRED, reler);
+  }, [resolve]);
+
   // A página pública é resolvida antes de qualquer verificação de sessão.
   //
   // Quem abre aquele link não tem conta: mostrar-lhe uma tela de login
@@ -72,6 +79,13 @@ export function App() {
     await api.logout();
     setSession({ kind: "anonymous" });
     navigate({ name: "board" });
+  }
+
+  // Administrador que a instalação obriga a cadastrar o segundo fator vê
+  // só o cadastro: o servidor recusa o resto, e mostrar o painel para ele
+  // falhar tela a tela seria pior que dizer logo o que falta.
+  if (session.user.two_factor_enrollment_required) {
+    return <CadastroObrigatorio onDone={resolve} onSignOut={sair} />;
   }
 
   return (
@@ -102,6 +116,22 @@ export function App() {
           />
         )}
       </main>
+    </div>
+  );
+}
+
+function CadastroObrigatorio({ onDone, onSignOut }: { onDone: () => void; onSignOut: () => void }) {
+  return (
+    <div className="mx-auto flex max-w-2xl flex-col gap-6 px-5 py-8">
+      <div className="flex items-center justify-between">
+        <Mark />
+        <TextLink onClick={onSignOut}>sair</TextLink>
+      </div>
+      <p className="max-w-prose border-l-2 border-degraded pl-3 text-body text-ink-2">
+        Esta instalação exige verificação em duas etapas de quem administra. Cadastre o aplicativo
+        autenticador para continuar; até lá, o resto da interface fica fechado.
+      </p>
+      <TwoFactor onChanged={onDone} />
     </div>
   );
 }

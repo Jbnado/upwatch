@@ -39,6 +39,10 @@ escrita sem sessão válida.
 - `UPWATCH_SECURE_COOKIES` desligado por padrão. É deliberado, está
   documentado, e ligá-lo é a primeira linha da seção de produção do
   README.
+- `UPWATCH_REQUIRE_2FA_ADMIN` desligado por padrão, e tokens de API sem
+  segundo fator. Os dois são deliberados e estão documentados no README.
+  Contornar o segundo fator de uma conta que o tem ligado, por outro
+  lado, interessa.
 - Relatório automatizado de varredura sem impacto demonstrado.
 
 ## Versões
