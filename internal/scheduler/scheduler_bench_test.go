@@ -39,7 +39,7 @@ func (p *capacityProbe) Check(ctx context.Context, m domain.Monitor) checker.Res
 	p.delays[*m.GroupID] = append(p.delays[*m.GroupID], delay)
 	p.mu.Unlock()
 
-	waiting := p.counters.SchedulerSnapshot().Waiting
+	waiting := p.scheduler.WaitingChecks()
 	for {
 		peak := p.peak.Load()
 		if waiting <= peak || p.peak.CompareAndSwap(peak, waiting) {
@@ -49,7 +49,7 @@ func (p *capacityProbe) Check(ctx context.Context, m domain.Monitor) checker.Res
 
 	var work time.Duration
 	switch *m.GroupID {
-	case 1: // muitos checks lentos
+	case 1, 4: // checks lentos, usados também na comparação entre grupos
 		work = 25 * time.Millisecond
 	case 2: // poucos checks rápidos
 		work = time.Millisecond
@@ -65,6 +65,63 @@ func (p *capacityProbe) Check(ctx context.Context, m domain.Monitor) checker.Res
 	case <-ctx.Done():
 		return checker.Result{Status: domain.StatusDown}
 	}
+}
+
+func maximumMillis(values []time.Duration) float64 {
+	var maximum time.Duration
+	for _, value := range values {
+		if value > maximum {
+			maximum = value
+		}
+	}
+	return float64(maximum) / float64(time.Millisecond)
+}
+
+// BenchmarkSchedulerFairness mantém perfil e intervalo iguais nos dois
+// grupos, mas dá ao primeiro quatro vezes mais monitores. O p95 e o
+// máximo mostram se o grupo menor acumula atraso desproporcional.
+func BenchmarkSchedulerFairness(b *testing.B) {
+	b.ReportAllocs()
+	all := map[int64][]time.Duration{1: {}, 4: {}}
+	var startsLarge, startsSmall int
+	b.ResetTimer()
+	for range b.N {
+		p := &capacityProbe{delays: map[int64][]time.Duration{1: {}, 4: {}}}
+		reg, err := checker.NewRegistry(p)
+		if err != nil {
+			b.Fatal(err)
+		}
+		counters := metrics.New()
+		sch := scheduler.New(reg, capacitySink{}, scheduler.Options{
+			Workers: 8, DisableJitter: true, Counters: counters,
+		})
+		p.scheduler, p.counters = sch, counters
+		for _, group := range []struct {
+			id    int64
+			count int
+		}{{1, 80}, {4, 20}} {
+			for i := 0; i < group.count; i++ {
+				m := monitor(group.id*1000+int64(i), 100*time.Millisecond)
+				m.GroupID = &group.id
+				m.Timeout = 50 * time.Millisecond
+				sch.Upsert(m)
+			}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		sch.Run(ctx)
+		cancel()
+		all[1] = append(all[1], p.delays[1]...)
+		all[4] = append(all[4], p.delays[4]...)
+		startsLarge += len(p.delays[1])
+		startsSmall += len(p.delays[4])
+	}
+	b.StopTimer()
+	b.ReportMetric(percentile95(all[1]), "large_p95_ms")
+	b.ReportMetric(percentile95(all[4]), "small_p95_ms")
+	b.ReportMetric(maximumMillis(all[1]), "large_max_ms")
+	b.ReportMetric(maximumMillis(all[4]), "small_max_ms")
+	b.ReportMetric(float64(startsLarge)/float64(b.N), "large_starts/op")
+	b.ReportMetric(float64(startsSmall)/float64(b.N), "small_starts/op")
 }
 
 type capacitySink struct{}

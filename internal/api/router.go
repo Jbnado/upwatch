@@ -18,6 +18,11 @@ import (
 	"github.com/Jbnado/upwatch/internal/store"
 )
 
+// SchedulerQueue informa quantos checks vencidos aguardam um worker.
+type SchedulerQueue interface {
+	WaitingChecks() int64
+}
+
 // Options reúne as dependências da API.
 type Options struct {
 	Store    store.Store
@@ -28,6 +33,9 @@ type Options struct {
 	// Scheduler recebe as mudanças de monitor feitas pela API, para um
 	// cadastro passar a ser verificado sem esperar reinício.
 	Scheduler MonitorSink
+	// SchedulerQueue inclui os checks vencidos que ainda estão no heap.
+	// Nulo usa apenas as entradas já retiradas do heap.
+	SchedulerQueue SchedulerQueue
 
 	// Maintenance é avisado a cada janela de manutenção gravada. Nulo
 	// dispensa o aviso.
@@ -116,11 +124,12 @@ type MonitorSink interface {
 
 // API é o conjunto de handlers HTTP.
 type API struct {
-	store     store.Store
-	auth      *auth.Service
-	checkers  *checker.Registry
-	clock     clock.Clock
-	scheduler MonitorSink
+	store          store.Store
+	auth           *auth.Service
+	checkers       *checker.Registry
+	clock          clock.Clock
+	scheduler      MonitorSink
+	schedulerQueue SchedulerQueue
 
 	maintenance MaintenanceReloader
 
@@ -181,20 +190,21 @@ func New(opts Options) http.Handler {
 	origins := originResolver{trusted: opts.TrustedProxies}
 
 	a := &API{
-		store:         opts.Store,
-		auth:          opts.Auth,
-		checkers:      opts.Checkers,
-		clock:         opts.Clock,
-		scheduler:     opts.Scheduler,
-		maintenance:   opts.Maintenance,
-		secureCookies: opts.SecureCookies,
-		sessionTTL:    opts.SessionTTL,
-		publicURL:     opts.PublicURL,
-		metricsToken:  opts.MetricsToken,
-		setupToken:    opts.SetupToken,
-		version:       opts.Version,
-		counters:      opts.Counters,
-		resolver:      opts.Resolver,
+		store:          opts.Store,
+		auth:           opts.Auth,
+		checkers:       opts.Checkers,
+		clock:          opts.Clock,
+		scheduler:      opts.Scheduler,
+		schedulerQueue: opts.SchedulerQueue,
+		maintenance:    opts.Maintenance,
+		secureCookies:  opts.SecureCookies,
+		sessionTTL:     opts.SessionTTL,
+		publicURL:      opts.PublicURL,
+		metricsToken:   opts.MetricsToken,
+		setupToken:     opts.SetupToken,
+		version:        opts.Version,
+		counters:       opts.Counters,
+		resolver:       opts.Resolver,
 
 		allowScopedPrivateTargets: opts.AllowScopedPrivateTargets,
 		require2FAAdmin:           opts.Require2FAAdmin,

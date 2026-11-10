@@ -18,7 +18,7 @@ As séries novas são aditivas. A configuração `UPWATCH_WORKERS`, os intervalo
 
 ## Abordagem
 
-O `scheduler` envia amostras e gauges para o mesmo objeto `metrics.Counters` já compartilhado pelo servidor e por `/metrics`. A fila e os workers atualizam as medidas nos pontos de transição, com operações atômicas para permitir raspagem concorrente. A exposição Prometheus é escrita junto às famílias atuais, com unidades em segundos e cardinalidade constante.
+O `scheduler` envia amostras e gauges para o mesmo objeto `metrics.Counters` já compartilhado pelo servidor e por `/metrics`. Para a espera, soma sob o mutex do agendador as entradas vencidas ainda no heap às entradas retiradas que aguardam slot, registradas em `Counters`. A fila e os workers atualizam as medidas nos pontos de transição, com snapshots protegidos para permitir raspagem concorrente. A exposição Prometheus é escrita junto às famílias atuais, com unidades em segundos e cardinalidade constante.
 
 Os testes usam o relógio falso do agendador e checkers controlados para demonstrar que cada medida representa o evento certo. A suíte Go roda com `-race`. Cada teste novo é executado primeiro contra o código sem correção e novamente após a remoção temporária da correção para provar que detecta a regressão.
 

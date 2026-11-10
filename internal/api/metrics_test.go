@@ -59,6 +59,24 @@ func TestMetricsExposeZeroSchedulerWithoutCounters(t *testing.T) {
 	}
 }
 
+type fixedSchedulerQueue int64
+
+func (q fixedSchedulerQueue) WaitingChecks() int64 { return int64(q) }
+
+func TestMetricsWaitingIncludesSchedulerHeap(t *testing.T) {
+	counters := metrics.New()
+	counters.QueueSchedulerChecks(1)
+	s := newServerWith(t, func(opts *api.Options) {
+		opts.Counters = counters
+		opts.SchedulerQueue = fixedSchedulerQueue(2)
+	})
+	s.setup(t)
+	corpo := s.metricas(t)
+	if !strings.Contains(corpo, "upwatch_scheduler_waiting_checks 2\n") {
+		t.Errorf("espera publicada sem itens do heap: %s", corpo)
+	}
+}
+
 // O endpoint que faz o UpWatch conversar com quem já tem Prometheus.
 //
 // É o pedido mais recorrente nas issues dos concorrentes, e a razão é

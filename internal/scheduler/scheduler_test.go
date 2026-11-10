@@ -200,6 +200,25 @@ func TestSchedulerMetricsCountWaitingAndActualStartDelay(t *testing.T) {
 	}
 }
 
+func TestSchedulerWaitingChecksIncludesDueHeapWhileDispatchBlocked(t *testing.T) {
+	p, sk := newProbe(), newSink()
+	p.hold = make(chan struct{})
+	sch, _, counters := newSchedulerWithMetrics(t, p, sk, 1)
+	sch.Upsert(monitor(1, time.Minute))
+	sch.Upsert(monitor(2, time.Minute))
+	start(t, sch)
+	awaitCall(t, p)
+	awaitSchedulerMetrics(t, counters, func(s metrics.SchedulerSnapshot) bool { return s.Waiting == 1 })
+
+	// O laço espera slot para o segundo. O terceiro vence no heap enquanto
+	// isso acontece e precisa entrar na mesma métrica de espera.
+	sch.Upsert(monitor(3, time.Minute))
+	if got := sch.WaitingChecks(); got != 2 {
+		t.Errorf("checks vencidos aguardando = %d, queria 2", got)
+	}
+	close(p.hold)
+}
+
 func TestSchedulerMetricsCancelClearsQueuedChecks(t *testing.T) {
 	p, sk := newProbe(), newSink()
 	p.hold = make(chan struct{})

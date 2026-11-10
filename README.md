@@ -1196,7 +1196,7 @@ conta ou grupo:
 
 | Família | O que mede |
 | --- | --- |
-| `upwatch_scheduler_waiting_checks` | Checks vencidos que aguardam início em um worker; inclui os que já saíram do heap e esperam um slot. |
+| `upwatch_scheduler_waiting_checks` | Checks vencidos que aguardam início em um worker; inclui os que ainda estão no heap e os que já saíram dele e esperam um slot. |
 | `upwatch_scheduler_running_checks` | Checks executando o checker agora. |
 | `upwatch_scheduler_start_delay_seconds` | Histograma do atraso entre vencimento e início real. |
 | `upwatch_scheduler_check_duration_seconds` | Histograma da duração do checker, sem a entrega da batida ao banco. |
@@ -1234,6 +1234,23 @@ o atraso menor com mais workers neste cenário aponta para capacidade,
 sem demonstrar necessidade de mudar a política da fila. Esses números
 não são promessa de produção: rode carga representativa da sua instalação
 e meça CPU, memória, conexões e banco antes de ajustar o pool.
+
+Para uma comparação inicial de **justiça entre grupos**, use:
+
+```sh
+go test ./internal/scheduler -run '^$' -bench '^BenchmarkSchedulerFairness$' -benchtime=1x -benchmem -count=1
+```
+
+São 80 e 20 monitores em grupos diferentes, todos com o mesmo perfil
+(25 ms por check, intervalo de 100 ms), 8 workers e dois segundos de
+carga. A mesma máquina registrou p95 de 228 ms no grupo maior e 204 ms
+no menor, com 500 e 140 inícios respectivamente; ambos seguiram
+recebendo checks. A janela curta não prova justiça sob carga sustentada
+nem substitui uma medição da frota real. Se o atraso de um grupo crescer
+enquanto outro segue atendido sob perfis equivalentes, investigue a
+política da fila; se crescer em todos, investigue a capacidade primeiro.
+As alocações dos benchmarks incluem a montagem do cenário e o registro
+das amostras; não representam a memória residente do servidor.
 
 ## Push
 

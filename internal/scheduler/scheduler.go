@@ -205,7 +205,6 @@ func (s *Scheduler) Run(ctx context.Context) {
 
 		case <-timer.C():
 			due := s.takeDue()
-			s.counters.QueueSchedulerChecks(len(due))
 			for i, e := range due {
 				select {
 				case slots <- struct{}{}:
@@ -241,6 +240,21 @@ func (s *Scheduler) Run(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// WaitingChecks conta todo check vencido que ainda não começou, tanto
+// no heap quanto no lote retirado que aguarda um slot de worker.
+func (s *Scheduler) WaitingChecks() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	waiting := s.counters.SchedulerSnapshot().Waiting
+	now := s.clock.Now()
+	for _, e := range s.queue {
+		if !e.nextRun.After(now) {
+			waiting++
+		}
+	}
+	return waiting
 }
 
 // restoreQueued devolve ao heap todos os checks retirados mas não iniciados.
@@ -291,6 +305,7 @@ func (s *Scheduler) takeDue() []*entry {
 	for {
 		next := s.queue.peek()
 		if next == nil || next.nextRun.After(now) {
+			s.counters.QueueSchedulerChecks(len(due))
 			return due
 		}
 		e := heap.Pop(&s.queue).(*entry)

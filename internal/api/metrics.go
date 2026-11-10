@@ -250,9 +250,13 @@ func (a *API) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	scheduler := a.counters.SchedulerSnapshot()
+	waiting := scheduler.Waiting
+	if a.schedulerQueue != nil {
+		waiting = a.schedulerQueue.WaitingChecks()
+	}
 	family(&b, "upwatch_scheduler_waiting_checks", "gauge",
 		"Checks vencidos que aguardam o início em um worker.")
-	fmt.Fprintf(&b, "upwatch_scheduler_waiting_checks %d\n", scheduler.Waiting)
+	fmt.Fprintf(&b, "upwatch_scheduler_waiting_checks %d\n", waiting)
 	family(&b, "upwatch_scheduler_running_checks", "gauge",
 		"Checks em execução no checker.")
 	fmt.Fprintf(&b, "upwatch_scheduler_running_checks %d\n", scheduler.Running)
