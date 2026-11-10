@@ -147,7 +147,8 @@ func (c *Counters) FinishSchedulerCheck(duration time.Duration) {
 // SchedulerSnapshot devolve uma fotografia coerente para a raspagem.
 func (c *Counters) SchedulerSnapshot() SchedulerSnapshot {
 	if c == nil {
-		return SchedulerSnapshot{}
+		empty := schedulerHistogram{}.snapshot()
+		return SchedulerSnapshot{StartDelay: empty, CheckDuration: empty}
 	}
 	c.schedulerMu.Lock()
 	defer c.schedulerMu.Unlock()

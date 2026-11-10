@@ -11,6 +11,7 @@ import (
 
 	"github.com/Jbnado/upwatch/internal/audit"
 	"github.com/Jbnado/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/metrics"
 	"github.com/Jbnado/upwatch/internal/store"
 )
 
@@ -248,6 +249,18 @@ func (a *API) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(&b, "upwatch_checks_total{status=%s} %d\n", quote(s.String()), a.counters.Checks(s))
 	}
 
+	scheduler := a.counters.SchedulerSnapshot()
+	family(&b, "upwatch_scheduler_waiting_checks", "gauge",
+		"Checks vencidos que aguardam o início em um worker.")
+	fmt.Fprintf(&b, "upwatch_scheduler_waiting_checks %d\n", scheduler.Waiting)
+	family(&b, "upwatch_scheduler_running_checks", "gauge",
+		"Checks em execução no checker.")
+	fmt.Fprintf(&b, "upwatch_scheduler_running_checks %d\n", scheduler.Running)
+	writeSchedulerHistogram(&b, "upwatch_scheduler_start_delay_seconds",
+		"Tempo entre o vencimento e o início do check, em segundos.", scheduler.StartDelay)
+	writeSchedulerHistogram(&b, "upwatch_scheduler_check_duration_seconds",
+		"Duração do checker, sem a entrega da batida, em segundos.", scheduler.CheckDuration)
+
 	family(&b, "upwatch_notifications_total", "counter",
 		"Avisos entregues e descartados desde o início do processo.")
 	fmt.Fprintf(&b, "upwatch_notifications_total{outcome=\"sent\"} %d\n", a.counters.NotificationsSent())
@@ -261,6 +274,15 @@ func (a *API) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.WriteString(w, b.String())
+}
+
+func writeSchedulerHistogram(b *strings.Builder, name, help string, h metrics.SchedulerHistogram) {
+	family(b, name, "histogram", help)
+	for _, bucket := range h.Buckets {
+		fmt.Fprintf(b, "%s_bucket{le=%s} %d\n", name, quote(bucket.UpperBound), bucket.Count)
+	}
+	fmt.Fprintf(b, "%s_sum %g\n", name, h.SumSeconds)
+	fmt.Fprintf(b, "%s_count %d\n", name, h.Count)
 }
 
 // family escreve o cabeçalho de uma família de métricas.
