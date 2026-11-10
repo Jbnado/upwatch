@@ -15,6 +15,7 @@ import (
 	"github.com/Jbnado/upwatch/internal/checker"
 	"github.com/Jbnado/upwatch/internal/clock"
 	"github.com/Jbnado/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/metrics"
 )
 
 // DefaultWorkers é o teto padrão de checks simultâneos.
@@ -35,8 +36,9 @@ type Sink interface {
 
 // Options configura o agendador. Campos zerados assumem o padrão.
 type Options struct {
-	Workers int
-	Clock   clock.Clock
+	Workers  int
+	Clock    clock.Clock
+	Counters *metrics.Counters
 	// DisableJitter faz o primeiro check de cada monitor vencer
 	// imediatamente. Existe para os testes; em produção o espalhamento
 	// evita picos periódicos de carga.
@@ -48,6 +50,7 @@ type Scheduler struct {
 	registry *checker.Registry
 	sink     Sink
 	clock    clock.Clock
+	counters *metrics.Counters
 	workers  int
 	jitter   bool
 
@@ -72,6 +75,7 @@ func New(reg *checker.Registry, sink Sink, opts Options) *Scheduler {
 		registry: reg,
 		sink:     sink,
 		clock:    opts.Clock,
+		counters: opts.Counters,
 		workers:  opts.Workers,
 		jitter:   !opts.DisableJitter,
 		index:    make(map[int64]*entry),
@@ -200,11 +204,19 @@ func (s *Scheduler) Run(ctx context.Context) {
 			continue
 
 		case <-timer.C():
-			for _, e := range s.takeDue() {
+			due := s.takeDue()
+			s.counters.QueueSchedulerChecks(len(due))
+			for i, e := range due {
 				select {
 				case slots <- struct{}{}:
 				case <-ctx.Done():
-					s.reschedule(e)
+					s.restoreQueued(due[i:])
+					wg.Wait()
+					return
+				}
+				if ctx.Err() != nil {
+					<-slots
+					s.restoreQueued(due[i:])
 					wg.Wait()
 					return
 				}
@@ -214,13 +226,41 @@ func (s *Scheduler) Run(ctx context.Context) {
 					defer wg.Done()
 					defer func() { <-slots }()
 
-					s.runCheck(ctx, e.monitor)
+					m, ok := s.currentMonitor(e)
+					if !ok {
+						s.counters.UnqueueSchedulerChecks(1)
+						s.reschedule(e)
+						s.signal()
+						return
+					}
+					s.counters.StartSchedulerCheck(s.clock.Now().Sub(e.nextRun))
+					s.runCheck(ctx, m)
 					s.reschedule(e)
 					s.signal()
 				}(e)
 			}
 		}
 	}
+}
+
+// restoreQueued devolve ao heap todos os checks retirados mas não iniciados.
+func (s *Scheduler) restoreQueued(entries []*entry) {
+	s.counters.UnqueueSchedulerChecks(len(entries))
+	for _, e := range entries {
+		s.reschedule(e)
+	}
+}
+
+// currentMonitor lê a configuração vigente antes de começar um check.
+// Um monitor removido ou pausado durante a espera pelo worker não executa.
+func (s *Scheduler) currentMonitor(e *entry) (domain.Monitor, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.index[e.monitor.ID]
+	if !ok || current != e || !e.monitor.Enabled {
+		return domain.Monitor{}, false
+	}
+	return e.monitor, true
 }
 
 // waitFor calcula quanto falta para o próximo vencimento.
@@ -283,7 +323,9 @@ func (s *Scheduler) runCheck(ctx context.Context, m domain.Monitor) {
 	checkCtx, cancel := context.WithTimeout(ctx, m.Timeout)
 	defer cancel()
 
+	started := s.clock.Now()
 	res := s.registry.Check(checkCtx, m)
+	s.counters.FinishSchedulerCheck(s.clock.Now().Sub(started))
 
 	hb := domain.Heartbeat{
 		MonitorID: m.ID,

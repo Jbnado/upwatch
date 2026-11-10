@@ -210,8 +210,9 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 	engine.WithMaintenance(calendar)
 
 	sched := scheduler.New(registry, engine, scheduler.Options{
-		Workers: cfg.Workers,
-		Clock:   real,
+		Workers:  cfg.Workers,
+		Clock:    real,
+		Counters: counters,
 	})
 
 	authSvc := auth.New(st, auth.Options{Clock: real, SessionTTL: cfg.SessionTTL})

@@ -11,6 +11,7 @@ import (
 	"github.com/Jbnado/upwatch/internal/checker"
 	"github.com/Jbnado/upwatch/internal/clock"
 	"github.com/Jbnado/upwatch/internal/domain"
+	"github.com/Jbnado/upwatch/internal/metrics"
 	"github.com/Jbnado/upwatch/internal/scheduler"
 )
 
@@ -144,6 +145,157 @@ func newScheduler(t *testing.T, p *probe, s *sink, workers int) (*scheduler.Sche
 		DisableJitter: true,
 	})
 	return sch, fake
+}
+
+func newSchedulerWithMetrics(t *testing.T, p *probe, s scheduler.Sink, workers int) (*scheduler.Scheduler, *clock.Fake, *metrics.Counters) {
+	t.Helper()
+	reg, err := checker.NewRegistry(p)
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	fake := clock.NewFake(epoch)
+	counters := metrics.New()
+	sch := scheduler.New(reg, s, scheduler.Options{
+		Workers: workers, Clock: fake, DisableJitter: true, Counters: counters,
+	})
+	return sch, fake, counters
+}
+
+func awaitSchedulerMetrics(t *testing.T, c *metrics.Counters, ready func(metrics.SchedulerSnapshot) bool) metrics.SchedulerSnapshot {
+	t.Helper()
+	deadline := time.After(3 * time.Second)
+	for {
+		got := c.SchedulerSnapshot()
+		if ready(got) {
+			return got
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("métricas do agendador não chegaram ao estado esperado: %+v", got)
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
+
+func TestSchedulerMetricsCountWaitingAndActualStartDelay(t *testing.T) {
+	p, sk := newProbe(), newSink()
+	p.hold = make(chan struct{})
+	sch, fake, counters := newSchedulerWithMetrics(t, p, sk, 1)
+	sch.Upsert(monitor(1, time.Minute))
+	sch.Upsert(monitor(2, time.Minute))
+	start(t, sch)
+	awaitCall(t, p)
+	awaitSchedulerMetrics(t, counters, func(s metrics.SchedulerSnapshot) bool {
+		return s.Waiting == 1 && s.Running == 1 && s.StartDelay.Count == 1
+	})
+
+	fake.Advance(2 * time.Second)
+	close(p.hold)
+	awaitCall(t, p)
+	got := awaitSchedulerMetrics(t, counters, func(s metrics.SchedulerSnapshot) bool {
+		return s.StartDelay.Count == 2
+	})
+	if got.StartDelay.SumSeconds != 2 || got.Waiting != 0 {
+		t.Errorf("atraso total=%g espera=%d, queria 2 segundos e zero", got.StartDelay.SumSeconds, got.Waiting)
+	}
+}
+
+func TestSchedulerMetricsCancelClearsQueuedChecks(t *testing.T) {
+	p, sk := newProbe(), newSink()
+	p.hold = make(chan struct{})
+	sch, fake, counters := newSchedulerWithMetrics(t, p, sk, 1)
+	for id := int64(1); id <= 3; id++ {
+		sch.Upsert(monitor(id, time.Minute))
+	}
+	cancel, done := start(t, sch)
+	awaitCall(t, p)
+	awaitSchedulerMetrics(t, counters, func(s metrics.SchedulerSnapshot) bool { return s.Waiting == 2 })
+	cancel()
+	close(p.hold)
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run não terminou após o cancelamento")
+	}
+	if got := counters.SchedulerSnapshot(); got.Waiting != 0 || got.Running != 0 {
+		t.Errorf("métricas após encerrar = %+v, queria gauges zerados", got)
+	}
+
+	// O mesmo agendador pode voltar a rodar: os checks que esperavam
+	// precisam continuar no heap, em vez de ficar presos como inFlight.
+	start(t, sch)
+	fake.BlockUntilDeadline(epoch.Add(time.Minute))
+	fake.Advance(time.Minute)
+	seen := map[int64]bool{}
+	for range 3 {
+		seen[awaitCall(t, p)] = true
+	}
+	if len(seen) != 3 {
+		t.Errorf("após reiniciar verificou %v, queria os três monitores", seen)
+	}
+}
+
+func TestSchedulerQueuedRemovedOrPausedMonitorDoesNotRun(t *testing.T) {
+	for _, action := range []string{"remover", "pausar"} {
+		t.Run(action, func(t *testing.T) {
+			p, sk := newProbe(), newSink()
+			p.hold = make(chan struct{})
+			sch, _, counters := newSchedulerWithMetrics(t, p, sk, 1)
+			sch.Upsert(monitor(1, time.Minute))
+			sch.Upsert(monitor(2, time.Minute))
+			start(t, sch)
+			first := awaitCall(t, p)
+			queued := int64(3) - first
+			awaitSchedulerMetrics(t, counters, func(s metrics.SchedulerSnapshot) bool { return s.Waiting == 1 })
+			if action == "remover" {
+				sch.Remove(queued)
+			} else {
+				m := monitor(queued, time.Minute)
+				m.Enabled = false
+				sch.Upsert(m)
+			}
+			close(p.hold)
+			awaitSchedulerMetrics(t, counters, func(s metrics.SchedulerSnapshot) bool { return s.Waiting == 0 })
+			expectNoCall(t, p, 100*time.Millisecond)
+		})
+	}
+}
+
+type blockingSink struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *blockingSink) Submit(context.Context, domain.Heartbeat) error {
+	close(s.entered)
+	<-s.release
+	return nil
+}
+
+func TestSchedulerMetricsDurationExcludesSink(t *testing.T) {
+	p := newProbe()
+	p.hold = make(chan struct{})
+	sk := &blockingSink{entered: make(chan struct{}), release: make(chan struct{})}
+	sch, fake, counters := newSchedulerWithMetrics(t, p, sk, 1)
+	sch.Upsert(monitor(1, time.Minute))
+	start(t, sch)
+	awaitCall(t, p)
+	fake.Advance(3 * time.Second)
+	close(p.hold)
+	select {
+	case <-sk.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("batida não chegou ao sink")
+	}
+	got := counters.SchedulerSnapshot()
+	if got.CheckDuration.Count != 1 || got.CheckDuration.SumSeconds != 3 || got.Running != 0 {
+		t.Errorf("duração após checker = %+v, queria 3 segundos e execução zero", got)
+	}
+	fake.Advance(7 * time.Second)
+	close(sk.release)
+	if got := counters.SchedulerSnapshot(); got.CheckDuration.SumSeconds != 3 {
+		t.Errorf("tempo do sink entrou na duração: %g", got.CheckDuration.SumSeconds)
+	}
 }
 
 // start sobe o laço e devolve o cancelamento; a limpeza garante o retorno.
