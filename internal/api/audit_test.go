@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Jbnado/upwatch/internal/api"
 )
@@ -261,6 +262,32 @@ func TestAuditLogsTokenRevoked(t *testing.T) {
 	assertStatus(t, resp, http.StatusNoContent)
 
 	linha := reg.comAção(t, "token.revogado")
+	exigeCampos(t, linha, "admin", id, "127.0.0.1")
+}
+
+// Esticar a validade amplia o alcance de uma credencial que já existe, e
+// deixa rastro; encurtar é sempre mais restritivo e não gera linha.
+func TestAuditLogsTokenExpiryStretched(t *testing.T) {
+	s, reg := servidorComLog(t, nil)
+	s.setup(t)
+
+	prazo := s.clock.Now().Add(30 * 24 * time.Hour).Format(time.RFC3339)
+	resp := s.do(t, http.MethodPost, "/api/v1/auth/tokens",
+		map[string]any{"name": "ci", "expires_at": prazo})
+	assertStatus(t, resp, http.StatusCreated)
+	id := strconv.FormatInt(int64(decode[map[string]any](t, resp)["id"].(float64)), 10)
+
+	// Encurtar não gera linha.
+	curto := s.clock.Now().Add(20 * 24 * time.Hour).Format(time.RFC3339)
+	assertStatus(t, s.do(t, http.MethodPatch, "/api/v1/auth/tokens/"+id,
+		map[string]any{"expires_at": curto}), http.StatusNoContent)
+	reg.recusaAção(t, "token.validade_esticada")
+
+	// Esticar gera.
+	longo := s.clock.Now().Add(60 * 24 * time.Hour).Format(time.RFC3339)
+	assertStatus(t, s.do(t, http.MethodPatch, "/api/v1/auth/tokens/"+id,
+		map[string]any{"expires_at": longo}), http.StatusNoContent)
+	linha := reg.comAção(t, "token.validade_esticada")
 	exigeCampos(t, linha, "admin", id, "127.0.0.1")
 }
 

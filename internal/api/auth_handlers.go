@@ -330,6 +330,37 @@ func (a *API) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleUpdateTokenExpiry edita a validade de um token da própria conta.
+//
+// Encurtar ou adicionar prazo é livre; esticar respeita o teto da
+// instalação e deixa rastro na auditoria. A recusa da política chega como
+// 400 apontando expires_at (ver IssueToken para o mesmo caminho).
+func (a *API) handleUpdateTokenExpiry(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+
+	var body struct {
+		ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+
+	esticou, err := a.auth.UpdateTokenExpiry(r.Context(), mustUser(r).ID, id, body.ExpiresAt)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	// Só o esticão deixa rastro: encurtar e adicionar são sempre mais
+	// restritivos, e registrá-los só encheria o log do que não importa.
+	if esticou {
+		a.audit(r, audit.AçãoTokenValidadeEsticada, strconv.FormatInt(id, 10))
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // pathID lê o identificador numérico da rota.
 func pathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	raw := chi.URLParam(r, "id")

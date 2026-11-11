@@ -46,6 +46,7 @@ func authCases() []conformanceCase {
 		{"TokenDeleteOthers", testTokenDeleteOthers},
 		{"TokenTouchLastUsed", testTokenTouchLastUsed},
 		{"TokenRoundTripsExpiry", testTokenRoundTripsExpiry},
+		{"TokenSetExpiry", testTokenSetExpiry},
 	}
 }
 
@@ -734,6 +735,50 @@ func testTokenTouchLastUsed(t *testing.T, newStore Factory) {
 	}
 	if !got.LastUsedAt.Equal(used) {
 		t.Errorf("LastUsedAt = %v, want %v", got.LastUsedAt, used)
+	}
+}
+
+// Editar a expiração grava só a coluna de expiração: o dono pode pôr prazo
+// num token que nasceu sem, encurtar, esticar ou removê-lo de novo, e o
+// resto do registro — nome, prefixo, criação — fica como estava.
+func testTokenSetExpiry(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	u := mustCreateUser(t, s, "admin")
+	tok, secret := mustCreateToken(t, s, u.ID, "ci") // nasce sem expiração
+
+	prazo := epoch.Add(30 * 24 * time.Hour)
+	if err := s.Tokens().SetExpiry(ctx, tok.ID, &prazo); err != nil {
+		t.Fatalf("SetExpiry returned unexpected error: %v", err)
+	}
+	got, err := s.Tokens().GetByHash(ctx, domain.HashToken(secret.Secret))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ExpiresAt == nil || !got.ExpiresAt.Equal(prazo) {
+		t.Fatalf("ExpiresAt = %v, want %v", got.ExpiresAt, prazo)
+	}
+	// Só a expiração mudou.
+	if got.Name != tok.Name || got.Prefix != tok.Prefix || !got.CreatedAt.Equal(tok.CreatedAt) {
+		t.Errorf("SetExpiry alterou outros campos: %+v (criado %+v)", got, tok)
+	}
+
+	// Remover o prazo volta a "sem expiração".
+	if err := s.Tokens().SetExpiry(ctx, tok.ID, nil); err != nil {
+		t.Fatalf("SetExpiry(nil) returned unexpected error: %v", err)
+	}
+	got, err = s.Tokens().GetByHash(ctx, domain.HashToken(secret.Secret))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ExpiresAt != nil {
+		t.Errorf("ExpiresAt = %v após remover, want nil", got.ExpiresAt)
+	}
+
+	// Token inexistente é ErrNotFound: a interface pede por id, e um id que
+	// não é de ninguém não pode passar calado.
+	if err := s.Tokens().SetExpiry(ctx, 9999, &prazo); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("SetExpiry em token inexistente = %v, want ErrNotFound", err)
 	}
 }
 

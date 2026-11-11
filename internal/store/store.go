@@ -313,6 +313,13 @@ type TokenRepo interface {
 	// TouchLastUsed registra o uso, para o operador identificar tokens
 	// esquecidos antes de revogá-los.
 	TouchLastUsed(ctx context.Context, id int64, at time.Time) error
+
+	// SetExpiry grava só a expiração do token (nil = sem prazo), e nada
+	// mais. É o caminho de editar a validade de um token já emitido; a
+	// regra de o que é permitido (encurtar, esticar, remover) mora no
+	// domínio (TokenExpiryPolicy.CheckExpiryEdit). Devolve ErrNotFound se o
+	// token não existir.
+	SetExpiry(ctx context.Context, id int64, expiresAt *time.Time) error
 }
 
 // StateRepo guarda o estado confirmado de cada monitor.

@@ -372,6 +372,42 @@ func (s *Service) IssueToken(
 	return tok, secret.Secret, nil
 }
 
+// UpdateTokenExpiry edita a validade de um token da própria conta e devolve
+// se a troca esticou o prazo, para o chamador registrar o esticão.
+//
+// Encurtar ou adicionar prazo é livre; esticar respeita o teto contado
+// desde a criação (ver domain.TokenExpiryPolicy.CheckExpiryEdit). A checagem
+// de dono é a mesma de RevokeToken: editar por id não pode alcançar a
+// credencial de outra conta.
+func (s *Service) UpdateTokenExpiry(
+	ctx context.Context, userID, tokenID int64, expiresAt *time.Time,
+) (bool, error) {
+	owned, err := s.store.Tokens().List(ctx, userID)
+	if err != nil {
+		return false, err
+	}
+	var tok domain.APIToken
+	found := false
+	for _, t := range owned {
+		if t.ID == tokenID {
+			tok, found = t, true
+			break
+		}
+	}
+	if !found {
+		return false, fmt.Errorf("token %d: %w", tokenID, store.ErrNotFound)
+	}
+
+	extended, err := s.tokenExpiry.CheckExpiryEdit(tok.CreatedAt, tok.ExpiresAt, expiresAt, s.clock.Now())
+	if err != nil {
+		return false, err
+	}
+	if err := s.store.Tokens().SetExpiry(ctx, tokenID, expiresAt); err != nil {
+		return false, err
+	}
+	return extended, nil
+}
+
 // AuthenticateToken resolve um segredo de API na conta dona.
 func (s *Service) AuthenticateToken(ctx context.Context, secret string) (domain.User, error) {
 	if secret == "" {

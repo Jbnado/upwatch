@@ -250,6 +250,45 @@ func (p TokenExpiryPolicy) CheckExpiry(expiresAt *time.Time, now time.Time) erro
 	return nil
 }
 
+// CheckExpiryEdit valida a troca da expiração de um token já emitido e diz
+// se a troca esticou o prazo, para o chamador registrar na auditoria.
+//
+// createdAt é a âncora do teto: o maior prazo de vida conta desde a
+// criação, não desde agora. current é a expiração atual (nil = sem prazo) e
+// desired a pedida (nil = sem prazo).
+//
+// Encurtar ou adicionar prazo é livre — é sempre mais restritivo que o que
+// havia. Esticar (afastar o vencimento, e remover o prazo é o esticão
+// máximo) respeita o teto e a exigência da instalação. Um prazo pedido
+// precisa ser no futuro: para matar o token agora, revoga-se, não se põe
+// uma data no passado.
+func (p TokenExpiryPolicy) CheckExpiryEdit(createdAt time.Time, current, desired *time.Time, now time.Time) (extended bool, err error) {
+	if desired != nil && !desired.After(now) {
+		return false, invalid("expires_at", "a data de expiração deve ser no futuro")
+	}
+
+	// Esticar é afastar o vencimento, tratando "sem prazo" como infinito:
+	// de um prazo para outro mais tarde, ou de um prazo para nenhum.
+	extended = current != nil && (desired == nil || desired.After(*current))
+	if !extended {
+		return false, nil
+	}
+
+	if desired == nil {
+		if p.Require {
+			return true, invalid("expires_at", "a instalação exige data de expiração")
+		}
+		if p.MaxLifetime > 0 {
+			return true, invalid("expires_at", "remover o prazo excede o teto da instalação")
+		}
+		return true, nil
+	}
+	if p.MaxLifetime > 0 && desired.After(createdAt.Add(p.MaxLifetime)) {
+		return true, invalid("expires_at", "a data de expiração excede o teto da instalação")
+	}
+	return true, nil
+}
+
 // Session é um login ativo na interface.
 type Session struct {
 	// Hash é o que fica no banco; o cookie carrega o segredo cru, de modo

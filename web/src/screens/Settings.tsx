@@ -238,6 +238,10 @@ function Tokens() {
   const [dataPersonalizada, setDataPersonalizada] = useState("");
   const [novo, setNovo] = useState<string | null>(null);
   const [erro, setErro] = useState<string | null>(null);
+  // editando guarda o id do token em edição de validade; só um por vez.
+  const [editando, setEditando] = useState<number | null>(null);
+  const [editValidade, setEditValidade] = useState<ValidityChoice>("30d");
+  const [editData, setEditData] = useState("");
 
   async function carregar() {
     const { items, policy } = await api.listTokens();
@@ -285,6 +289,26 @@ function Tokens() {
     await carregar();
   }
 
+  function editar(token: APIToken) {
+    setErro(null);
+    setEditando(token.id);
+    setEditValidade(defaultChoice(policy));
+    setEditData("");
+  }
+
+  const editFaltaData = editValidade === "custom" && editData === "";
+
+  async function salvarEdicao(token: APIToken) {
+    setErro(null);
+    try {
+      await api.updateTokenExpiry(token.id, expiresAtFor(editValidade, editData));
+      setEditando(null);
+      await carregar();
+    } catch (e) {
+      setErro(e instanceof ApiError ? e.message : "Não foi possível editar a validade.");
+    }
+  }
+
   return (
     <section className="flex flex-col gap-4">
       <div className="flex flex-col gap-1.5">
@@ -319,30 +343,73 @@ function Tokens() {
       ) : (
         <ul className="border-t border-line">
           {tokens.map((token) => (
-            <li
-              key={token.id}
-              // items-center e não items-baseline: a coluna da esquerda tem
-              // duas linhas, e alinhar pela primeira delas deixaria o botão
-              // da direita flutuando acima do centro da linha.
-              className="flex items-center justify-between gap-4 border-b border-line py-2.5"
-            >
-              <span className="flex min-w-0 flex-col">
-                <span className="truncate text-body font-medium">{token.name}</span>
-                <span className="tabular text-small text-ink-3">{token.prefix}…</span>
-              </span>
-
-              <span className="flex shrink-0 items-center gap-4">
-                <span className="text-small text-ink-3">
-                  {token.last_used_at ? `usado ${ago(token.last_used_at)}` : "nunca usado"}
-                  <span className="mx-1.5">·</span>
-                  criado em {stamp(token.created_at)}
-                  <span className="mx-1.5">·</span>
-                  {expiryLabel(token)}
+            <li key={token.id} className="flex flex-col gap-3 border-b border-line py-2.5">
+              {/* items-center e não items-baseline: a coluna da esquerda tem
+                  duas linhas, e alinhar pela primeira delas deixaria os
+                  botões da direita flutuando acima do centro da linha. */}
+              <div className="flex items-center justify-between gap-4">
+                <span className="flex min-w-0 flex-col">
+                  <span className="truncate text-body font-medium">{token.name}</span>
+                  <span className="tabular text-small text-ink-3">{token.prefix}…</span>
                 </span>
-                <Button size="sm" variant="danger" onClick={() => revogar(token)}>
-                  Revogar
-                </Button>
-              </span>
+
+                <span className="flex shrink-0 items-center gap-4">
+                  <span className="text-small text-ink-3">
+                    {token.last_used_at ? `usado ${ago(token.last_used_at)}` : "nunca usado"}
+                    <span className="mx-1.5">·</span>
+                    criado em {stamp(token.created_at)}
+                    <span className="mx-1.5">·</span>
+                    {expiryLabel(token)}
+                  </span>
+                  <Button size="sm" onClick={() => editar(token)}>
+                    Editar validade
+                  </Button>
+                  <Button size="sm" variant="danger" onClick={() => revogar(token)}>
+                    Revogar
+                  </Button>
+                </span>
+              </div>
+
+              {editando === token.id && (
+                <div className="flex flex-wrap items-end gap-3 rounded-sm border border-line-strong p-3">
+                  <Field label="validade">
+                    <Select
+                      value={editValidade}
+                      onChange={(e) => setEditValidade(e.target.value as ValidityChoice)}
+                    >
+                      {opções.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+                  {editValidade === "custom" && (
+                    <Field label="data de expiração">
+                      <Input
+                        type="date"
+                        value={editData}
+                        max={maxCustomDate(policy) || undefined}
+                        onChange={(e) => setEditData(e.target.value)}
+                        required
+                      />
+                    </Field>
+                  )}
+                  <span className="flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      disabled={editFaltaData}
+                      onClick={() => void salvarEdicao(token)}
+                    >
+                      Salvar
+                    </Button>
+                    <Button size="sm" onClick={() => setEditando(null)}>
+                      Cancelar
+                    </Button>
+                  </span>
+                </div>
+              )}
             </li>
           ))}
         </ul>

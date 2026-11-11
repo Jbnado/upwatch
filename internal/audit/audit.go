@@ -28,6 +28,11 @@ const (
 
 	AçãoTokenCriado   = "token.criado"
 	AçãoTokenRevogado = "token.revogado"
+	// AçãoTokenValidadeEsticada registra quem afastou o vencimento de um
+	// token, e quando. Encurtar ou adicionar prazo não gera linha — é
+	// sempre mais restritivo; esticar amplia o alcance de uma credencial
+	// que já existe, e é o que precisa de rastro.
+	AçãoTokenValidadeEsticada = "token.validade_esticada"
 
 	AçãoSenhaTrocada       = "senha.trocada"
 	AçãoUsuárioCriado      = "usuario.criado"

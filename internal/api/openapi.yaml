@@ -620,6 +620,34 @@ paths:
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /api/v1/auth/tokens/{id}:
+    patch:
+      tags: [auth]
+      summary: Edita a validade de um token
+      description: |
+        Encurtar ou adicionar prazo é livre; esticar (afastar o vencimento,
+        inclusive removê-lo) respeita o teto da instalação, contado desde a
+        criação, e deixa rastro na auditoria.
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                expires_at:
+                  type: string
+                  format: date-time
+                  nullable: true
+                  description: |
+                    Nova expiração; nulo ou ausente remove o prazo (um
+                    esticão, sujeito ao teto e à exigência da instalação).
+      responses:
+        "204": { description: Validade editada }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
     delete:
       tags: [auth]
       summary: Revoga um token

@@ -12,12 +12,14 @@ import { Settings } from "./Settings";
 const listTokens = vi.fn();
 const createToken = vi.fn();
 const revokeToken = vi.fn();
+const updateTokenExpiry = vi.fn();
 
 vi.mock("../api/client", () => ({
   api: {
     listTokens: () => listTokens(),
     createToken: (name: string, expiresAt?: string | null) => createToken(name, expiresAt),
     revokeToken: (id: number) => revokeToken(id),
+    updateTokenExpiry: (id: number, expiresAt: string | null) => updateTokenExpiry(id, expiresAt),
   },
 }));
 
@@ -51,6 +53,7 @@ beforeEach(() => {
   listTokens.mockReset();
   createToken.mockReset();
   revokeToken.mockReset();
+  updateTokenExpiry.mockReset();
   window.history.replaceState({}, "", "/ajustes/tokens");
 });
 
@@ -117,6 +120,28 @@ describe("Tokens", () => {
     await waitFor(() => expect(createToken).toHaveBeenCalled());
     const [, expiresAt] = createToken.mock.calls[0]!;
     expect(expiresAt ?? null).toBeNull();
+  });
+
+  it("edita a validade de um token existente", async () => {
+    listTokens.mockResolvedValue({
+      items: [{ id: 7, name: "ci", prefix: "upw_abc", created_at: "2026-01-01T00:00:00Z" }],
+      policy: { require_expiry: false, max_lifetime_seconds: 0 },
+    });
+    updateTokenExpiry.mockResolvedValue(undefined);
+
+    render(<Settings eu={admin()} section="tokens" onSignedOut={() => {}} />);
+    await waitFor(() => expect(screen.getByText("ci")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: /editar validade/i }));
+    fireEvent.change(screen.getByRole("combobox", { name: /validade/i }), {
+      target: { value: "30d" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /salvar/i }));
+
+    await waitFor(() => expect(updateTokenExpiry).toHaveBeenCalled());
+    const [id, expiresAt] = updateTokenExpiry.mock.calls[0]!;
+    expect(id).toBe(7);
+    expect(expiresAt).toBeTruthy();
   });
 
   it("mostra a expiração na listagem", async () => {

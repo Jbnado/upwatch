@@ -163,6 +163,13 @@ export const api = {
       body: JSON.stringify({ name, expires_at: expiresAt ?? undefined }),
     }),
 
+  /** updateTokenExpiry edita a validade; expiresAt nulo remove o prazo. */
+  updateTokenExpiry: (id: number, expiresAt: string | null) =>
+    request<void>(`/auth/tokens/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ expires_at: expiresAt ?? undefined }),
+    }),
+
   revokeToken: (id: number) => request<void>(`/auth/tokens/${id}`, { method: "DELETE" }),
 
   // ---------- monitores ----------

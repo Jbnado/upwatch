@@ -483,6 +483,55 @@ func TestListTokensExposesExpiryPolicy(t *testing.T) {
 	}
 }
 
+// O dono põe prazo num token que nasceu sem validade pela rota de edição.
+func TestUpdateTokenExpiryAddsDeadline(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+
+	resp := s.do(t, http.MethodPost, "/api/v1/auth/tokens", map[string]any{"name": "ci"})
+	assertStatus(t, resp, http.StatusCreated)
+	id := int64(decode[map[string]any](t, resp)["id"].(float64))
+
+	prazo := s.clock.Now().Add(30 * 24 * time.Hour).Format(time.RFC3339)
+	patch := s.do(t, http.MethodPatch, "/api/v1/auth/tokens/"+itoa(id),
+		map[string]any{"expires_at": prazo})
+	assertStatus(t, patch, http.StatusNoContent)
+
+	listing := decode[struct {
+		Items []struct {
+			ExpiresAt string `json:"expires_at"`
+		} `json:"items"`
+	}](t, s.do(t, http.MethodGet, "/api/v1/auth/tokens", nil))
+	if len(listing.Items) != 1 || listing.Items[0].ExpiresAt == "" {
+		t.Fatalf("a validade não foi gravada: %+v", listing.Items)
+	}
+}
+
+// Uma expiração no passado é recusada como 400 apontando expires_at: para
+// matar o token agora existe a revogação, não uma data no passado.
+func TestUpdateTokenExpiryRejectsPastDate(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+
+	resp := s.do(t, http.MethodPost, "/api/v1/auth/tokens", map[string]any{"name": "ci"})
+	assertStatus(t, resp, http.StatusCreated)
+	id := int64(decode[map[string]any](t, resp)["id"].(float64))
+
+	passado := s.clock.Now().Add(-time.Hour).Format(time.RFC3339)
+	patch := s.do(t, http.MethodPatch, "/api/v1/auth/tokens/"+itoa(id),
+		map[string]any{"expires_at": passado})
+	assertStatus(t, patch, http.StatusBadRequest)
+
+	got := decode[struct {
+		Error struct {
+			Field string `json:"field"`
+		} `json:"error"`
+	}](t, patch)
+	if got.Error.Field != "expires_at" {
+		t.Errorf("campo do erro = %q, esperado expires_at", got.Error.Field)
+	}
+}
+
 // ---------- respostas e cabeçalhos ----------
 
 func TestErrorsUseAConsistentJSONShape(t *testing.T) {

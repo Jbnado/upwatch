@@ -497,6 +497,18 @@ func (r *tokenRepo) DeleteOthers(ctx context.Context, userID int64, keep string)
 	return nil
 }
 
+// SetExpiry grava só a coluna de expiração. Sem tocar em created_at nem em
+// last_used_at: editar a validade não pode reescrever quando o token nasceu
+// ou foi usado por último.
+func (r *tokenRepo) SetExpiry(ctx context.Context, id int64, expiresAt *time.Time) error {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE api_token SET expires_at = ? WHERE id = ?`, millisPtr(expiresAt), id)
+	if err != nil {
+		return fmt.Errorf("sqlstore: editando a validade do token %d: %w", id, err)
+	}
+	return requireAffected(res, fmt.Sprintf("token %d", id))
+}
+
 func (r *tokenRepo) TouchLastUsed(ctx context.Context, id int64, at time.Time) error {
 	if _, err := r.db.ExecContext(ctx,
 		`UPDATE api_token SET last_used_at = ? WHERE id = ?`, toMillis(at), id); err != nil {
