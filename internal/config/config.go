@@ -72,6 +72,18 @@ type Config struct {
 	// SessionTTL é a validade de um login na interface.
 	SessionTTL time.Duration `yaml:"session_ttl"`
 
+	// TokenMaxLifetime é o maior prazo de vida permitido a um token de API,
+	// contado da criação. Zero, o padrão, não impõe teto. Esticar a
+	// validade de um token existente respeita este teto (ver a edição de
+	// expiração); encurtar ou adicionar prazo é livre.
+	TokenMaxLifetime time.Duration `yaml:"token_max_lifetime"`
+
+	// TokenExpiryRequired exige que todo token de API nasça com validade.
+	// Desligado por padrão, para uma atualização não recusar a emissão de
+	// quem sempre criou tokens sem prazo; os tokens que já existem seguem
+	// sem expiração até o dono lhes dar prazo.
+	TokenExpiryRequired bool `yaml:"token_require_expiry"`
+
 	// ReminderInterval é de quanto em quanto tempo uma queda aberta e não
 	// reconhecida é relembrada, para monitor e grupo que não escolheram o
 	// próprio. Zero, o padrão, desliga: ligar sozinho numa atualização
@@ -232,6 +244,9 @@ func applyEnv(cfg *Config) error {
 	if err := dur(&cfg.SessionTTL, "SESSION_TTL"); err != nil {
 		return err
 	}
+	if err := dur(&cfg.TokenMaxLifetime, "TOKEN_MAX_LIFETIME"); err != nil {
+		return err
+	}
 	if err := dur(&cfg.ReminderInterval, "REMINDER_INTERVAL"); err != nil {
 		return err
 	}
@@ -248,6 +263,9 @@ func applyEnv(cfg *Config) error {
 		return err
 	}
 	if err := boolean(&cfg.Require2FAAdmin, "REQUIRE_2FA_ADMIN"); err != nil {
+		return err
+	}
+	if err := boolean(&cfg.TokenExpiryRequired, "TOKEN_REQUIRE_EXPIRY"); err != nil {
 		return err
 	}
 
@@ -282,6 +300,9 @@ func (c Config) Validate() error {
 	}
 	if c.SessionTTL <= 0 {
 		return fmt.Errorf("config: session_ttl precisa ser positivo")
+	}
+	if c.TokenMaxLifetime < 0 {
+		return fmt.Errorf("config: token_max_lifetime não pode ser negativo (0 desliga o teto)")
 	}
 	if domain.ValidateReminderInterval(&c.ReminderInterval) != nil {
 		return fmt.Errorf("config: reminder_interval precisa ser 0 (desligado) ou ficar entre %s e %s",
@@ -321,6 +342,15 @@ func (c Config) TrustedProxyPrefixes() ([]netip.Prefix, error) {
 		out = append(out, netip.PrefixFrom(addr, addr.BitLen()))
 	}
 	return out, nil
+}
+
+// TokenExpiryPolicy traduz os campos de validade de token para o domínio,
+// que é quem decide exigência e teto na emissão e na edição.
+func (c Config) TokenExpiryPolicy() domain.TokenExpiryPolicy {
+	return domain.TokenExpiryPolicy{
+		MaxLifetime: c.TokenMaxLifetime,
+		Require:     c.TokenExpiryRequired,
+	}
 }
 
 // RetentionPolicy traduz para o formato usado pelo worker.

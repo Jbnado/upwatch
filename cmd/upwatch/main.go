@@ -214,7 +214,11 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 		Clock:   real,
 	})
 
-	authSvc := auth.New(st, auth.Options{Clock: real, SessionTTL: cfg.SessionTTL})
+	authSvc := auth.New(st, auth.Options{
+		Clock:       real,
+		SessionTTL:  cfg.SessionTTL,
+		TokenExpiry: cfg.TokenExpiryPolicy(),
+	})
 	if err := authSvc.CalibrateLogin(context.Background()); err != nil {
 		return nil, err
 	}

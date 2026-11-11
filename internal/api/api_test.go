@@ -427,6 +427,62 @@ func TestRevokedTokenStopsWorking(t *testing.T) {
 	assertStatus(t, after, http.StatusUnauthorized)
 }
 
+// policyServer sobe a API com uma política de validade de token na
+// instalação, trocando o serviço de autenticação por um que a carrega.
+func policyServer(t *testing.T, pol domain.TokenExpiryPolicy) *server {
+	t.Helper()
+	return newServerWith(t, func(o *api.Options) {
+		o.Auth = auth.New(o.Store, auth.Options{Clock: o.Clock, TokenExpiry: pol})
+	})
+}
+
+// A emissão recusada pela política da instalação chega como 400 de
+// validação apontando expires_at, e não como erro interno: o pedido está
+// bem formado, só não cabe na regra.
+func TestCreateTokenBeyondCeilingIsRejected(t *testing.T) {
+	s := policyServer(t, domain.TokenExpiryPolicy{MaxLifetime: 90 * 24 * time.Hour})
+	s.setup(t)
+
+	alem := s.clock.Now().Add(100 * 24 * time.Hour).Format(time.RFC3339)
+	resp := s.do(t, http.MethodPost, "/api/v1/auth/tokens", map[string]any{
+		"name": "ci", "expires_at": alem,
+	})
+	assertStatus(t, resp, http.StatusBadRequest)
+
+	got := decode[struct {
+		Error struct {
+			Field string `json:"field"`
+		} `json:"error"`
+	}](t, resp)
+	if got.Error.Field != "expires_at" {
+		t.Errorf("campo do erro = %q, esperado expires_at", got.Error.Field)
+	}
+}
+
+// A listagem informa a política de validade da instalação, para a interface
+// oferecer só as opções que o servidor aceita.
+func TestListTokensExposesExpiryPolicy(t *testing.T) {
+	s := policyServer(t, domain.TokenExpiryPolicy{Require: true, MaxLifetime: 30 * 24 * time.Hour})
+	s.setup(t)
+
+	resp := s.do(t, http.MethodGet, "/api/v1/auth/tokens", nil)
+	assertStatus(t, resp, http.StatusOK)
+
+	got := decode[struct {
+		Policy struct {
+			RequireExpiry      bool  `json:"require_expiry"`
+			MaxLifetimeSeconds int64 `json:"max_lifetime_seconds"`
+		} `json:"policy"`
+	}](t, resp)
+
+	if !got.Policy.RequireExpiry {
+		t.Error("a política não informa a exigência de validade")
+	}
+	if want := int64((30 * 24 * time.Hour).Seconds()); got.Policy.MaxLifetimeSeconds != want {
+		t.Errorf("teto = %d s, esperado %d s", got.Policy.MaxLifetimeSeconds, want)
+	}
+}
+
 // ---------- respostas e cabeçalhos ----------
 
 func TestErrorsUseAConsistentJSONShape(t *testing.T) {

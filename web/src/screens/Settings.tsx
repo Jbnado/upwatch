@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client";
-import { ApiError, type APIToken, type User } from "../api/types";
+import { ApiError, type APIToken, type TokenExpiryPolicy, type User } from "../api/types";
 import {
   Alert,
   Button,
@@ -11,9 +11,17 @@ import {
   NewItem,
   Nothing,
   RowLink,
+  Select,
   TextLink,
 } from "../components/ui";
 import { ago, stamp } from "../lib/format";
+import {
+  defaultChoice,
+  expiresAtFor,
+  maxCustomDate,
+  validityOptions,
+  type ValidityChoice,
+} from "../lib/token-expiry";
 import { href, navigate } from "../lib/router";
 import {
   firstSection,
@@ -206,20 +214,50 @@ function SemAcesso({ titulo, motivo }: { titulo: string; motivo: string }) {
   );
 }
 
+// semPolítica é o padrão enquanto a listagem não chega, e a rede de
+// segurança caso a resposta venha sem o campo: não exige validade nem
+// limita o teto, que é o comportamento de quem não configurou nada.
+const semPolítica: TokenExpiryPolicy = { require_expiry: false, max_lifetime_seconds: 0 };
+
+// expiryLabel descreve a validade de um token na listagem.
+function expiryLabel(token: APIToken): string {
+  if (!token.expires_at) {
+    return "sem expiração";
+  }
+  if (new Date(token.expires_at).getTime() <= Date.now()) {
+    return "expirado";
+  }
+  return `expira em ${stamp(token.expires_at)}`;
+}
+
 function Tokens() {
   const [tokens, setTokens] = useState<APIToken[] | null>(null);
+  const [policy, setPolicy] = useState<TokenExpiryPolicy>(semPolítica);
   const [nome, setNome] = useState("");
+  const [validade, setValidade] = useState<ValidityChoice>("30d");
+  const [dataPersonalizada, setDataPersonalizada] = useState("");
   const [novo, setNovo] = useState<string | null>(null);
   const [erro, setErro] = useState<string | null>(null);
 
   async function carregar() {
-    const { items } = await api.listTokens();
+    const { items, policy } = await api.listTokens();
     setTokens(items);
+    // Em teste o cliente é dublê e pode omitir a política; sem ela, fica o
+    // padrão permissivo.
+    if (policy) {
+      setPolicy(policy);
+      setValidade(defaultChoice(policy));
+    }
   }
 
   useEffect(() => {
     void carregar();
   }, []);
+
+  const opções = validityOptions(policy);
+  // "data personalizada" sem data ainda não dá para enviar: a emissão exige
+  // um prazo no futuro, e um campo vazio viraria "sem expiração" sem querer.
+  const faltaData = validade === "custom" && dataPersonalizada === "";
 
   /** criar devolve se deu certo, para o formulário se recolher só então. */
   async function criar(e: FormEvent): Promise<boolean> {
@@ -227,9 +265,11 @@ function Tokens() {
     setErro(null);
 
     try {
-      const criado = await api.createToken(nome);
+      const criado = await api.createToken(nome, expiresAtFor(validade, dataPersonalizada));
       setNovo(criado.token);
       setNome("");
+      setValidade(defaultChoice(policy));
+      setDataPersonalizada("");
       await carregar();
       return true;
     } catch (e) {
@@ -296,6 +336,8 @@ function Tokens() {
                   {token.last_used_at ? `usado ${ago(token.last_used_at)}` : "nunca usado"}
                   <span className="mx-1.5">·</span>
                   criado em {stamp(token.created_at)}
+                  <span className="mx-1.5">·</span>
+                  {expiryLabel(token)}
                 </span>
                 <Button size="sm" variant="danger" onClick={() => revogar(token)}>
                   Revogar
@@ -323,7 +365,30 @@ function Tokens() {
                 required
               />
             </Field>
-            <FormActions submit="Criar token" onCancel={fechar} />
+            <Field label="validade" hint="Um prazo curto limita o estrago se o token vazar.">
+              <Select
+                value={validade}
+                onChange={(e) => setValidade(e.target.value as ValidityChoice)}
+              >
+                {opções.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            {validade === "custom" && (
+              <Field label="data de expiração">
+                <Input
+                  type="date"
+                  value={dataPersonalizada}
+                  max={maxCustomDate(policy) || undefined}
+                  onChange={(e) => setDataPersonalizada(e.target.value)}
+                  required
+                />
+              </Field>
+            )}
+            <FormActions submit="Criar token" onCancel={fechar} disabled={faltaData} />
           </form>
         )}
       </NewItem>

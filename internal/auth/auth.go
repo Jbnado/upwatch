@@ -63,6 +63,10 @@ type Options struct {
 	Clock      clock.Clock
 	// LoginFloor injeta um piso de espera; zero desliga a espera nos testes.
 	LoginFloor time.Duration
+	// TokenExpiry é a política de validade de tokens da instalação,
+	// aplicada na emissão. O valor zero não exige validade nem limita o
+	// teto, que é o comportamento de quem não configurou nada.
+	TokenExpiry domain.TokenExpiryPolicy
 }
 
 // Service reúne as operações de identidade.
@@ -73,6 +77,8 @@ type Service struct {
 
 	attempts   *attempts
 	loginFloor time.Duration
+
+	tokenExpiry domain.TokenExpiryPolicy
 
 	decoy      string
 	decoyError error
@@ -87,11 +93,12 @@ func New(s store.MetadataStore, opts Options) *Service {
 		opts.Clock = clock.Real()
 	}
 	svc := &Service{
-		store:      s,
-		clock:      opts.Clock,
-		sessionTTL: opts.SessionTTL,
-		attempts:   newAttempts(opts.Clock),
-		loginFloor: opts.LoginFloor,
+		store:       s,
+		clock:       opts.Clock,
+		sessionTTL:  opts.SessionTTL,
+		attempts:    newAttempts(opts.Clock),
+		loginFloor:  opts.LoginFloor,
+		tokenExpiry: opts.TokenExpiry,
 	}
 	svc.decoyError = svc.prepareDecoy(domain.PasswordHashCost)
 	return svc
@@ -343,6 +350,13 @@ func (s *Service) IssueToken(
 		return domain.APIToken{}, "", fmt.Errorf("auth: o token precisa de um nome")
 	}
 
+	// A validade pedida passa pela política da instalação antes de qualquer
+	// escrita: exigência e teto são decididos no domínio, e a recusa chega
+	// como erro de validação (campo expires_at), não como token gravado.
+	if err := s.tokenExpiry.CheckExpiry(expiresAt, s.clock.Now()); err != nil {
+		return domain.APIToken{}, "", err
+	}
+
 	secret, err := domain.NewToken()
 	if err != nil {
 		return domain.APIToken{}, "", err
@@ -395,6 +409,12 @@ func (s *Service) AuthenticateToken(ctx context.Context, secret string) (domain.
 // ListTokens devolve os tokens da conta.
 func (s *Service) ListTokens(ctx context.Context, userID int64) ([]domain.APIToken, error) {
 	return s.store.Tokens().List(ctx, userID)
+}
+
+// TokenExpiryPolicy devolve a política de validade da instalação, para a
+// interface oferecer só as opções que a emissão aceita.
+func (s *Service) TokenExpiryPolicy() domain.TokenExpiryPolicy {
+	return s.tokenExpiry
 }
 
 // RevokeToken apaga um token da própria conta.

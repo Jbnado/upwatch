@@ -567,6 +567,20 @@ paths:
                   items:
                     type: array
                     items: { $ref: "#/components/schemas/APIToken" }
+                  policy:
+                    type: object
+                    description: |
+                      Política de validade da instalação, para o cliente
+                      oferecer só o que a emissão aceita.
+                    properties:
+                      require_expiry:
+                        type: boolean
+                        description: Exige que todo token novo tenha validade
+                      max_lifetime_seconds:
+                        type: integer
+                        description: |
+                          Maior prazo de vida permitido, em segundos,
+                          contado da criação. 0 significa sem teto.
     post:
       tags: [auth]
       summary: Cria um token
@@ -585,7 +599,11 @@ paths:
                 expires_at:
                   type: string
                   format: date-time
-                  description: Sem valor, o token não expira
+                  description: |
+                    Quando o token expira. Sem valor, não expira — a menos
+                    que a instalação exija validade. A data precisa ser no
+                    futuro e respeitar o teto da instalação (ver a política
+                    na listagem).
       responses:
         "201":
           description: Token criado

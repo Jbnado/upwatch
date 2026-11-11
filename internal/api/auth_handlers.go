@@ -252,7 +252,13 @@ func (a *API) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleListTokens lista as credenciais programáticas da conta.
+// handleListTokens lista as credenciais programáticas da conta e anuncia a
+// política de validade da instalação.
+//
+// A política vai junto da listagem para a interface montar o seletor de
+// validade com só o que a emissão aceita: sem a opção "sem expiração"
+// quando a instalação a exige, e sem prazo acima do teto. A barreira de
+// verdade continua no servidor (ver IssueToken); isto é conveniência.
 func (a *API) handleListTokens(w http.ResponseWriter, r *http.Request) {
 	tokens, err := a.auth.ListTokens(r.Context(), mustUser(r).ID)
 	if err != nil {
@@ -262,7 +268,19 @@ func (a *API) handleListTokens(w http.ResponseWriter, r *http.Request) {
 	if tokens == nil {
 		tokens = []domain.APIToken{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": tokens})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":  tokens,
+		"policy": tokenPolicyBody(a.auth.TokenExpiryPolicy()),
+	})
+}
+
+// tokenPolicyBody traduz a política para a resposta. O teto vai em
+// segundos (0 = sem teto), que é o que a interface converte em datas.
+func tokenPolicyBody(p domain.TokenExpiryPolicy) map[string]any {
+	return map[string]any{
+		"require_expiry":       p.Require,
+		"max_lifetime_seconds": int64(p.MaxLifetime.Seconds()),
+	}
 }
 
 // handleCreateToken emite uma credencial e devolve o segredo.

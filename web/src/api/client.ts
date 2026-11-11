@@ -2,7 +2,7 @@ import {
   ApiError,
   type Announcement,
   type AnnouncementUpdate,
-  type APIToken,
+  type TokenList,
   type Channel,
   type ChannelDetail,
   type ChannelInput,
@@ -154,12 +154,13 @@ export const api = {
 
   // ---------- tokens ----------
 
-  listTokens: () => request<{ items: APIToken[] }>("/auth/tokens"),
+  listTokens: () => request<TokenList>("/auth/tokens"),
 
-  createToken: (name: string) =>
+  /** createToken emite um token; expiresAt nulo pede "sem expiração". */
+  createToken: (name: string, expiresAt?: string | null) =>
     request<CreatedToken>("/auth/tokens", {
       method: "POST",
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, expires_at: expiresAt ?? undefined }),
     }),
 
   revokeToken: (id: number) => request<void>(`/auth/tokens/${id}`, { method: "DELETE" }),
