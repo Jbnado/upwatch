@@ -578,16 +578,82 @@ func (r *tokenRepo) SuccessorUsed(ctx context.Context, tokenID int64) (bool, err
 	return lastUsed.Valid, nil
 }
 
-// SetExpiry grava só a coluna de expiração. Sem tocar em created_at nem em
-// last_used_at: editar a validade não pode reescrever quando o token nasceu
-// ou foi usado por último.
+// SetExpiry grava só a coluna de expiração e rearma os avisos de
+// vencimento. Sem tocar em created_at nem em last_used_at: editar a validade
+// não pode reescrever quando o token nasceu ou foi usado por último.
+//
+// Zera expiry_warned_days porque o prazo mudou: esticar a validade recoloca
+// os marcos de 30 e 7 dias à frente, e um marco já avisado para o prazo
+// antigo calaria o aviso do novo. Encurtar também zera, de propósito — o
+// verificador reavalia os marcos contra a data nova.
 func (r *tokenRepo) SetExpiry(ctx context.Context, id int64, expiresAt *time.Time) error {
 	res, err := r.db.ExecContext(ctx,
-		`UPDATE api_token SET expires_at = ? WHERE id = ?`, millisPtr(expiresAt), id)
+		`UPDATE api_token SET expires_at = ?, expiry_warned_days = NULL WHERE id = ?`,
+		millisPtr(expiresAt), id)
 	if err != nil {
 		return fmt.Errorf("sqlstore: editando a validade do token %d: %w", id, err)
 	}
 	return requireAffected(res, fmt.Sprintf("token %d", id))
+}
+
+// ListExpiring lê os tokens ativos com prazo até notAfter, com o dono e o
+// marco de aviso já enviado. Junta app_user para o aviso dizer de quem é o
+// token; não traz os revogados nem os sem prazo, e deixa o descarte dos já
+// vencidos para quem decide o marco (domain.DueTokenExpiryMilestone).
+func (r *tokenRepo) ListExpiring(ctx context.Context, notAfter time.Time) ([]store.ExpiringToken, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT t.id, t.user_id, t.name, t.prefix, t.expires_at, u.username, t.expiry_warned_days
+		FROM api_token t
+		JOIN app_user u ON u.id = t.user_id
+		WHERE t.revoked_at IS NULL AND t.expires_at IS NOT NULL AND t.expires_at <= ?
+		ORDER BY t.expires_at, t.id`, toMillis(notAfter))
+	if err != nil {
+		return nil, fmt.Errorf("sqlstore: listando tokens a vencer: %w", err)
+	}
+	defer rows.Close()
+
+	var out []store.ExpiringToken
+	for rows.Next() {
+		var (
+			et        store.ExpiringToken
+			expiresMS int64
+			warned    sql.NullInt64
+		)
+		if err := rows.Scan(&et.TokenID, &et.UserID, &et.Name, &et.Prefix,
+			&expiresMS, &et.Username, &warned); err != nil {
+			return nil, fmt.Errorf("sqlstore: lendo token a vencer: %w", err)
+		}
+		et.ExpiresAt = fromMillis(expiresMS)
+		if warned.Valid {
+			d := int(warned.Int64)
+			et.WarnedDays = &d
+		}
+		out = append(out, et)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlstore: lendo tokens a vencer: %w", err)
+	}
+	return out, nil
+}
+
+// MarkExpiryWarned grava o marco de aviso mais fino já enviado, e só quando
+// avança rumo ao vencimento: a condição vai na própria escrita para dois
+// ticks não repetirem o aviso, e para um marco mais distante não sobrescrever
+// um mais próximo já avisado. Token inexistente não grava e não é erro —
+// pode ter sido revogado ou apagado entre a leitura e a marca.
+func (r *tokenRepo) MarkExpiryWarned(ctx context.Context, id int64, days int) (bool, error) {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE api_token SET expiry_warned_days = ?
+		 WHERE id = ? AND (expiry_warned_days IS NULL OR expiry_warned_days > ?)`,
+		days, id, days)
+	if err != nil {
+		return false, fmt.Errorf("sqlstore: marcando aviso de expiração do token %d: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("sqlstore: conferindo marca de aviso do token %d: %w", id, err)
+	}
+	return n > 0, nil
 }
 
 func (r *tokenRepo) TouchLastUsed(ctx context.Context, id int64, at time.Time) error {
