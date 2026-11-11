@@ -619,6 +619,54 @@ paths:
                         description: O segredo; não é recuperável depois
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
+  /api/v1/auth/tokens/{id}/rotate:
+    post:
+      tags: [auth]
+      summary: Rotaciona um token
+      description: |
+        Emite um substituto e devolve o segredo novo (mostrado só aqui, como
+        na criação). O token antigo segue válido na janela de sobreposição
+        até ser revogado, para a rotação não parar a automação. Depois de o
+        sucessor ser usado, usar o antigo é tratado como vazamento: o antigo
+        é revogado e o uso registrado na auditoria.
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                expires_at:
+                  type: string
+                  format: date-time
+                  description: |
+                    Validade do substituto; segue a política da instalação,
+                    como uma emissão nova. Ausente, o substituto não expira
+                    (salvo exigência da instalação).
+      responses:
+        "201":
+          description: Substituto emitido
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/APIToken"
+                  - type: object
+                    properties:
+                      token:
+                        type: string
+                        description: O segredo; não é recuperável depois
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: O token já foi rotacionado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+
   /api/v1/auth/tokens/{id}:
     patch:
       tags: [auth]

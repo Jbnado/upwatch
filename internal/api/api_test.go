@@ -532,6 +532,41 @@ func TestUpdateTokenExpiryRejectsPastDate(t *testing.T) {
 	}
 }
 
+// Rotacionar devolve um segredo novo e mantém o antigo valendo na
+// sobreposição, enquanto o sucessor não foi usado.
+func TestRotateTokenKeepsOldWorking(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+
+	created := decode[map[string]any](t,
+		s.do(t, http.MethodPost, "/api/v1/auth/tokens", map[string]any{"name": "ci"}))
+	oldSecret := created["token"].(string)
+	id := int64(created["id"].(float64))
+
+	resp := s.do(t, http.MethodPost, "/api/v1/auth/tokens/"+itoa(id)+"/rotate", map[string]any{})
+	assertStatus(t, resp, http.StatusCreated)
+	novoSecret := decode[map[string]any](t, resp)["token"].(string)
+	if novoSecret == "" || novoSecret == oldSecret {
+		t.Fatal("a rotação não devolveu um segredo novo")
+	}
+
+	// Com o sucessor ainda não usado, os dois autenticam.
+	assertStatus(t, s.withToken(t, oldSecret, http.MethodGet, "/api/v1/monitors", nil), http.StatusOK)
+	assertStatus(t, s.withToken(t, novoSecret, http.MethodGet, "/api/v1/monitors", nil), http.StatusOK)
+}
+
+// Rotacionar um token já rotacionado é 409: rotaciona-se o substituto.
+func TestRotateAlreadyRotatedIsConflict(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+
+	id := itoa(int64(decode[map[string]any](t,
+		s.do(t, http.MethodPost, "/api/v1/auth/tokens", map[string]any{"name": "ci"}))["id"].(float64)))
+
+	assertStatus(t, s.do(t, http.MethodPost, "/api/v1/auth/tokens/"+id+"/rotate", map[string]any{}), http.StatusCreated)
+	assertStatus(t, s.do(t, http.MethodPost, "/api/v1/auth/tokens/"+id+"/rotate", map[string]any{}), http.StatusConflict)
+}
+
 // ---------- respostas e cabeçalhos ----------
 
 func TestErrorsUseAConsistentJSONShape(t *testing.T) {

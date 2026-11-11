@@ -163,6 +163,13 @@ export const api = {
       body: JSON.stringify({ name, expires_at: expiresAt ?? undefined }),
     }),
 
+  /** rotateToken emite um substituto; o antigo vale até ser revogado. */
+  rotateToken: (id: number, expiresAt: string | null) =>
+    request<CreatedToken>(`/auth/tokens/${id}/rotate`, {
+      method: "POST",
+      body: JSON.stringify({ expires_at: expiresAt ?? undefined }),
+    }),
+
   /** updateTokenExpiry edita a validade; expiresAt nulo remove o prazo. */
   updateTokenExpiry: (id: number, expiresAt: string | null) =>
     request<void>(`/auth/tokens/${id}`, {

@@ -330,6 +330,42 @@ func (a *API) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleRotateToken emite um substituto para um token da própria conta e
+// devolve o segredo novo. O antigo segue válido na sobreposição até ser
+// revogado. Esta é, como a criação, a única resposta em que o segredo
+// aparece.
+func (a *API) handleRotateToken(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+
+	var body struct {
+		ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+
+	tok, secret, err := a.auth.RotateToken(r.Context(), mustUser(r).ID, id, body.ExpiresAt)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+
+	a.audit(r, audit.AçãoTokenRotacionado, strconv.FormatInt(id, 10))
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id":         tok.ID,
+		"name":       tok.Name,
+		"prefix":     tok.Prefix,
+		"created_at": tok.CreatedAt,
+		"expires_at": tok.ExpiresAt,
+		"token":      secret,
+		"warning":    "guarde este valor agora; ele não pode ser recuperado depois",
+	})
+}
+
 // handleUpdateTokenExpiry edita a validade de um token da própria conta.
 //
 // Encurtar ou adicionar prazo é livre; esticar respeita o teto da

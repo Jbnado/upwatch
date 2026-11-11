@@ -320,6 +320,20 @@ type TokenRepo interface {
 	// domínio (TokenExpiryPolicy.CheckExpiryEdit). Devolve ErrNotFound se o
 	// token não existir.
 	SetExpiry(ctx context.Context, id int64, expiresAt *time.Time) error
+
+	// Rotate emite um substituto para o token oldID numa transação: marca o
+	// antigo como rotacionado (rotated_at) sem revogá-lo — os dois valem na
+	// janela de sobreposição até o dono revogar o antigo — e insere o
+	// substituto ligado a ele (predecessor_id). Preenche ID e CreatedAt do
+	// substituto. Devolve ErrNotFound se oldID não existir, sem gravar o
+	// substituto.
+	Rotate(ctx context.Context, oldID int64, replacement *domain.APIToken) error
+
+	// SuccessorUsed informa se o sucessor de tokenID — o substituto emitido
+	// na rotação — já foi usado. É o gatilho da detecção de reuso: com o
+	// cliente migrado para o segredo novo, usar o antigo vira sinal de
+	// vazamento. Falso quando não há sucessor.
+	SuccessorUsed(ctx context.Context, tokenID int64) (bool, error)
 }
 
 // StateRepo guarda o estado confirmado de cada monitor.

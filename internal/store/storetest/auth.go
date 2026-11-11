@@ -47,6 +47,8 @@ func authCases() []conformanceCase {
 		{"TokenTouchLastUsed", testTokenTouchLastUsed},
 		{"TokenRoundTripsExpiry", testTokenRoundTripsExpiry},
 		{"TokenSetExpiry", testTokenSetExpiry},
+		{"TokenRotateKeepsBothValid", testTokenRotateKeepsBothValid},
+		{"TokenSuccessorUsed", testTokenSuccessorUsed},
 	}
 }
 
@@ -810,6 +812,102 @@ func testTokenRoundTripsExpiry(t *testing.T, newStore Factory) {
 	if !got.ExpiresAt.Equal(expires) {
 		t.Errorf("ExpiresAt = %v, want %v", got.ExpiresAt, expires)
 	}
+}
+
+// Rotacionar emite um substituto e marca o antigo como rotacionado, sem
+// revogá-lo: os dois seguem válidos (sobreposição) até o dono revogar o
+// antigo, para a rotação não ter janela de corte.
+func testTokenRotateKeepsBothValid(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	u := mustCreateUser(t, s, "admin")
+	old, oldSecret := mustCreateToken(t, s, u.ID, "ci")
+
+	novoSecret, err := domain.NewToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	novo := domain.APIToken{
+		UserID: u.ID, Name: "ci (rotacionado)",
+		Hash: novoSecret.Hash, Prefix: novoSecret.Prefix,
+	}
+	if err := s.Tokens().Rotate(ctx, old.ID, &novo); err != nil {
+		t.Fatalf("Rotate returned unexpected error: %v", err)
+	}
+	if novo.ID == 0 || novo.CreatedAt.IsZero() {
+		t.Errorf("Rotate não preencheu o token substituto: %+v", novo)
+	}
+
+	// O antigo segue autenticando, agora marcado como rotacionado.
+	gotOld, err := s.Tokens().GetByHash(ctx, domain.HashToken(oldSecret.Secret))
+	if err != nil {
+		t.Fatalf("o token antigo deixou de autenticar após a rotação: %v", err)
+	}
+	if gotOld.RotatedAt == nil {
+		t.Error("o token antigo não ficou marcado como rotacionado")
+	}
+
+	// O substituto também autentica.
+	if _, err := s.Tokens().GetByHash(ctx, novoSecret.Hash); err != nil {
+		t.Errorf("o token substituto não autentica: %v", err)
+	}
+
+	// Rotacionar um token inexistente é ErrNotFound, sem gravar o substituto.
+	antes := len(mustListTokens(t, s, u.ID))
+	outro := domain.APIToken{UserID: u.ID, Name: "x", Hash: "h-inexistente", Prefix: "upw_x"}
+	if err := s.Tokens().Rotate(ctx, 9999, &outro); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("Rotate de token inexistente = %v, want ErrNotFound", err)
+	}
+	if depois := len(mustListTokens(t, s, u.ID)); depois != antes {
+		t.Errorf("a rotação recusada gravou o substituto: antes %d, depois %d", antes, depois)
+	}
+}
+
+// SuccessorUsed é o gatilho da detecção de reuso: só acusa quando o token
+// substituto já foi usado, ou seja, quando o cliente migrou para o segredo
+// novo e usar o antigo passa a ser sinal de vazamento.
+func testTokenSuccessorUsed(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	u := mustCreateUser(t, s, "admin")
+	old, _ := mustCreateToken(t, s, u.ID, "ci")
+
+	novoSecret, err := domain.NewToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	novo := domain.APIToken{UserID: u.ID, Name: "ci2", Hash: novoSecret.Hash, Prefix: novoSecret.Prefix}
+	if err := s.Tokens().Rotate(ctx, old.ID, &novo); err != nil {
+		t.Fatal(err)
+	}
+
+	// Antes de o substituto ser usado, não há reuso a detectar.
+	if used, err := s.Tokens().SuccessorUsed(ctx, old.ID); err != nil || used {
+		t.Fatalf("SuccessorUsed antes do uso = %v, %v; want false, nil", used, err)
+	}
+
+	// Usar o substituto arma a detecção.
+	if err := s.Tokens().TouchLastUsed(ctx, novo.ID, epoch.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if used, err := s.Tokens().SuccessorUsed(ctx, old.ID); err != nil || !used {
+		t.Fatalf("SuccessorUsed após o uso = %v, %v; want true, nil", used, err)
+	}
+
+	// Um token sem substituto nunca acusa reuso.
+	solo, _ := mustCreateToken(t, s, u.ID, "solo")
+	if used, err := s.Tokens().SuccessorUsed(ctx, solo.ID); err != nil || used {
+		t.Fatalf("SuccessorUsed sem sucessor = %v, %v; want false, nil", used, err)
+	}
+}
+
+func mustListTokens(t *testing.T, s store.Store, userID int64) []domain.APIToken {
+	t.Helper()
+	list, err := s.Tokens().List(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("List returned unexpected error: %v", err)
+	}
+	return list
 }
 
 // ---------- papéis ----------

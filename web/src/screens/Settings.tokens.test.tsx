@@ -13,6 +13,7 @@ const listTokens = vi.fn();
 const createToken = vi.fn();
 const revokeToken = vi.fn();
 const updateTokenExpiry = vi.fn();
+const rotateToken = vi.fn();
 
 vi.mock("../api/client", () => ({
   api: {
@@ -20,6 +21,7 @@ vi.mock("../api/client", () => ({
     createToken: (name: string, expiresAt?: string | null) => createToken(name, expiresAt),
     revokeToken: (id: number) => revokeToken(id),
     updateTokenExpiry: (id: number, expiresAt: string | null) => updateTokenExpiry(id, expiresAt),
+    rotateToken: (id: number, expiresAt: string | null) => rotateToken(id, expiresAt),
   },
 }));
 
@@ -54,6 +56,7 @@ beforeEach(() => {
   createToken.mockReset();
   revokeToken.mockReset();
   updateTokenExpiry.mockReset();
+  rotateToken.mockReset();
   window.history.replaceState({}, "", "/ajustes/tokens");
 });
 
@@ -142,6 +145,50 @@ describe("Tokens", () => {
     const [id, expiresAt] = updateTokenExpiry.mock.calls[0]!;
     expect(id).toBe(7);
     expect(expiresAt).toBeTruthy();
+  });
+
+  it("rotaciona um token e mostra o segredo novo", async () => {
+    listTokens.mockResolvedValue({
+      items: [{ id: 5, name: "ci", prefix: "upw_abc", created_at: "2026-01-01T00:00:00Z" }],
+      policy: { require_expiry: false, max_lifetime_seconds: 0 },
+    });
+    rotateToken.mockResolvedValue({
+      id: 6,
+      name: "ci",
+      prefix: "upw_def",
+      created_at: "",
+      token: "upw_segredo_novo",
+    });
+
+    render(<Settings eu={admin()} section="tokens" onSignedOut={() => {}} />);
+    await waitFor(() => expect(screen.getByText("ci")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: /rotacionar/i }));
+
+    await waitFor(() => expect(rotateToken).toHaveBeenCalled());
+    expect(rotateToken.mock.calls[0]![0]).toBe(5);
+    expect(await screen.findByText("upw_segredo_novo")).toBeInTheDocument();
+  });
+
+  it("marca o token rotacionado e não oferece rotacioná-lo de novo", async () => {
+    listTokens.mockResolvedValue({
+      items: [
+        {
+          id: 9,
+          name: "ci",
+          prefix: "upw_abc",
+          created_at: "2026-01-01T00:00:00Z",
+          rotated_at: "2026-02-01T00:00:00Z",
+        },
+      ],
+      policy: { require_expiry: false, max_lifetime_seconds: 0 },
+    });
+
+    render(<Settings eu={admin()} section="tokens" onSignedOut={() => {}} />);
+    await waitFor(() => expect(screen.getByText("ci")).toBeInTheDocument());
+
+    expect(screen.getByText(/rotacionado/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /rotacionar/i })).toBeNull();
   });
 
   it("mostra a expiração na listagem", async () => {

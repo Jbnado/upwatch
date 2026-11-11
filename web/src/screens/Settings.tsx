@@ -309,6 +309,20 @@ function Tokens() {
     }
   }
 
+  // rotacionar emite um substituto e mostra o segredo novo. O antigo segue
+  // valendo até ser revogado, então não é operação destrutiva: o substituto
+  // herda a validade padrão da política, que o dono pode editar depois.
+  async function rotacionar(token: APIToken) {
+    setErro(null);
+    try {
+      const criado = await api.rotateToken(token.id, expiresAtFor(defaultChoice(policy), ""));
+      setNovo(criado.token);
+      await carregar();
+    } catch (e) {
+      setErro(e instanceof ApiError ? e.message : "Não foi possível rotacionar o token.");
+    }
+  }
+
   return (
     <section className="flex flex-col gap-4">
       <div className="flex flex-col gap-1.5">
@@ -360,7 +374,20 @@ function Tokens() {
                     criado em {stamp(token.created_at)}
                     <span className="mx-1.5">·</span>
                     {expiryLabel(token)}
+                    {token.rotated_at && (
+                      <>
+                        <span className="mx-1.5">·</span>
+                        <span className="text-degraded">rotacionado</span>
+                      </>
+                    )}
                   </span>
+                  {/* Um token rotacionado não se rotaciona de novo: o
+                      substituto é o que se rotaciona a seguir. */}
+                  {!token.rotated_at && (
+                    <Button size="sm" onClick={() => void rotacionar(token)}>
+                      Rotacionar
+                    </Button>
+                  )}
                   <Button size="sm" onClick={() => editar(token)}>
                     Editar validade
                   </Button>

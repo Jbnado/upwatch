@@ -279,6 +279,7 @@ var rotas = map[string]classe{
 	"POST /api/v1/auth/2fa/recovery-codes":                    semRecurso,
 	"GET /api/v1/auth/tokens":                                 semRecurso,
 	"POST /api/v1/auth/tokens":                                semRecurso,
+	"POST /api/v1/auth/tokens/{id}/rotate":                    semRecurso,
 	"PATCH /api/v1/auth/tokens/{id}":                          semRecurso,
 	"DELETE /api/v1/auth/tokens/{id}":                         semRecurso,
 	"GET /api/v1/channel-types":                               semRecurso,

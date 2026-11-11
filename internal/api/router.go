@@ -368,6 +368,7 @@ func (a *API) routes() http.Handler {
 			// para si mesmo uma credencial sem as suas restrições.
 			t.handle(http.MethodGet, "/auth/tokens", policyAccount, a.handleListTokens)
 			t.handle(http.MethodPost, "/auth/tokens", policyAccount, a.handleCreateToken)
+			t.handle(http.MethodPost, "/auth/tokens/{id}/rotate", policyAccount, a.handleRotateToken)
 			t.handle(http.MethodPatch, "/auth/tokens/{id}", policyAccount, a.handleUpdateTokenExpiry)
 			t.handle(http.MethodDelete, "/auth/tokens/{id}", policyAccount, a.handleRevokeToken)
 

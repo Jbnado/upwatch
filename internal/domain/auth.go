@@ -197,12 +197,20 @@ type APIToken struct {
 	CreatedAt  time.Time  `json:"created_at"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+
+	// RotatedAt marca que o token foi rotacionado: segue válido na janela de
+	// sobreposição, mas há um sucessor emitido no lugar dele. Nulo é um
+	// token que nunca foi rotacionado.
+	RotatedAt *time.Time `json:"rotated_at,omitempty"`
 }
 
 // Expired informa se o token já venceu. Sem validade, nunca vence.
 func (t APIToken) Expired(now time.Time) bool {
 	return t.ExpiresAt != nil && now.After(*t.ExpiresAt)
 }
+
+// Rotated informa se o token já foi rotacionado.
+func (t APIToken) Rotated() bool { return t.RotatedAt != nil }
 
 // MarshalJSON serializa o token sem o hash.
 func (t APIToken) MarshalJSON() ([]byte, error) {
@@ -214,10 +222,12 @@ func (t APIToken) MarshalJSON() ([]byte, error) {
 		CreatedAt  time.Time  `json:"created_at"`
 		LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 		ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+		RotatedAt  *time.Time `json:"rotated_at,omitempty"`
 	}
 	return json.Marshal(alias{
 		ID: t.ID, UserID: t.UserID, Name: t.Name, Prefix: t.Prefix,
 		CreatedAt: t.CreatedAt, LastUsedAt: t.LastUsedAt, ExpiresAt: t.ExpiresAt,
+		RotatedAt: t.RotatedAt,
 	})
 }
 

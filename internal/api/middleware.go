@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Jbnado/upwatch/internal/audit"
 	"github.com/Jbnado/upwatch/internal/auth"
 	"github.com/Jbnado/upwatch/internal/domain"
 )
@@ -88,6 +89,12 @@ func (a *API) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, err := a.resolveUser(r)
 		if err != nil {
+			// Reuso de token rotacionado é sinal de vazamento: deixa rastro
+			// antes de negar, com a conta e o nome do token (nunca o segredo).
+			var reuse *auth.TokenReuseError
+			if errors.As(err, &reuse) {
+				a.auditAs(r, reuse.Username, audit.AçãoTokenReuso, reuse.TokenName)
+			}
 			writeError(w, http.StatusUnauthorized, codeUnauthorized, "autenticação necessária")
 			return
 		}

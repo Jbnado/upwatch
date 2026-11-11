@@ -26,8 +26,12 @@ const (
 	AçãoParBloqueado      = "login.par_bloqueado"
 	AçãoOrigemBloqueada   = "login.origem_bloqueada"
 
-	AçãoTokenCriado   = "token.criado"
-	AçãoTokenRevogado = "token.revogado"
+	AçãoTokenCriado      = "token.criado"
+	AçãoTokenRevogado    = "token.revogado"
+	AçãoTokenRotacionado = "token.rotacionado"
+	// AçãoTokenReuso registra que um token rotacionado foi usado depois de o
+	// sucessor já estar em uso: sinal de vazamento do segredo antigo.
+	AçãoTokenReuso = "token.reuso"
 	// AçãoTokenValidadeEsticada registra quem afastou o vencimento de um
 	// token, e quando. Encurtar ou adicionar prazo não gera linha — é
 	// sempre mais restritivo; esticar amplia o alcance de uma credencial

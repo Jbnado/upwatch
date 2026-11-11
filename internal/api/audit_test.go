@@ -265,6 +265,44 @@ func TestAuditLogsTokenRevoked(t *testing.T) {
 	exigeCampos(t, linha, "admin", id, "127.0.0.1")
 }
 
+// Rotacionar um token é operação sensível: emite outra credencial de longa
+// duração, e quem rotacionou precisa ficar registrado.
+func TestAuditLogsTokenRotated(t *testing.T) {
+	s, reg := servidorComLog(t, nil)
+	s.setup(t)
+
+	id := strconv.FormatInt(int64(decode[map[string]any](t,
+		s.do(t, http.MethodPost, "/api/v1/auth/tokens", map[string]any{"name": "ci"}))["id"].(float64)), 10)
+	assertStatus(t, s.do(t, http.MethodPost, "/api/v1/auth/tokens/"+id+"/rotate", map[string]any{}),
+		http.StatusCreated)
+
+	linha := reg.comAção(t, "token.rotacionado")
+	exigeCampos(t, linha, "admin", id, "127.0.0.1")
+}
+
+// Usar o token antigo depois de o cliente migrar para o novo é sinal de
+// vazamento: negado e com linha na auditoria apontando a conta e o token.
+func TestAuditLogsTokenReuseAfterRotation(t *testing.T) {
+	s, reg := servidorComLog(t, nil)
+	s.setup(t)
+
+	created := decode[map[string]any](t,
+		s.do(t, http.MethodPost, "/api/v1/auth/tokens", map[string]any{"name": "ci"}))
+	oldSecret := created["token"].(string)
+	id := itoa(int64(created["id"].(float64)))
+	novoSecret := decode[map[string]any](t,
+		s.do(t, http.MethodPost, "/api/v1/auth/tokens/"+id+"/rotate", map[string]any{}))["token"].(string)
+
+	// O cliente migra: usa o segredo novo.
+	assertStatus(t, s.withToken(t, novoSecret, http.MethodGet, "/api/v1/monitors", nil), http.StatusOK)
+	// Usar o antigo agora é reuso: negado e auditado.
+	assertStatus(t, s.withToken(t, oldSecret, http.MethodGet, "/api/v1/monitors", nil),
+		http.StatusUnauthorized)
+
+	linha := reg.comAção(t, "token.reuso")
+	exigeCampos(t, linha, "admin", "ci", "127.0.0.1")
+}
+
 // Esticar a validade amplia o alcance de uma credencial que já existe, e
 // deixa rastro; encurtar é sempre mais restritivo e não gera linha.
 func TestAuditLogsTokenExpiryStretched(t *testing.T) {

@@ -55,7 +55,27 @@ var (
 	// ErrSetupComplete indica que o assistente de primeiro acesso já foi
 	// usado.
 	ErrSetupComplete = errors.New("auth: a instalação já possui uma conta")
+
+	// ErrTokenAlreadyRotated recusa rotacionar um token que já foi
+	// rotacionado: o substituto é o que se rotaciona a seguir, não o antigo
+	// de novo. Sem a guarda, um token teria vários sucessores e a detecção
+	// de reuso não saberia qual olhar.
+	ErrTokenAlreadyRotated = errors.New("auth: o token já foi rotacionado")
 )
+
+// TokenReuseError sinaliza que um token rotacionado foi usado depois de o
+// sucessor já estar em uso — o cliente migrou para o segredo novo, e usar o
+// antigo denuncia vazamento. Desembrulha para ErrUnauthenticated, de modo
+// que quem só distingue "autenticado ou não" segue negando; quem quer o
+// rastro da auditoria lê o nome da conta e do token (nunca o segredo).
+type TokenReuseError struct {
+	Username  string
+	TokenName string
+}
+
+func (e *TokenReuseError) Error() string { return "auth: token reusado após rotação" }
+
+func (e *TokenReuseError) Unwrap() error { return ErrUnauthenticated }
 
 // Options configura o serviço. Campos zerados assumem o padrão.
 type Options struct {
@@ -408,6 +428,53 @@ func (s *Service) UpdateTokenExpiry(
 	return extended, nil
 }
 
+// RotateToken emite um substituto para um token da própria conta e devolve
+// o token novo e o segredo, mostrado só aqui. O antigo não é revogado:
+// segue válido na janela de sobreposição até o dono revogá-lo, para a
+// rotação não parar a automação entre emitir o novo e trocar o segredo.
+//
+// A checagem de dono é a de RevokeToken; o substituto herda o nome do
+// antigo e obedece à política de validade como uma emissão nova.
+func (s *Service) RotateToken(
+	ctx context.Context, userID, tokenID int64, expiresAt *time.Time,
+) (domain.APIToken, string, error) {
+	owned, err := s.store.Tokens().List(ctx, userID)
+	if err != nil {
+		return domain.APIToken{}, "", err
+	}
+	var old domain.APIToken
+	found := false
+	for _, t := range owned {
+		if t.ID == tokenID {
+			old, found = t, true
+			break
+		}
+	}
+	if !found {
+		return domain.APIToken{}, "", fmt.Errorf("token %d: %w", tokenID, store.ErrNotFound)
+	}
+	if old.Rotated() {
+		return domain.APIToken{}, "", ErrTokenAlreadyRotated
+	}
+
+	if err := s.tokenExpiry.CheckExpiry(expiresAt, s.clock.Now()); err != nil {
+		return domain.APIToken{}, "", err
+	}
+
+	secret, err := domain.NewToken()
+	if err != nil {
+		return domain.APIToken{}, "", err
+	}
+	novo := domain.APIToken{
+		UserID: userID, Name: old.Name,
+		Hash: secret.Hash, Prefix: secret.Prefix, ExpiresAt: expiresAt,
+	}
+	if err := s.store.Tokens().Rotate(ctx, tokenID, &novo); err != nil {
+		return domain.APIToken{}, "", err
+	}
+	return novo, secret.Secret, nil
+}
+
 // AuthenticateToken resolve um segredo de API na conta dona.
 func (s *Service) AuthenticateToken(ctx context.Context, secret string) (domain.User, error) {
 	if secret == "" {
@@ -425,6 +492,28 @@ func (s *Service) AuthenticateToken(ctx context.Context, secret string) (domain.
 	now := s.clock.Now()
 	if tok.Expired(now) {
 		return domain.User{}, ErrUnauthenticated
+	}
+
+	// Detecção de reuso: um token rotacionado cujo sucessor já foi usado
+	// significa que o cliente migrou para o segredo novo. Daí em diante,
+	// usar o antigo é sinal de vazamento — revoga o antigo (a credencial que
+	// vazou), nega e sinaliza para a auditoria. Antes de o sucessor ser
+	// usado é só a sobreposição da rotação: o antigo segue valendo.
+	if tok.Rotated() {
+		reused, err := s.store.Tokens().SuccessorUsed(ctx, tok.ID)
+		if err != nil {
+			return domain.User{}, err
+		}
+		if reused {
+			username := ""
+			if dono, e := s.store.Users().Get(ctx, tok.UserID); e == nil {
+				username = dono.Username
+			}
+			if e := s.store.Tokens().Delete(ctx, tok.ID); e != nil {
+				return domain.User{}, e
+			}
+			return domain.User{}, &TokenReuseError{Username: username, TokenName: tok.Name}
+		}
 	}
 
 	u, err := s.store.Users().Get(ctx, tok.UserID)

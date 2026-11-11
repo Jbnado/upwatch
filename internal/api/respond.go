@@ -103,6 +103,10 @@ func writeStoreError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, codeConflict, "já existe um registro com esses dados")
 	case errors.Is(err, auth.ErrSetupComplete):
 		writeError(w, http.StatusConflict, codeConflict, "a instalação já possui uma conta")
+	case errors.Is(err, auth.ErrTokenAlreadyRotated):
+		// Conflito, não validação: o pedido está bem formado, mas o token já
+		// foi rotacionado — rotaciona-se o substituto a seguir.
+		writeError(w, http.StatusConflict, codeConflict, "o token já foi rotacionado")
 	case errors.Is(err, auth.ErrInvalidCredentials), errors.Is(err, auth.ErrUnauthenticated):
 		// Sem detalhar: distinguir os casos ajudaria quem está tentando
 		// descobrir contas válidas.

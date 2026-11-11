@@ -298,6 +298,8 @@ export type APIToken = {
   created_at: string;
   last_used_at?: string;
   expires_at?: string;
+  /** rotated_at marca que o token foi rotacionado e tem um sucessor. */
+  rotated_at?: string;
 };
 
 /** CreatedToken traz o segredo, que só aparece nesta resposta. */

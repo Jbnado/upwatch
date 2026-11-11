@@ -420,7 +420,7 @@ func (r *sessionRepo) DeleteOthers(ctx context.Context, userID int64, keep strin
 
 type tokenRepo struct{ db *db }
 
-const tokenColumns = `id, user_id, name, token_hash, prefix, created_at, last_used_at, expires_at`
+const tokenColumns = `id, user_id, name, token_hash, prefix, created_at, last_used_at, expires_at, rotated_at`
 
 func (r *tokenRepo) Create(ctx context.Context, t *domain.APIToken) error {
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -497,6 +497,51 @@ func (r *tokenRepo) DeleteOthers(ctx context.Context, userID int64, keep string)
 	return nil
 }
 
+// Rotate marca o antigo como rotacionado e insere o substituto na mesma
+// transação: ou os dois existem na sobreposição, ou nada muda. O antigo não
+// é revogado — segue válido até o dono revogá-lo.
+func (r *tokenRepo) Rotate(ctx context.Context, oldID int64, replacement *domain.APIToken) error {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	return r.db.inTx(ctx, func(t *tx) error {
+		res, err := t.ExecContext(ctx,
+			`UPDATE api_token SET rotated_at = ? WHERE id = ?`, toMillis(now), oldID)
+		if err != nil {
+			return fmt.Errorf("sqlstore: marcando o token %d como rotacionado: %w", oldID, err)
+		}
+		if err := requireAffected(res, fmt.Sprintf("token %d", oldID)); err != nil {
+			return err
+		}
+
+		replacement.CreatedAt = now
+		id, err := t.insertID(ctx, `
+			INSERT INTO api_token (user_id, name, token_hash, prefix, created_at, expires_at, predecessor_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			replacement.UserID, replacement.Name, replacement.Hash, replacement.Prefix,
+			toMillis(now), millisPtr(replacement.ExpiresAt), oldID)
+		if err != nil {
+			return translateAuthErr(err, "token")
+		}
+		replacement.ID = id
+		return nil
+	})
+}
+
+// SuccessorUsed lê o last_used_at do substituto (predecessor_id = tokenID).
+// Sem substituto, sql.ErrNoRows, que é "não há reuso a detectar".
+func (r *tokenRepo) SuccessorUsed(ctx context.Context, tokenID int64) (bool, error) {
+	var lastUsed sql.NullInt64
+	err := r.db.QueryRowContext(ctx,
+		`SELECT last_used_at FROM api_token WHERE predecessor_id = ?`, tokenID).Scan(&lastUsed)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("sqlstore: consultando o sucessor do token %d: %w", tokenID, err)
+	}
+	return lastUsed.Valid, nil
+}
+
 // SetExpiry grava só a coluna de expiração. Sem tocar em created_at nem em
 // last_used_at: editar a validade não pode reescrever quando o token nasceu
 // ou foi usado por último.
@@ -523,9 +568,10 @@ func scanToken(sc scanner) (domain.APIToken, error) {
 		createdMS  int64
 		lastUsedMS sql.NullInt64
 		expiresMS  sql.NullInt64
+		rotatedMS  sql.NullInt64
 	)
 	err := sc.Scan(&t.ID, &t.UserID, &t.Name, &t.Hash, &t.Prefix,
-		&createdMS, &lastUsedMS, &expiresMS)
+		&createdMS, &lastUsedMS, &expiresMS, &rotatedMS)
 	if err != nil {
 		return domain.APIToken{}, err
 	}
@@ -538,6 +584,10 @@ func scanToken(sc scanner) (domain.APIToken, error) {
 	if expiresMS.Valid {
 		at := fromMillis(expiresMS.Int64)
 		t.ExpiresAt = &at
+	}
+	if rotatedMS.Valid {
+		at := fromMillis(rotatedMS.Int64)
+		t.RotatedAt = &at
 	}
 	return t, nil
 }
