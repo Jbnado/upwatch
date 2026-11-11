@@ -131,6 +131,9 @@ func teamsCard(n Notification, frase string) map[string]any {
 	if n.Group != "" {
 		titulo = n.Group + " · " + n.Monitor.Name
 	}
+	if n.Account != nil {
+		titulo = accountTitle(*n.Account)
+	}
 
 	corpo := []any{
 		map[string]any{
@@ -149,27 +152,23 @@ func teamsCard(n Notification, frase string) map[string]any {
 		map[string]any{"type": "TextBlock", "text": frase, "wrap": true},
 	}
 
-	fatos := []any{}
-	if n.Message != "" {
-		fatos = append(fatos, map[string]any{"title": "Causa", "value": n.Message})
-	}
-	if n.Event.Duration > 0 {
-		fatos = append(fatos, map[string]any{"title": "Duração", "value": humanDuration(n.Event.Duration)})
-	}
-	if n.Monitor.Target != "" {
-		fatos = append(fatos, map[string]any{"title": "Alvo", "value": n.Monitor.Target})
-	}
+	fatos := teamsFatos(n)
 	if len(fatos) > 0 {
 		corpo = append(corpo, map[string]any{"type": "FactSet", "facts": fatos})
 	}
 
-	// DATE e TIME fazem o Teams mostrar o horário no fuso de quem lê: o
-	// plantão pode estar em outro fuso que o servidor.
-	at := n.Event.At.UTC().Format(time.RFC3339)
-	corpo = append(corpo, map[string]any{
-		"type": "TextBlock", "text": "{{DATE(" + at + ", SHORT)}} {{TIME(" + at + ")}}",
-		"isSubtle": true, "size": "Small", "wrap": true,
-	})
+	// O horário da mudança e o botão para a página do monitor só fazem
+	// sentido no aviso de monitor: o de conta não tem instante de transição
+	// (a data de vencimento já está nos fatos) nem página de monitor.
+	if n.Account == nil {
+		// DATE e TIME fazem o Teams mostrar o horário no fuso de quem lê: o
+		// plantão pode estar em outro fuso que o servidor.
+		at := n.Event.At.UTC().Format(time.RFC3339)
+		corpo = append(corpo, map[string]any{
+			"type": "TextBlock", "text": "{{DATE(" + at + ", SHORT)}} {{TIME(" + at + ")}}",
+			"isSubtle": true, "size": "Small", "wrap": true,
+		})
+	}
 
 	card := map[string]any{
 		"$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
@@ -179,9 +178,11 @@ func teamsCard(n Notification, frase string) map[string]any {
 		// Sem isto o Teams estreita o cartão a uma coluna no computador.
 		"msteams": map[string]any{"width": "Full"},
 	}
-	if link := linkMonitor(n.Monitor.ID); link != "" {
-		card["actions"] = []any{
-			map[string]any{"type": "Action.OpenUrl", "title": "Abrir no UpWatch", "url": link},
+	if n.Account == nil {
+		if link := linkMonitor(n.Monitor.ID); link != "" {
+			card["actions"] = []any{
+				map[string]any{"type": "Action.OpenUrl", "title": "Abrir no UpWatch", "url": link},
+			}
 		}
 	}
 
@@ -194,6 +195,36 @@ func teamsCard(n Notification, frase string) map[string]any {
 			},
 		},
 	}
+}
+
+// teamsFatos monta a lista de fatos do cartão: do monitor (causa, duração,
+// alvo) ou da conta (token, dono, vencimento), conforme o aviso.
+func teamsFatos(n Notification) []any {
+	fatos := []any{}
+	if n.Account != nil {
+		a := *n.Account
+		fatos = append(fatos, map[string]any{"title": "Token", "value": a.TokenName})
+		if a.TokenPrefix != "" {
+			fatos = append(fatos, map[string]any{"title": "Prefixo", "value": a.TokenPrefix + "…"})
+		}
+		if a.Username != "" {
+			fatos = append(fatos, map[string]any{"title": "Dono", "value": a.Username})
+		}
+		if a.Event != domain.EventAccountTokenRevoked {
+			fatos = append(fatos, map[string]any{"title": "Vence em", "value": a.ExpiresAt.Format("02/01/2006")})
+		}
+		return fatos
+	}
+	if n.Message != "" {
+		fatos = append(fatos, map[string]any{"title": "Causa", "value": n.Message})
+	}
+	if n.Event.Duration > 0 {
+		fatos = append(fatos, map[string]any{"title": "Duração", "value": humanDuration(n.Event.Duration)})
+	}
+	if n.Monitor.Target != "" {
+		fatos = append(fatos, map[string]any{"title": "Alvo", "value": n.Monitor.Target})
+	}
+	return fatos
 }
 
 // teamsEscaper escapa o Markdown que o Teams lê no TextBlock e no
@@ -218,6 +249,7 @@ func teamsEscapeOutside(n Notification) Notification {
 	n.Monitor.Target = teamsEscaper.Replace(n.Monitor.Target)
 	n.Message = teamsEscaper.Replace(n.Message)
 	n.Group = teamsEscaper.Replace(n.Group)
+	n.Account = escapeAccount(n.Account, teamsEscaper.Replace)
 	return n
 }
 
@@ -228,6 +260,11 @@ func teamsEscapeOutside(n Notification) Notification {
 // ninguém resolveu.
 func teamsEstado(n Notification) (estilo, cor, rotulo string) {
 	switch {
+	case n.Account != nil:
+		if n.Account.Event == domain.EventAccountTokenRevoked {
+			return "attention", "Attention", "TOKEN REVOGADO"
+		}
+		return "warning", "Warning", "TOKEN VENCENDO"
 	case n.Reminder:
 		return "attention", "Attention", "AINDA FORA DO AR"
 	case n.Event.Kind == domain.ChangeDown:

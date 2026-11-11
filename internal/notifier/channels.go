@@ -67,6 +67,21 @@ func (w *webhook) Send(ctx context.Context, n Notification) error {
 		return post(ctx, w.cfg.URL, w.cfg.Headers, w.body.render(dados{n: n, texto: texto}))
 	}
 
+	// O aviso de conta não tem monitor: um envelope próprio, com os campos
+	// do token, em vez dos campos de monitor zerados que confundiriam quem
+	// integra. event distingue account.token_expiring de uma transição.
+	if n.IsAccount() {
+		return post(ctx, w.cfg.URL, w.cfg.Headers, map[string]any{
+			"text":         texto,
+			"event":        n.Kind(),
+			"username":     n.Account.Username,
+			"token_name":   n.Account.TokenName,
+			"token_prefix": n.Account.TokenPrefix,
+			"expires_at":   n.Account.ExpiresAt,
+			"days_left":    n.Account.DaysLeft,
+		})
+	}
+
 	return post(ctx, w.cfg.URL, w.cfg.Headers, map[string]any{
 		"text":             texto,
 		"monitor":          n.Monitor.Name,
@@ -226,6 +241,7 @@ func discordEscapeOutside(n Notification) Notification {
 	n.Monitor.Target = discordEscape(n.Monitor.Target)
 	n.Message = discordEscape(n.Message)
 	n.Group = discordEscape(n.Group)
+	n.Account = escapeAccount(n.Account, discordEscape)
 	return n
 }
 
@@ -285,5 +301,21 @@ func slackEscapeOutside(n Notification) Notification {
 	n.Monitor.Target = slackEscaper.Replace(n.Monitor.Target)
 	n.Message = slackEscaper.Replace(n.Message)
 	n.Group = slackEscaper.Replace(n.Group)
+	n.Account = escapeAccount(n.Account, slackEscaper.Replace)
 	return n
+}
+
+// escapeAccount devolve uma cópia de a com os campos vindos de fora — nome
+// do token e do dono — escapados pela função do canal. Cópia, e não mutação:
+// o despachante entrega a mesma Notification a vários canais, e um ponteiro
+// compartilhado escapado por um corromperia o texto dos outros. Nil passa
+// adiante (aviso que não é de conta).
+func escapeAccount(a *AccountNotice, escape func(string) string) *AccountNotice {
+	if a == nil {
+		return nil
+	}
+	c := *a
+	c.TokenName = escape(c.TokenName)
+	c.Username = escape(c.Username)
+	return &c
 }

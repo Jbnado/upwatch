@@ -45,7 +45,36 @@ type Notification struct {
 	// Reminder marca o lembrete de uma queda que segue aberta: o estado não
 	// mudou, e Event.Duration é há quanto tempo ela dura.
 	Reminder bool
+
+	// Account, quando não nulo, faz deste um aviso sobre a conta — um token
+	// de API vencendo ou revogado —, e não sobre um monitor: Monitor e Event
+	// ficam zerados, e o texto e os títulos saem de Account (ver Render,
+	// IsAccount). Existe aqui, na mesma Notification, para o aviso de conta
+	// reusar a fila de entrega em vez de abrir uma segunda.
+	Account *AccountNotice
 }
+
+// AccountNotice descreve um aviso sobre a conta: um token de API vencendo
+// ou revogado. Não tem monitor nem mudança de estado — por isso vive à
+// parte de Monitor/Event.
+type AccountNotice struct {
+	// Event é o tipo assinável do aviso (account.token_expiring, ...), o
+	// mesmo que o canal filtra.
+	Event domain.EventType
+	// Username é o dono do token, para o aviso dizer de quem ele é.
+	Username string
+	// TokenName e TokenPrefix identificam o token sem revelar o segredo.
+	TokenName   string
+	TokenPrefix string
+	// ExpiresAt é quando o token vence; DaysLeft é quantos dias faltam
+	// (arredondado para cima), para a frase não obrigar ninguém a subtrair
+	// datas.
+	ExpiresAt time.Time
+	DaysLeft  int
+}
+
+// IsAccount diz se o aviso é sobre a conta (token), e não sobre um monitor.
+func (n Notification) IsAccount() bool { return n.Account != nil }
 
 // Tipos de aviso, como saem no corpo do webhook.
 const (
@@ -53,18 +82,29 @@ const (
 	KindReminder   = "reminder"
 )
 
-// Status é o estado que passou a valer, em texto.
-func (n Notification) Status() string { return n.Event.To.String() }
-
-// Kind diz se o aviso conta uma mudança de estado ou relembra uma queda
-// aberta. Quem integra precisa distinguir: o lembrete repete o mesmo
-// monitor_id e o mesmo "down", e tratá-lo como queda nova abriria um
-// segundo chamado para o mesmo problema.
-func (n Notification) Kind() string {
-	if n.Reminder {
-		return KindReminder
+// Status é o estado que passou a valer, em texto. Vazio no aviso de conta,
+// que não é sobre um monitor.
+func (n Notification) Status() string {
+	if n.Account != nil {
+		return ""
 	}
-	return KindTransition
+	return n.Event.To.String()
+}
+
+// Kind diz o que o aviso conta: a mudança de estado, o lembrete de uma queda
+// aberta, ou — no aviso de conta — o próprio tipo de evento
+// (account.token_expiring, ...). Quem integra precisa distinguir: o lembrete
+// repete o mesmo monitor_id e o mesmo "down", e tratá-lo como queda nova
+// abriria um segundo chamado para o mesmo problema.
+func (n Notification) Kind() string {
+	switch {
+	case n.Account != nil:
+		return string(n.Account.Event)
+	case n.Reminder:
+		return KindReminder
+	default:
+		return KindTransition
+	}
 }
 
 // Notifier entrega uma notificação por um canal.
@@ -169,6 +209,10 @@ func Types() []string {
 // Escrita para ser lida no celular às três da manhã: o que caiu, o que
 // aconteceu e há quanto tempo — nessa ordem, sem preâmbulo.
 func Render(n Notification) string {
+	if n.Account != nil {
+		return renderAccount(*n.Account)
+	}
+
 	nome := n.Monitor.Name
 	// O grupo vem entre parênteses depois do nome, e não antes: o começo
 	// da frase continua sendo o monitor, que é o que a notificação do
