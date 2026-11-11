@@ -47,6 +47,9 @@ func authCases() []conformanceCase {
 		{"TokenTouchLastUsed", testTokenTouchLastUsed},
 		{"TokenRoundTripsExpiry", testTokenRoundTripsExpiry},
 		{"TokenSetExpiry", testTokenSetExpiry},
+		{"TokenListExpiring", testTokenListExpiring},
+		{"TokenMarkExpiryWarned", testTokenMarkExpiryWarned},
+		{"TokenSetExpiryClearsWarning", testTokenSetExpiryClearsWarning},
 		{"TokenRotateKeepsBothValid", testTokenRotateKeepsBothValid},
 		{"TokenSuccessorUsed", testTokenSuccessorUsed},
 		{"TokenCascadesOnUserDelete", testTokenCascadesOnUserDelete},
@@ -813,6 +816,166 @@ func testTokenSetExpiry(t *testing.T, newStore Factory) {
 	if err := s.Tokens().SetExpiry(ctx, 9999, &prazo); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("SetExpiry em token inexistente = %v, want ErrNotFound", err)
 	}
+}
+
+// ListExpiring devolve os tokens ativos cuja expiração se aproxima, com o
+// dono e o marco já avisado, e deixa de fora os revogados e os sem prazo. É
+// a leitura do verificador de avisos de expiração.
+func testTokenListExpiring(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	dono := mustCreateUser(t, s, "dona")
+
+	// Vence dentro da janela: é o único que deve voltar.
+	venceLogo, _ := mustCreateToken(t, s, dono.ID, "deploy")
+	prazoLogo := epoch.Add(5 * 24 * time.Hour)
+	if err := s.Tokens().SetExpiry(ctx, venceLogo.ID, &prazoLogo); err != nil {
+		t.Fatal(err)
+	}
+	// Vence muito depois da janela.
+	venceTarde, _ := mustCreateToken(t, s, dono.ID, "longe")
+	prazoTarde := epoch.Add(90 * 24 * time.Hour)
+	if err := s.Tokens().SetExpiry(ctx, venceTarde.ID, &prazoTarde); err != nil {
+		t.Fatal(err)
+	}
+	// Sem prazo: nunca vence, nunca entra.
+	mustCreateToken(t, s, dono.ID, "eterno")
+	// Revogado, ainda que venha a vencer: a credencial já está morta.
+	revogado, _ := mustCreateToken(t, s, dono.ID, "revogado")
+	if err := s.Tokens().SetExpiry(ctx, revogado.ID, &prazoLogo); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Tokens().Revoke(ctx, revogado.ID, domain.TokenRevokeManual, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	janela := epoch.Add(30 * 24 * time.Hour)
+	got, err := s.Tokens().ListExpiring(ctx, janela)
+	if err != nil {
+		t.Fatalf("ListExpiring returned unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("ListExpiring devolveu %d tokens, want 1 (ativo, com prazo, dentro da janela)", len(got))
+	}
+	et := got[0]
+	if et.TokenID != venceLogo.ID {
+		t.Errorf("ListExpiring devolveu o token %d, want %d", et.TokenID, venceLogo.ID)
+	}
+	if et.UserID != dono.ID {
+		t.Errorf("UserID = %d, want %d", et.UserID, dono.ID)
+	}
+	if et.Name != venceLogo.Name || et.Prefix != venceLogo.Prefix {
+		t.Errorf("identificação = %q/%q, want %q/%q", et.Name, et.Prefix, venceLogo.Name, venceLogo.Prefix)
+	}
+	if et.Username != dono.Username {
+		t.Errorf("Username = %q, want %q", et.Username, dono.Username)
+	}
+	if !et.ExpiresAt.Equal(prazoLogo) {
+		t.Errorf("ExpiresAt = %v, want %v", et.ExpiresAt, prazoLogo)
+	}
+	if et.WarnedDays != nil {
+		t.Errorf("WarnedDays = %v num token nunca avisado, want nil", et.WarnedDays)
+	}
+}
+
+// MarkExpiryWarned grava o marco mais fino já avisado e só avança rumo ao
+// vencimento: avisar em 7 depois de 30 grava 7, mas "avisar em 30" de novo,
+// ou voltar a um marco mais distante, não grava. Devolve se gravou, para
+// dois ticks não repetirem o mesmo aviso.
+func testTokenMarkExpiryWarned(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	dono := mustCreateUser(t, s, "dona")
+	tok, _ := mustCreateToken(t, s, dono.ID, "deploy")
+	prazo := epoch.Add(5 * 24 * time.Hour)
+	if err := s.Tokens().SetExpiry(ctx, tok.ID, &prazo); err != nil {
+		t.Fatal(err)
+	}
+
+	warned := func() *int {
+		t.Helper()
+		got, err := s.Tokens().ListExpiring(ctx, epoch.Add(30*24*time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, et := range got {
+			if et.TokenID == tok.ID {
+				return et.WarnedDays
+			}
+		}
+		t.Fatalf("token %d sumiu da listagem de expiração", tok.ID)
+		return nil
+	}
+
+	// Primeiro aviso, no marco de 30, grava.
+	if ok, err := s.Tokens().MarkExpiryWarned(ctx, tok.ID, 30); err != nil || !ok {
+		t.Fatalf("MarkExpiryWarned(30) = %v, %v; want true, nil", ok, err)
+	}
+	if w := warned(); w == nil || *w != 30 {
+		t.Fatalf("marco gravado = %v, want 30", w)
+	}
+
+	// Marcar 30 de novo não grava: já avisado nesse marco.
+	if ok, err := s.Tokens().MarkExpiryWarned(ctx, tok.ID, 30); err != nil || ok {
+		t.Fatalf("MarkExpiryWarned(30) repetido = %v, %v; want false, nil", ok, err)
+	}
+
+	// Avançar para 7 (mais perto do vencimento) grava.
+	if ok, err := s.Tokens().MarkExpiryWarned(ctx, tok.ID, 7); err != nil || !ok {
+		t.Fatalf("MarkExpiryWarned(7) = %v, %v; want true, nil", ok, err)
+	}
+	if w := warned(); w == nil || *w != 7 {
+		t.Fatalf("marco gravado = %v, want 7", w)
+	}
+
+	// Voltar a um marco mais distante (30) não grava nem regride.
+	if ok, err := s.Tokens().MarkExpiryWarned(ctx, tok.ID, 30); err != nil || ok {
+		t.Fatalf("MarkExpiryWarned(30) após 7 = %v, %v; want false, nil", ok, err)
+	}
+	if w := warned(); w == nil || *w != 7 {
+		t.Fatalf("marco após tentar regredir = %v, want 7", w)
+	}
+
+	// Token inexistente não grava e não é erro: nada a avisar.
+	if ok, err := s.Tokens().MarkExpiryWarned(ctx, 9999, 7); err != nil || ok {
+		t.Errorf("MarkExpiryWarned em token inexistente = %v, %v; want false, nil", ok, err)
+	}
+}
+
+// Editar a validade rearma os avisos: esticar o prazo deve fazer os marcos
+// (30 e 7) valerem de novo, então SetExpiry limpa o marco já avisado.
+func testTokenSetExpiryClearsWarning(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	dono := mustCreateUser(t, s, "dona")
+	tok, _ := mustCreateToken(t, s, dono.ID, "deploy")
+	prazo := epoch.Add(5 * 24 * time.Hour)
+	if err := s.Tokens().SetExpiry(ctx, tok.ID, &prazo); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.Tokens().MarkExpiryWarned(ctx, tok.ID, 7); err != nil || !ok {
+		t.Fatalf("MarkExpiryWarned(7) = %v, %v; want true, nil", ok, err)
+	}
+
+	// Estica o prazo: os avisos recomeçam, então o marco é limpo.
+	novo := epoch.Add(120 * 24 * time.Hour)
+	if err := s.Tokens().SetExpiry(ctx, tok.ID, &novo); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.Tokens().ListExpiring(ctx, epoch.Add(200*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, et := range got {
+		if et.TokenID == tok.ID {
+			if et.WarnedDays != nil {
+				t.Errorf("WarnedDays = %v após editar a validade, want nil (avisos rearmados)", et.WarnedDays)
+			}
+			return
+		}
+	}
+	t.Fatalf("token %d sumiu da listagem após editar a validade", tok.ID)
 }
 
 func testTokenRoundTripsExpiry(t *testing.T, newStore Factory) {

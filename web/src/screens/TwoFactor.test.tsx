@@ -124,6 +124,13 @@ describe("TwoFactor, senha antes do cadastro", () => {
     expect(api.totpSetup).not.toHaveBeenCalled();
   });
 
+  it("avisa que ligar revoga os tokens de API antes de começar", async () => {
+    vi.mocked(api.totpStatus).mockResolvedValue(desligada);
+    render(<TwoFactor />);
+
+    expect(await screen.findByText(/[Ll]igar.*revoga os tokens de API/)).toBeInTheDocument();
+  });
+
   it("mostra a senha recusada sem mostrar segredo nenhum", async () => {
     vi.mocked(api.totpStatus).mockResolvedValue(desligada);
     vi.mocked(api.totpSetup).mockRejectedValue(new ApiError(401, "unauthorized", "credenciais inválidas"));

@@ -116,7 +116,14 @@ export function resumoSilenciado(events?: ChannelEvent[]): string | null {
   const faltam: string[] = [];
   if (!events.includes("monitor.degraded")) faltam.push("degradações");
   if (!events.includes("monitor.up")) faltam.push("voltas");
-  return faltam.length > 0 ? `silencia ${faltam.join(" e ")}` : null;
+  if (!events.includes("account.token_expiring")) faltam.push("avisos de token");
+  return faltam.length > 0 ? `silencia ${juntarE(faltam)}` : null;
+}
+
+/** juntarE lê uma lista como se fala: "a", "a e b", "a, b e c". */
+function juntarE(itens: string[]): string {
+  if (itens.length <= 1) return itens.join("");
+  return itens.slice(0, -1).join(", ") + " e " + itens[itens.length - 1];
 }
 
 export function Channels() {
@@ -330,6 +337,12 @@ export function ChannelForm({
   const [avisaVolta, setAvisaVolta] = useState(
     eventosIniciais.length === 0 || eventosIniciais.includes("monitor.up"),
   );
+  // Família de conta: avisos de token. Como as de monitor, vem marcada num
+  // canal novo ou sem filtro (vazio recebe tudo), e espelha o conjunto
+  // guardado num canal que já filtra.
+  const [avisaTokenVencendo, setAvisaTokenVencendo] = useState(
+    eventosIniciais.length === 0 || eventosIniciais.includes("account.token_expiring"),
+  );
   const [mexeuEventos, setMexeuEventos] = useState(false);
 
   const [enviando, setEnviando] = useState(false);
@@ -342,11 +355,16 @@ export function ChannelForm({
     const e: ChannelEvent[] = ["monitor.down"];
     if (avisaDegradado) e.push("monitor.degraded");
     if (avisaVolta) e.push("monitor.up");
+    if (avisaTokenVencendo) e.push("account.token_expiring");
     return e;
   }
 
   const silenciados = filtrarEventos
-    ? ([!avisaDegradado && "degradações", !avisaVolta && "voltas ao ar"].filter(Boolean) as string[])
+    ? ([
+        !avisaDegradado && "degradações",
+        !avisaVolta && "voltas ao ar",
+        !avisaTokenVencendo && "avisos de token",
+      ].filter(Boolean) as string[])
     : [];
 
   async function salvar(e: FormEvent) {
@@ -510,11 +528,12 @@ export function ChannelForm({
 
         {!filtrarEventos ? (
           <p className="text-small text-ink-3">
-            Recebe toda mudança de estado: queda, degradação e volta ao ar. Marque acima para
+            Recebe tudo: queda, degradação, volta ao ar e avisos de token de API. Marque acima para
             escolher só alguns.
           </p>
         ) : (
           <div className="flex flex-col gap-1.5">
+            <span className="eyebrow text-ink-3">monitor</span>
             {/* A queda não é uma caixa: não há como desmarcá-la. Um canal
                 que filtrasse escondendo a queda calaria o alerta justamente
                 quando ele mais importa. */}
@@ -541,18 +560,35 @@ export function ChannelForm({
               <span>Voltas ao ar</span>
             </Checkbox>
 
+            {/* Família de conta: a #128 a acrescentou. Sem evento
+                obrigatório — avisar sobre token não tem a urgência da queda —,
+                então é uma caixa como as outras. */}
+            <span className="eyebrow mt-1.5 text-ink-3">conta</span>
+            <Checkbox
+              checked={avisaTokenVencendo}
+              onChange={() => {
+                setMexeuEventos(true);
+                setAvisaTokenVencendo((v) => !v);
+              }}
+            >
+              <span>Token vencendo</span>
+            </Checkbox>
+
             {/* Dizer o que fica de fora, e não só o que entra: um canal que
-                parece configurado mas silencia a volta engana quem o lê. */}
+                parece configurado mas silencia algo engana quem o lê. */}
             {silenciados.length > 0 ? (
               <p
                 role="note"
                 className="rounded-sm border-l-2 border-degraded px-3 py-2 text-small text-ink-2"
               >
-                Silenciado: {silenciados.join(" e ")}. Este canal não vai avisar quando o alvo{" "}
-                {silenciados.includes("voltas ao ar") ? "voltar" : "se recuperar"}.
+                Silenciado: {juntarE(silenciados)}.
+                {(!avisaDegradado || !avisaVolta) &&
+                  ` Este canal não vai avisar quando o alvo ${!avisaVolta ? "voltar" : "se recuperar"}.`}
               </p>
             ) : (
-              <p className="text-small text-ink-3">Avisa sobre queda, degradação e volta ao ar.</p>
+              <p className="text-small text-ink-3">
+                Avisa sobre queda, degradação, volta ao ar e token vencendo.
+              </p>
             )}
             <p className="text-small text-ink-3">
               A queda é sempre avisada — esconder a queda é pior que não avisar.

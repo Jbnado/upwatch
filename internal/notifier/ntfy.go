@@ -110,11 +110,22 @@ func loopback(host string) bool {
 
 func (n *ntfy) Send(ctx context.Context, note Notification) error {
 	prioridade, tags := ntfyUrgencia(note.Event.To)
+	titulo := note.Monitor.Name + ": " + statusLabel(note.Event.To)
 
 	alvo := ""
 	if note.Monitor.Target != "" {
 		alvo = "\n" + note.Monitor.Target
 	}
+
+	// O aviso de conta não tem monitor nem alvo: prioridade normal (não é
+	// uma queda que precise furar o silêncio) e um título que diz do que se
+	// trata. A frase inteira já vai no corpo.
+	if note.IsAccount() {
+		prioridade, tags = "3", "key"
+		titulo = accountTitle(*note.Account)
+		alvo = ""
+	}
+
 	// O corte cai na frase, e não no alvo: a causa é o que pode vir
 	// enorme — uma página de erro inteira —, e o alvo diz onde olhar.
 	texto := truncarUTF8(truncarUTF8(Render(note), ntfyLimite-len(alvo))+alvo, ntfyLimite)
@@ -123,7 +134,7 @@ func (n *ntfy) Send(ctx context.Context, note Notification) error {
 		// RFC 2047 porque nome de monitor tem acento, e byte fora do ASCII
 		// em cabeçalho HTTP não tem garantia de chegar inteiro. O ntfy
 		// decodifica.
-		"Title":    mime.QEncoding.Encode("utf-8", note.Monitor.Name+": "+statusLabel(note.Event.To)),
+		"Title":    mime.QEncoding.Encode("utf-8", titulo),
 		"Priority": prioridade,
 		"Tags":     tags,
 	}

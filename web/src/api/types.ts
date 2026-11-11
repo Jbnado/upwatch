@@ -324,11 +324,17 @@ export type TokenList = {
 export type ChannelType = "webhook" | "discord" | "slack" | "teams" | "email" | "ntfy";
 
 /**
- * Os eventos que um canal pode receber. Nomeados por família — hoje só a
- * de monitor — para o filtro crescer sem o tipo virar uma lista fechada
- * que sai de sincronia quando a #128 acrescentar a família de conta.
+ * Os eventos que um canal pode receber. Nomeados por família — a de
+ * monitor (queda, volta, degradação) e a de conta (token vencendo,
+ * revogado) — para o filtro crescer sem o tipo virar uma lista fechada que
+ * sai de sincronia a cada família nova.
  */
-export type ChannelEvent = "monitor.down" | "monitor.up" | "monitor.degraded";
+export type ChannelEvent =
+  | "monitor.down"
+  | "monitor.up"
+  | "monitor.degraded"
+  | "account.token_expiring"
+  | "account.token_revoked";
 
 /**
  * A configuração não vem na listagem: ela contém a URL do webhook, a

@@ -290,6 +290,25 @@ type TwoFactorRepo interface {
 	DeleteExpiredChallenges(ctx context.Context, before time.Time) (int64, error)
 }
 
+// ExpiringToken é o que o verificador de expiração precisa saber de um
+// token ativo cuja validade se aproxima: como identificá-lo e ao dono, e o
+// marco de aviso mais fino já enviado (WarnedDays nil = nenhum).
+//
+// Campos planos, e não um domain.APIToken: o verificador só precisa
+// identificar o token e datar o vencimento, e um APIToken parcial mentiria
+// sobre o que está preenchido. O nome do dono vem junto para o aviso dizer
+// de quem é o token, e o marco já avisado evita guardar bookkeeping de
+// aviso na credencial, onde ele não é assunto.
+type ExpiringToken struct {
+	TokenID    int64
+	UserID     int64
+	Name       string
+	Prefix     string
+	ExpiresAt  time.Time
+	Username   string
+	WarnedDays *int
+}
+
 // TokenRepo guarda as credenciais de acesso programático.
 //
 // Revogar retém o registro em vez de apagar a linha: um token revogado não
@@ -328,11 +347,26 @@ type TokenRepo interface {
 	TouchLastUsed(ctx context.Context, id int64, at time.Time) error
 
 	// SetExpiry grava só a expiração do token (nil = sem prazo), e nada
-	// mais. É o caminho de editar a validade de um token já emitido; a
-	// regra de o que é permitido (encurtar, esticar, remover) mora no
-	// domínio (TokenExpiryPolicy.CheckExpiryEdit). Devolve ErrNotFound se o
-	// token não existir.
+	// mais, além de rearmar os avisos de vencimento (ver MarkExpiryWarned):
+	// esticar o prazo faz os marcos valerem de novo. É o caminho de editar a
+	// validade de um token já emitido; a regra de o que é permitido
+	// (encurtar, esticar, remover) mora no domínio
+	// (TokenExpiryPolicy.CheckExpiryEdit). Devolve ErrNotFound se o token não
+	// existir.
 	SetExpiry(ctx context.Context, id int64, expiresAt *time.Time) error
+
+	// ListExpiring devolve os tokens ativos (não revogados) com expiração
+	// não nula até notAfter, com o nome do dono e o marco de aviso já
+	// enviado. É a leitura do verificador de expiração, que decide o marco
+	// (ver domain.DueTokenExpiryMilestone) e descarta os já vencidos.
+	ListExpiring(ctx context.Context, notAfter time.Time) ([]ExpiringToken, error)
+
+	// MarkExpiryWarned grava days como o marco de aviso mais fino já enviado
+	// do token, e só quando o atual é nulo ou maior que days — avisar num
+	// marco mais distante depois de um mais próximo não acontece. Devolve se
+	// gravou, como MarkReminded: a condição vai na própria escrita para dois
+	// ticks não enviarem o mesmo aviso.
+	MarkExpiryWarned(ctx context.Context, id int64, days int) (bool, error)
 
 	// Rotate emite um substituto para o token oldID numa transação: marca o
 	// antigo como rotacionado (rotated_at) sem revogá-lo — os dois valem na

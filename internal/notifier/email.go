@@ -22,6 +22,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Jbnado/upwatch/internal/domain"
 )
 
 // Modos de criptografia do SMTP.
@@ -358,6 +360,11 @@ const emailNomeMaximo = 100
 // reticências: cliente de e-mail corta assunto comprido no fim, e o fim é
 // o estado, a parte que importa.
 func emailSubject(n Notification) string {
+	if n.Account != nil {
+		// Sem nome de monitor nem estado: o rótulo do aviso de conta é o que
+		// a caixa de entrada agrupa e a pessoa reconhece.
+		return "[UpWatch] " + accountTitle(*n.Account)
+	}
 	nome := strings.Map(func(r rune) rune {
 		if r < 0x20 || r == 0x7f {
 			return ' '
@@ -378,6 +385,10 @@ type emailCampo struct{ Rotulo, Valor string }
 // Uma lista só para as duas partes: decidir em dois lugares o que entra
 // no texto e o que entra no HTML faria as duas divergirem.
 func emailCampos(n Notification) []emailCampo {
+	if n.Account != nil {
+		return emailCamposConta(*n.Account)
+	}
+
 	var campos []emailCampo
 	if n.Monitor.Target != "" {
 		campos = append(campos, emailCampo{"Alvo", n.Monitor.Target})
@@ -388,6 +399,22 @@ func emailCampos(n Notification) []emailCampo {
 	campos = append(campos, emailCampo{"Horário", n.Event.At.Format("02/01/2006 15:04:05 MST")})
 	if n.Event.Resolves() && n.Event.Duration > 0 {
 		campos = append(campos, emailCampo{"Fora do ar por", humanDuration(n.Event.Duration)})
+	}
+	return campos
+}
+
+// emailCamposConta é o resumo do aviso de conta: o token, o dono e, quando
+// é aviso de vencimento, quando ele vence.
+func emailCamposConta(a AccountNotice) []emailCampo {
+	campos := []emailCampo{{"Token", a.TokenName}}
+	if a.TokenPrefix != "" {
+		campos = append(campos, emailCampo{"Prefixo", a.TokenPrefix + "…"})
+	}
+	if a.Username != "" {
+		campos = append(campos, emailCampo{"Dono", a.Username})
+	}
+	if a.Event != domain.EventAccountTokenRevoked {
+		campos = append(campos, emailCampo{"Vence em", a.ExpiresAt.Format("02/01/2006")})
 	}
 	return campos
 }

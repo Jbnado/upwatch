@@ -44,6 +44,43 @@ func TestChannelWantsEventFiltersBySet(t *testing.T) {
 	}
 }
 
+// A família de conta é assinável e não tem evento obrigatório: um canal
+// pode escolher receber só os eventos de token, sem a queda de monitor —
+// ao contrário da família de monitor, que exige a queda. É o que a #128
+// acrescenta reusando o mecanismo do #8.
+func TestChannelValidateAcceptsAccountEvents(t *testing.T) {
+	casos := [][]EventType{
+		{EventAccountTokenExpiring},
+		{EventAccountTokenExpiring, EventAccountTokenRevoked},
+		{EventMonitorDown, EventAccountTokenExpiring},
+	}
+	for _, events := range casos {
+		c := Channel{Name: "plantão", Type: "webhook", Events: events}
+		if err := c.Validate(); err != nil {
+			t.Errorf("Validate recusou os eventos de conta %v: %v", events, err)
+		}
+	}
+}
+
+// Os eventos de conta são conhecidos: assinar account.token_expiring não é
+// erro de digitação que calaria o canal em silêncio.
+func TestKnownEventAccount(t *testing.T) {
+	for _, e := range []EventType{EventAccountTokenExpiring, EventAccountTokenRevoked} {
+		if !KnownEvent(e) {
+			t.Errorf("KnownEvent(%q) = false, want true", e)
+		}
+	}
+}
+
+// Um canal que assina só a queda não recebe os eventos de conta: conjunto
+// não vazio recebe exatamente o que lista.
+func TestChannelWantsEventAccountFiltered(t *testing.T) {
+	c := Channel{Events: []EventType{EventMonitorDown}}
+	if c.WantsEvent(EventAccountTokenExpiring) {
+		t.Error("canal que só assina a queda recebeu evento de conta")
+	}
+}
+
 // Filtrar que esconde a queda é pior que canal nenhum: o alerta some
 // justamente quando mais importa. Um canal que escolhe eventos da família
 // de monitor precisa manter a queda.
