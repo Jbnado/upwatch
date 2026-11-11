@@ -57,9 +57,11 @@ const MENU: { title: string; items: SectionDef[] }[] = [
     ],
   },
   { title: "Publicar", items: [{ id: "paginas", label: "Páginas de estado", requires: "total" }] },
-  // Token é da própria conta e herda o escopo dela: o servidor o emite a
-  // qualquer administrador, restrito ou não.
-  { title: "Integrações", items: [{ id: "tokens", label: "Tokens de API", requires: "admin" }] },
+  // Ver e revogar os próprios tokens é autosserviço de qualquer conta: uma
+  // conta rebaixada precisa poder limpar as credenciais que emitiu enquanto
+  // administrava. Emitir e rotacionar seguem sendo de administrador, e a
+  // tela esconde esses botões de quem não é (o servidor também recusa).
+  { title: "Integrações", items: [{ id: "tokens", label: "Tokens de API", requires: "conta" }] },
   {
     title: "Minha conta",
     items: [

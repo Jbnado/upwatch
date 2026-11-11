@@ -263,6 +263,29 @@ func TestAuditLogsTokenRevoked(t *testing.T) {
 
 	linha := reg.comAção(t, "token.revogado")
 	exigeCampos(t, linha, "admin", id, "127.0.0.1")
+	// Individual: quantidade 1, motivo manual.
+	if !strings.Contains(linha, "quantidade=1") || !strings.Contains(linha, "motivo=manual") {
+		t.Errorf("a linha de revogação individual não traz motivo/quantidade: %s", linha)
+	}
+}
+
+// A revogação em massa se distingue da individual na auditoria: ação
+// própria, alvo é a conta, e a quantidade diz quantos tokens caíram.
+func TestAuditLogsMassTokenRevocation(t *testing.T) {
+	s, reg := servidorComLog(t, nil)
+	s.setup(t)
+	meuID := int64(decode[map[string]any](t, s.do(t, http.MethodGet, "/api/v1/auth/me", nil))["id"].(float64))
+
+	s.do(t, http.MethodPost, "/api/v1/auth/tokens", map[string]any{"name": "ci"})
+	s.do(t, http.MethodPost, "/api/v1/auth/tokens", map[string]any{"name": "deploy"})
+	assertStatus(t, s.do(t, http.MethodDelete, "/api/v1/users/"+itoa(meuID)+"/tokens", nil),
+		http.StatusOK)
+
+	linha := reg.comAção(t, "token.revogados_em_massa")
+	exigeCampos(t, linha, "admin", "admin", "127.0.0.1")
+	if !strings.Contains(linha, "quantidade=2") || !strings.Contains(linha, "motivo=manual") {
+		t.Errorf("a linha de revogação em massa não traz motivo/quantidade: %s", linha)
+	}
 }
 
 // Rotacionar um token é operação sensível: emite outra credencial de longa

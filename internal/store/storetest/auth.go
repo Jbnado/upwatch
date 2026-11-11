@@ -41,9 +41,9 @@ func authCases() []conformanceCase {
 		{"TokenGetByHash", testTokenGetByHash},
 		{"TokenGetByHashMissingReturnsNotFound", testTokenGetByHashMissingReturnsNotFound},
 		{"TokenListIsScopedToUser", testTokenListIsScopedToUser},
-		{"TokenDelete", testTokenDelete},
-		{"TokenDeleteByUser", testTokenDeleteByUser},
-		{"TokenDeleteOthers", testTokenDeleteOthers},
+		{"TokenRevokeRetainsRecord", testTokenRevokeRetainsRecord},
+		{"TokenRevokeAllByUser", testTokenRevokeAllByUser},
+		{"TokenRevokeOthers", testTokenRevokeOthers},
 		{"TokenTouchLastUsed", testTokenTouchLastUsed},
 		{"TokenRoundTripsExpiry", testTokenRoundTripsExpiry},
 		{"TokenSetExpiry", testTokenSetExpiry},
@@ -624,19 +624,47 @@ func testTokenListIsScopedToUser(t *testing.T, newStore Factory) {
 	}
 }
 
-func testTokenDelete(t *testing.T, newStore Factory) {
+// Revogar retém o registro: o token para de autenticar e some da listagem
+// ativa, mas a linha fica, com quando, por que e por quem — é o que a
+// auditoria lê depois. Revogar de novo não sobrescreve o ator original.
+func testTokenRevokeRetainsRecord(t *testing.T, newStore Factory) {
 	s := newStore(t)
 	ctx := context.Background()
-	u := mustCreateUser(t, s, "admin")
+	ator := mustCreateUser(t, s, "admin")
+	u := mustCreateUser(t, s, "bia")
 	tok, secret := mustCreateToken(t, s, u.ID, "ci")
 
-	if err := s.Tokens().Delete(ctx, tok.ID); err != nil {
-		t.Fatalf("Delete returned unexpected error: %v", err)
+	if err := s.Tokens().Revoke(ctx, tok.ID, domain.TokenRevokeManual, &ator.ID); err != nil {
+		t.Fatalf("Revoke returned unexpected error: %v", err)
 	}
 
-	_, err := s.Tokens().GetByHash(ctx, domain.HashToken(secret.Secret))
-	if !errors.Is(err, store.ErrNotFound) {
+	// Não autentica mais.
+	if _, err := s.Tokens().GetByHash(ctx, domain.HashToken(secret.Secret)); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("the revoked token still authenticates: %v", err)
+	}
+	// Some da listagem ativa.
+	if n := len(mustListTokens(t, s, u.ID)); n != 0 {
+		t.Errorf("o token revogado ainda aparece na listagem ativa: %d", n)
+	}
+	// Mas o registro fica, com motivo e ator.
+	got, err := s.Tokens().Get(ctx, tok.ID)
+	if err != nil {
+		t.Fatalf("o registro do token revogado não foi retido: %v", err)
+	}
+	if got.RevokedAt == nil || got.RevokedReason != domain.TokenRevokeManual ||
+		got.RevokedBy == nil || *got.RevokedBy != ator.ID {
+		t.Errorf("registro de revogação incompleto: %+v", got)
+	}
+
+	// Revogar de novo é ErrNotFound: o token já não está ativo, e o ator e o
+	// motivo originais não podem ser sobrescritos por uma segunda chamada.
+	if err := s.Tokens().Revoke(ctx, tok.ID, domain.TokenRevokeReuse, nil); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("revogar de novo = %v, want ErrNotFound", err)
+	}
+
+	// Get de token inexistente continua ErrNotFound.
+	if _, err := s.Tokens().Get(ctx, 9999); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("Get de token inexistente = %v, want ErrNotFound", err)
 	}
 }
 
@@ -650,7 +678,7 @@ func testTokenDelete(t *testing.T, newStore Factory) {
 // "o token deixa de autenticar", e é GetByHash que autentica (ver
 // testTokenDelete). Um backend que marcasse o token de um jeito que List
 // respeita e GetByHash não passaria a contagem com a credencial viva.
-func testTokenDeleteByUser(t *testing.T, newStore Factory) {
+func testTokenRevokeAllByUser(t *testing.T, newStore Factory) {
 	s := newStore(t)
 	ctx := context.Background()
 	target := mustCreateUser(t, s, "admin")
@@ -659,8 +687,14 @@ func testTokenDeleteByUser(t *testing.T, newStore Factory) {
 	_, outroMeu := mustCreateToken(t, s, target.ID, "backup")
 	_, dele := mustCreateToken(t, s, other.ID, "dele")
 
-	if err := s.Tokens().DeleteByUser(ctx, target.ID); err != nil {
-		t.Fatalf("DeleteByUser returned unexpected error: %v", err)
+	// Devolve a quantidade: é o que a auditoria da revogação em massa
+	// registra.
+	n, err := s.Tokens().RevokeAllByUser(ctx, target.ID, domain.TokenRevokeManual, &other.ID)
+	if err != nil {
+		t.Fatalf("RevokeAllByUser returned unexpected error: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("RevokeAllByUser revogou %d, want 2", n)
 	}
 
 	for _, tok := range []domain.Token{meu, outroMeu} {
@@ -672,21 +706,17 @@ func testTokenDeleteByUser(t *testing.T, newStore Factory) {
 		t.Errorf("token de outra conta deixou de autenticar: %v", err)
 	}
 
-	// Conta sem token nenhum não é erro: a troca de senha de quem nunca
-	// emitiu token chama isto do mesmo jeito. A primeira chamada apaga o
-	// token que other tem; a segunda é que exercita o caso de zero.
-	if err := s.Tokens().DeleteByUser(ctx, other.ID); err != nil {
-		t.Fatalf("DeleteByUser returned unexpected error: %v", err)
-	}
-	if err := s.Tokens().DeleteByUser(ctx, other.ID); err != nil {
-		t.Errorf("DeleteByUser numa conta sem tokens falhou: %v", err)
+	// Conta sem token ativo devolve zero, não erro: a troca de senha de quem
+	// nunca emitiu token chama isto do mesmo jeito.
+	if n, err := s.Tokens().RevokeAllByUser(ctx, target.ID, domain.TokenRevokeManual, &other.ID); err != nil || n != 0 {
+		t.Errorf("RevokeAllByUser numa conta já revogada = %d, %v; want 0, nil", n, err)
 	}
 }
 
 // DeleteOthers preserva a credencial que está fazendo a mudança, que é o
 // que liga ou desliga o segundo fator por token de API. Sem isso aquela
 // chamada devolve sucesso e mata o próprio chamador.
-func testTokenDeleteOthers(t *testing.T, newStore Factory) {
+func testTokenRevokeOthers(t *testing.T, newStore Factory) {
 	s := newStore(t)
 	ctx := context.Background()
 	target := mustCreateUser(t, s, "admin")
@@ -695,8 +725,8 @@ func testTokenDeleteOthers(t *testing.T, newStore Factory) {
 	_, antigo := mustCreateToken(t, s, target.ID, "automacao-antiga")
 	_, dele := mustCreateToken(t, s, other.ID, "dele")
 
-	if err := s.Tokens().DeleteOthers(ctx, target.ID, chamador.Hash); err != nil {
-		t.Fatalf("DeleteOthers returned unexpected error: %v", err)
+	if err := s.Tokens().RevokeOthers(ctx, target.ID, chamador.Hash, domain.TokenRevokeManual, &target.ID); err != nil {
+		t.Fatalf("RevokeOthers returned unexpected error: %v", err)
 	}
 
 	if _, err := s.Tokens().GetByHash(ctx, chamador.Hash); err != nil {

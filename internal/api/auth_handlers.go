@@ -315,7 +315,10 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleRevokeToken apaga uma credencial da própria conta.
+// handleRevokeToken revoga uma credencial da própria conta (autosserviço).
+// Qualquer papel pode: é o que uma conta rebaixada ainda faz com os
+// próprios tokens. O registro é retido, e a auditoria marca o individual
+// (quantidade 1) com o motivo manual.
 func (a *API) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r)
 	if !ok {
@@ -326,8 +329,44 @@ func (a *API) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	a.audit(r, audit.AçãoTokenRevogado, strconv.FormatInt(id, 10))
+	a.auditFull(r, audit.Evento{
+		Ação:       audit.AçãoTokenRevogado,
+		Alvo:       strconv.FormatInt(id, 10),
+		Motivo:     domain.TokenRevokeManual,
+		Quantidade: 1,
+	})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleRevokeUserTokens revoga em massa os tokens de uma conta. É a
+// revogação administrativa: o admin sempre pode cortar as credenciais de
+// uma conta, para uma conta rebaixada ou comprometida não deixar token
+// órfão. A auditoria marca o massa (ação própria), com a quantidade e o
+// motivo, e o alvo é a conta.
+func (a *API) handleRevokeUserTokens(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+
+	alvo, err := a.store.Users().Get(r.Context(), id)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+
+	n, err := a.auth.RevokeAccountTokens(r.Context(), id, domain.TokenRevokeManual, mustUser(r).ID)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	a.auditFull(r, audit.Evento{
+		Ação:       audit.AçãoTokenRevogadosEmMassa,
+		Alvo:       alvo.Username,
+		Motivo:     domain.TokenRevokeManual,
+		Quantidade: int(n),
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"revoked": n})
 }
 
 // handleRotateToken emite um substituto para um token da própria conta e

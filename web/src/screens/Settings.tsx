@@ -192,7 +192,7 @@ function Secao({
     case "paginas":
       return pageId ? <StatusPageAdmin id={pageId} /> : <StatusPages />;
     case "tokens":
-      return <Tokens />;
+      return <Tokens isAdmin={eu.role === "admin"} />;
     case "senha":
       return <Password onSignedOut={onSignedOut} />;
     case "seguranca":
@@ -230,7 +230,7 @@ function expiryLabel(token: APIToken): string {
   return `expira em ${stamp(token.expires_at)}`;
 }
 
-function Tokens() {
+function Tokens({ isAdmin }: { isAdmin: boolean }) {
   const [tokens, setTokens] = useState<APIToken[] | null>(null);
   const [policy, setPolicy] = useState<TokenExpiryPolicy>(semPolítica);
   const [nome, setNome] = useState("");
@@ -381,16 +381,20 @@ function Tokens() {
                       </>
                     )}
                   </span>
-                  {/* Um token rotacionado não se rotaciona de novo: o
+                  {/* Emitir, rotacionar e editar são de administrador;
+                      revogar os próprios é autosserviço de qualquer conta.
+                      Um token rotacionado não se rotaciona de novo: o
                       substituto é o que se rotaciona a seguir. */}
-                  {!token.rotated_at && (
+                  {isAdmin && !token.rotated_at && (
                     <Button size="sm" onClick={() => void rotacionar(token)}>
                       Rotacionar
                     </Button>
                   )}
-                  <Button size="sm" onClick={() => editar(token)}>
-                    Editar validade
-                  </Button>
+                  {isAdmin && (
+                    <Button size="sm" onClick={() => editar(token)}>
+                      Editar validade
+                    </Button>
+                  )}
                   <Button size="sm" variant="danger" onClick={() => revogar(token)}>
                     Revogar
                   </Button>
@@ -442,6 +446,9 @@ function Tokens() {
         </ul>
       )}
 
+      {/* Emitir é de administrador: o observador vê e revoga os próprios,
+          mas não cria credencial nova. */}
+      {isAdmin && (
       <NewItem label="Novo token">
         {(fechar) => (
           <form
@@ -486,6 +493,7 @@ function Tokens() {
           </form>
         )}
       </NewItem>
+      )}
     </section>
   );
 }

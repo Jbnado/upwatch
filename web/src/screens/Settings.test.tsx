@@ -75,11 +75,11 @@ describe("Settings", () => {
     ]);
   });
 
-  it("deixa ao observador só a senha", () => {
+  it("dá ao observador os próprios tokens e a própria conta", () => {
     render(<Settings eu={conta("viewer", true)} onSignedOut={() => {}} />);
 
-    expect(itens()).toEqual(["Senha", "Verificação em duas etapas"]);
-    expect(screen.getByRole("heading", { name: "Senha" })).toBeInTheDocument();
+    expect(itens()).toEqual(["Tokens de API", "Senha", "Verificação em duas etapas"]);
+    expect(screen.getByRole("heading", { name: "Tokens de API" })).toBeInTheDocument();
   });
 
   it("marca a seção aberta com aria-current", () => {

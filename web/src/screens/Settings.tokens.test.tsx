@@ -191,6 +191,22 @@ describe("Tokens", () => {
     expect(screen.queryByRole("button", { name: /rotacionar/i })).toBeNull();
   });
 
+  it("deixa o observador ver e revogar, mas não emitir, rotacionar ou editar", async () => {
+    listTokens.mockResolvedValue({
+      items: [{ id: 3, name: "ci", prefix: "upw_abc", created_at: "2026-01-01T00:00:00Z" }],
+      policy: { require_expiry: false, max_lifetime_seconds: 0 },
+    });
+
+    const observador: User = { ...admin(), role: "viewer" };
+    render(<Settings eu={observador} section="tokens" onSignedOut={() => {}} />);
+    await waitFor(() => expect(screen.getByText("ci")).toBeInTheDocument());
+
+    expect(screen.getByRole("button", { name: /revogar/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /novo token/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /rotacionar/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /editar validade/i })).toBeNull();
+  });
+
   it("mostra a expiração na listagem", async () => {
     listTokens.mockResolvedValue({
       items: [

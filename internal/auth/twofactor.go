@@ -514,12 +514,17 @@ type Credential struct {
 // sessão, que vence e passa pelo segundo fator no próximo login, do que
 // o token, que não faz nem uma coisa nem outra.
 func (s *Service) revokeCredentials(ctx context.Context, userID int64, atual Credential) error {
+	// Motivo manual: a revogação é consequência de uma ação deliberada de
+	// segurança (trocar senha, mexer no segundo fator). Ator nulo: aqui não
+	// se sabe quem agiu — a troca de senha é da própria conta, mas o reset
+	// de segundo fator pode ser de um administrador —, e quem agiu já é
+	// registrado pela linha de auditoria da ação em si.
 	if atual.Token == "" {
-		if err := s.store.Tokens().DeleteByUser(ctx, userID); err != nil {
+		if _, err := s.store.Tokens().RevokeAllByUser(ctx, userID, domain.TokenRevokeManual, nil); err != nil {
 			return err
 		}
-	} else if err := s.store.Tokens().DeleteOthers(
-		ctx, userID, domain.HashToken(atual.Token)); err != nil {
+	} else if err := s.store.Tokens().RevokeOthers(
+		ctx, userID, domain.HashToken(atual.Token), domain.TokenRevokeManual, nil); err != nil {
 		return err
 	}
 	return s.revokeOthers(ctx, userID, atual.Session)

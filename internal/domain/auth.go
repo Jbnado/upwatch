@@ -202,7 +202,33 @@ type APIToken struct {
 	// sobreposição, mas há um sucessor emitido no lugar dele. Nulo é um
 	// token que nunca foi rotacionado.
 	RotatedAt *time.Time `json:"rotated_at,omitempty"`
+
+	// RevokedAt, RevokedReason e RevokedBy guardam o registro retido de uma
+	// revogação: quando, por quê e por quem (nulo para revogação do sistema
+	// ou da linha de comando). Um token revogado não autentica nem aparece na
+	// listagem ativa, mas o registro sobrevive para a auditoria. Ficam fora
+	// do JSON (ver MarshalJSON): a API não lista token revogado.
+	RevokedAt     *time.Time
+	RevokedReason string
+	RevokedBy     *int64
 }
+
+// Motivos de revogação de token, para o registro retido e a auditoria.
+const (
+	// TokenRevokeManual é a revogação explícita de uma pessoa — o dono no
+	// autosserviço, o administrador, ou o efeito de trocar senha e segundo
+	// fator.
+	TokenRevokeManual = "manual"
+	// TokenRevokeReuse é a revogação automática disparada pela detecção de
+	// reuso de um token rotacionado.
+	TokenRevokeReuse = "reuso"
+	// TokenRevokeDemotion é a revogação administrativa dos tokens de uma
+	// conta rebaixada, para ela não deixar credencial órfã.
+	TokenRevokeDemotion = "rebaixamento"
+)
+
+// Revoked informa se o token já foi revogado.
+func (t APIToken) Revoked() bool { return t.RevokedAt != nil }
 
 // Expired informa se o token já venceu. Sem validade, nunca vence.
 func (t APIToken) Expired(now time.Time) bool {

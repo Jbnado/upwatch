@@ -100,6 +100,26 @@ export function Users({ eu }: { eu: User }) {
     }
   }
 
+  // Revogação administrativa em massa: o admin corta todas as credenciais de
+  // API de uma conta de uma vez, para uma conta rebaixada ou comprometida
+  // não deixar token órfão. O dono revoga os próprios em Ajustes, Tokens.
+  async function revogarTokens(u: User) {
+    if (
+      !confirm(
+        `Revogar todos os tokens de API de "${u.username}"? A automação que use um deles para` +
+          " de funcionar na hora; o registro de cada revogação fica para a auditoria.",
+      )
+    )
+      return;
+
+    setErro(null);
+    try {
+      await api.revokeUserTokens(u.id);
+    } catch (e) {
+      setErro(e instanceof ApiError ? e.message : "Não foi possível revogar os tokens da conta.");
+    }
+  }
+
   async function remover(u: User) {
     const aviso =
       u.id === eu.id
@@ -190,6 +210,13 @@ export function Users({ eu }: { eu: User }) {
                       Desligar 2 etapas
                     </Button>
                   )}
+                  <Button
+                    size="sm"
+                    onClick={() => revogarTokens(u)}
+                    aria-label={`revogar os tokens de API de ${u.username}`}
+                  >
+                    Revogar tokens
+                  </Button>
                   <Button size="sm" variant="danger" onClick={() => remover(u)}>
                     Remover
                   </Button>

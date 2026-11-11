@@ -315,6 +315,7 @@ var rotas = map[string]classe{
 	"PUT /api/v1/users/{id}":                                  porConta,
 	"DELETE /api/v1/users/{id}":                               porConta,
 	"DELETE /api/v1/users/{id}/2fa":                           porConta,
+	"DELETE /api/v1/users/{id}/tokens":                        porConta,
 	"POST /api/v1/monitors":                                   criacao,
 	"POST /api/v1/groups":                                     criacao,
 	"POST /api/v1/users":                                      criacao,

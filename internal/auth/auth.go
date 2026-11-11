@@ -509,7 +509,7 @@ func (s *Service) AuthenticateToken(ctx context.Context, secret string) (domain.
 			if dono, e := s.store.Users().Get(ctx, tok.UserID); e == nil {
 				username = dono.Username
 			}
-			if e := s.store.Tokens().Delete(ctx, tok.ID); e != nil {
+			if e := s.store.Tokens().Revoke(ctx, tok.ID, domain.TokenRevokeReuse, nil); e != nil {
 				return domain.User{}, e
 			}
 			return domain.User{}, &TokenReuseError{Username: username, TokenName: tok.Name}
@@ -542,10 +542,12 @@ func (s *Service) TokenExpiryPolicy() domain.TokenExpiryPolicy {
 	return s.tokenExpiry
 }
 
-// RevokeToken apaga um token da própria conta.
+// RevokeToken revoga um token da própria conta (autosserviço), retendo o
+// registro com o ator (o próprio dono) e o motivo manual.
 //
 // A checagem de dono impede que uma conta revogue credencial de outra, o
-// que seria escalonamento de privilégio assim que houver mais de uma.
+// que seria escalonamento de privilégio. É o que uma conta rebaixada ainda
+// pode fazer com os próprios tokens, sem ganhar poder sobre os de terceiros.
 func (s *Service) RevokeToken(ctx context.Context, userID, tokenID int64) error {
 	owned, err := s.store.Tokens().List(ctx, userID)
 	if err != nil {
@@ -553,10 +555,21 @@ func (s *Service) RevokeToken(ctx context.Context, userID, tokenID int64) error 
 	}
 	for _, tok := range owned {
 		if tok.ID == tokenID {
-			return s.store.Tokens().Delete(ctx, tokenID)
+			ator := userID
+			return s.store.Tokens().Revoke(ctx, tokenID, domain.TokenRevokeManual, &ator)
 		}
 	}
 	return fmt.Errorf("token %d: %w", tokenID, store.ErrNotFound)
+}
+
+// RevokeAccountTokens revoga em massa os tokens ativos de uma conta e
+// devolve quantos revogou. É a revogação administrativa: o admin sempre pode
+// cortar as credenciais de uma conta, para uma conta rebaixada ou
+// comprometida não deixar token órfão. actor é quem revogou; reason
+// distingue o motivo (manual, rebaixamento) na auditoria e no registro
+// retido. A autorização — que só administrador chega aqui — é do roteador.
+func (s *Service) RevokeAccountTokens(ctx context.Context, targetUserID int64, reason string, actor int64) (int64, error) {
+	return s.store.Tokens().RevokeAllByUser(ctx, targetUserID, reason, &actor)
 }
 
 // CreateUser cadastra uma conta com o papel e o escopo indicados.

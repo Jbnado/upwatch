@@ -29,6 +29,10 @@ const (
 	AçãoTokenCriado      = "token.criado"
 	AçãoTokenRevogado    = "token.revogado"
 	AçãoTokenRotacionado = "token.rotacionado"
+	// AçãoTokenRevogadosEmMassa distingue a revogação em massa (todos os
+	// tokens de uma conta) da individual: o alvo é a conta, e a quantidade
+	// diz quantos tokens caíram.
+	AçãoTokenRevogadosEmMassa = "token.revogados_em_massa"
 	// AçãoTokenReuso registra que um token rotacionado foi usado depois de o
 	// sucessor já estar em uso: sinal de vazamento do segredo antigo.
 	AçãoTokenReuso = "token.reuso"
@@ -90,6 +94,13 @@ type Evento struct {
 	Alvo string
 	// Origem é de onde veio.
 	Origem string
+	// Motivo é por que a ação aconteceu, quando a mesma ação tem mais de um
+	// motivo possível — os motivos de revogação de token (manual, reuso,
+	// rebaixamento), por exemplo. Vazio não entra na linha.
+	Motivo string
+	// Quantidade é quantos itens a ação alcançou, para distinguir o
+	// individual (1) do massa (N). Zero não entra na linha.
+	Quantidade int
 }
 
 // Registra escreve o evento.
@@ -117,10 +128,19 @@ func Registra(l *slog.Logger, e Evento) {
 	if len(e.Ator) > MaxAtorLength {
 		e.Ator = e.Ator[:MaxAtorLength] + "…"
 	}
-	l.Info("evento de segurança",
+	args := []any{
 		"ação", e.Ação,
 		"ator", e.Ator,
 		"alvo", e.Alvo,
 		"origem", e.Origem,
-	)
+	}
+	// Motivo e quantidade só aparecem quando a ação os tem: uma linha de
+	// login não ganha "quantidade=0".
+	if e.Motivo != "" {
+		args = append(args, "motivo", e.Motivo)
+	}
+	if e.Quantidade > 0 {
+		args = append(args, "quantidade", e.Quantidade)
+	}
+	l.Info("evento de segurança", args...)
 }

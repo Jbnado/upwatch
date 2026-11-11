@@ -420,7 +420,8 @@ func (r *sessionRepo) DeleteOthers(ctx context.Context, userID int64, keep strin
 
 type tokenRepo struct{ db *db }
 
-const tokenColumns = `id, user_id, name, token_hash, prefix, created_at, last_used_at, expires_at, rotated_at`
+const tokenColumns = `id, user_id, name, token_hash, prefix, created_at, last_used_at, expires_at, rotated_at,
+	revoked_at, revoked_reason, revoked_by`
 
 func (r *tokenRepo) Create(ctx context.Context, t *domain.APIToken) error {
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -437,8 +438,11 @@ func (r *tokenRepo) Create(ctx context.Context, t *domain.APIToken) error {
 	return nil
 }
 
+// GetByHash é o caminho da autenticação: só token ativo. Um revogado tem a
+// linha retida, mas não pode voltar a autenticar.
 func (r *tokenRepo) GetByHash(ctx context.Context, hash string) (domain.APIToken, error) {
-	row := r.db.QueryRowContext(ctx, `SELECT `+tokenColumns+` FROM api_token WHERE token_hash = ?`, hash)
+	row := r.db.QueryRowContext(ctx,
+		`SELECT `+tokenColumns+` FROM api_token WHERE token_hash = ? AND revoked_at IS NULL`, hash)
 
 	t, err := scanToken(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -447,9 +451,22 @@ func (r *tokenRepo) GetByHash(ctx context.Context, hash string) (domain.APIToken
 	return t, err
 }
 
+// Get devolve o token pelo id, revogado ou não: é o registro retido.
+func (r *tokenRepo) Get(ctx context.Context, id int64) (domain.APIToken, error) {
+	row := r.db.QueryRowContext(ctx, `SELECT `+tokenColumns+` FROM api_token WHERE id = ?`, id)
+
+	t, err := scanToken(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.APIToken{}, fmt.Errorf("token %d: %w", id, store.ErrNotFound)
+	}
+	return t, err
+}
+
+// List devolve os tokens ativos da conta: os revogados não entram na tela de
+// gerência, embora o registro deles sobreviva.
 func (r *tokenRepo) List(ctx context.Context, userID int64) ([]domain.APIToken, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT `+tokenColumns+` FROM api_token WHERE user_id = ? ORDER BY id`, userID)
+		`SELECT `+tokenColumns+` FROM api_token WHERE user_id = ? AND revoked_at IS NULL ORDER BY id`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("sqlstore: listando tokens: %w", err)
 	}
@@ -469,30 +486,49 @@ func (r *tokenRepo) List(ctx context.Context, userID int64) ([]domain.APIToken, 
 	return out, nil
 }
 
-func (r *tokenRepo) Delete(ctx context.Context, id int64) error {
-	res, err := r.db.ExecContext(ctx, `DELETE FROM api_token WHERE id = ?`, id)
+// Revoke marca o token como revogado em vez de apagá-lo: a linha fica, com
+// quando, por que e por quem. A condição revoked_at IS NULL torna a segunda
+// revogação do mesmo token um ErrNotFound, e não uma sobrescrita silenciosa
+// do ator e do motivo originais.
+func (r *tokenRepo) Revoke(ctx context.Context, id int64, reason string, actor *int64) error {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE api_token SET revoked_at = ?, revoked_reason = ?, revoked_by = ?
+		 WHERE id = ? AND revoked_at IS NULL`,
+		toMillis(now), reason, idPtr(actor), id)
 	if err != nil {
-		return fmt.Errorf("sqlstore: apagando token %d: %w", id, err)
+		return fmt.Errorf("sqlstore: revogando token %d: %w", id, err)
 	}
 	return requireAffected(res, fmt.Sprintf("token %d", id))
 }
 
-// DeleteByUser revoga todos os tokens da conta. Sem requireAffected:
-// conta que nunca emitiu token chama isto do mesmo jeito, na troca de
-// senha, e zero linhas é o resultado certo.
-func (r *tokenRepo) DeleteByUser(ctx context.Context, userID int64) error {
-	if _, err := r.db.ExecContext(ctx,
-		`DELETE FROM api_token WHERE user_id = ?`, userID); err != nil {
-		return fmt.Errorf("sqlstore: apagando tokens do usuário %d: %w", userID, err)
+// RevokeAllByUser revoga os tokens ativos da conta e devolve quantos. Sem
+// requireAffected: conta que nunca emitiu token chama isto do mesmo jeito,
+// na troca de senha, e zero é o resultado certo.
+func (r *tokenRepo) RevokeAllByUser(ctx context.Context, userID int64, reason string, actor *int64) (int64, error) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE api_token SET revoked_at = ?, revoked_reason = ?, revoked_by = ?
+		 WHERE user_id = ? AND revoked_at IS NULL`,
+		toMillis(now), reason, idPtr(actor), userID)
+	if err != nil {
+		return 0, fmt.Errorf("sqlstore: revogando tokens do usuário %d: %w", userID, err)
 	}
-	return nil
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("sqlstore: contando tokens revogados do usuário %d: %w", userID, err)
+	}
+	return n, nil
 }
 
-// DeleteOthers revoga os tokens da conta menos o de keep.
-func (r *tokenRepo) DeleteOthers(ctx context.Context, userID int64, keep string) error {
+// RevokeOthers revoga os tokens ativos da conta menos o de keep.
+func (r *tokenRepo) RevokeOthers(ctx context.Context, userID int64, keep string, reason string, actor *int64) error {
+	now := time.Now().UTC().Truncate(time.Millisecond)
 	if _, err := r.db.ExecContext(ctx,
-		`DELETE FROM api_token WHERE user_id = ? AND token_hash <> ?`, userID, keep); err != nil {
-		return fmt.Errorf("sqlstore: apagando os outros tokens do usuário %d: %w", userID, err)
+		`UPDATE api_token SET revoked_at = ?, revoked_reason = ?, revoked_by = ?
+		 WHERE user_id = ? AND token_hash <> ? AND revoked_at IS NULL`,
+		toMillis(now), reason, idPtr(actor), userID, keep); err != nil {
+		return fmt.Errorf("sqlstore: revogando os outros tokens do usuário %d: %w", userID, err)
 	}
 	return nil
 }
@@ -569,9 +605,12 @@ func scanToken(sc scanner) (domain.APIToken, error) {
 		lastUsedMS sql.NullInt64
 		expiresMS  sql.NullInt64
 		rotatedMS  sql.NullInt64
+		revokedMS  sql.NullInt64
+		revReason  sql.NullString
+		revBy      sql.NullInt64
 	)
 	err := sc.Scan(&t.ID, &t.UserID, &t.Name, &t.Hash, &t.Prefix,
-		&createdMS, &lastUsedMS, &expiresMS, &rotatedMS)
+		&createdMS, &lastUsedMS, &expiresMS, &rotatedMS, &revokedMS, &revReason, &revBy)
 	if err != nil {
 		return domain.APIToken{}, err
 	}
@@ -589,6 +628,15 @@ func scanToken(sc scanner) (domain.APIToken, error) {
 		at := fromMillis(rotatedMS.Int64)
 		t.RotatedAt = &at
 	}
+	if revokedMS.Valid {
+		at := fromMillis(revokedMS.Int64)
+		t.RevokedAt = &at
+	}
+	t.RevokedReason = revReason.String
+	if revBy.Valid {
+		id := revBy.Int64
+		t.RevokedBy = &id
+	}
 	return t, nil
 }
 
@@ -599,6 +647,14 @@ func millisPtr(t *time.Time) any {
 		return nil
 	}
 	return toMillis(*t)
+}
+
+// idPtr desembrulha um *int64 para o driver: nil vira NULL.
+func idPtr(id *int64) any {
+	if id == nil {
+		return nil
+	}
+	return *id
 }
 
 // translateAuthErr converte violação de unicidade em store.ErrConflict.

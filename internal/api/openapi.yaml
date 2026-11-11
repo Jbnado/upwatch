@@ -860,6 +860,33 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
 
+  /api/v1/users/{id}/tokens:
+    delete:
+      tags: [auth]
+      summary: Revoga em massa os tokens de uma conta
+      description: |
+        Revogação administrativa: corta de uma vez todas as credenciais de
+        API de uma conta, para uma conta rebaixada ou comprometida não
+        deixar token órfão. Os registros são retidos e a revogação fica no
+        log com quem fez, o motivo e a quantidade. O dono revoga os próprios
+        por `DELETE /api/v1/auth/tokens/{id}`.
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+      responses:
+        "200":
+          description: Tokens revogados
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revoked:
+                    type: integer
+                    description: Quantos tokens foram revogados
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/v1/monitors:
     get:
       tags: [monitors]

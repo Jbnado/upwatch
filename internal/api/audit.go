@@ -58,6 +58,17 @@ func (a *API) auditAs(r *http.Request, ator, ação, alvo string) {
 	})
 }
 
+// auditFull grava um evento com motivo e quantidade, para a revogação de
+// token, que precisa distinguir individual de massa e registrar o porquê.
+// Preenche ator (a conta da requisição) e origem.
+func (a *API) auditFull(r *http.Request, e audit.Evento) {
+	if e.Ator == "" {
+		e.Ator = atorDe(r)
+	}
+	e.Origem = a.origins.origin(r)
+	audit.Registra(a.logger, e)
+}
+
 // rotaDesconhecida é a rota de quem chegou sem casar com nenhuma.
 const rotaDesconhecida = "(sem rota)"
 

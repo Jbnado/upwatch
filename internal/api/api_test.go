@@ -555,6 +555,49 @@ func TestRotateTokenKeepsOldWorking(t *testing.T) {
 	assertStatus(t, s.withToken(t, novoSecret, http.MethodGet, "/api/v1/monitors", nil), http.StatusOK)
 }
 
+// Ver e revogar os próprios tokens é autosserviço de qualquer papel: uma
+// conta rebaixada precisa poder limpar as credenciais que emitiu, sem
+// recuperar o poder de emitir.
+func TestViewerSelfServiceTokenRouting(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+	s.comoObservador(t) // a sessão passa a ser de uma conta só de leitura
+
+	// Listar os próprios é permitido (vem vazio).
+	assertStatus(t, s.do(t, http.MethodGet, "/api/v1/auth/tokens", nil), http.StatusOK)
+
+	// Revogar alcança a rota: 404 por não ter o token, não 403 por papel.
+	assertStatus(t, s.do(t, http.MethodDelete, "/api/v1/auth/tokens/999", nil), http.StatusNotFound)
+
+	// Emitir continua sendo de administrador.
+	assertStatus(t, s.do(t, http.MethodPost, "/api/v1/auth/tokens", map[string]any{"name": "x"}),
+		http.StatusForbidden)
+}
+
+// A revogação administrativa corta todas as credenciais de uma conta de uma
+// vez e devolve quantas caíram.
+func TestAdminRevokesAccountTokensInMass(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+	meuID := int64(decode[map[string]any](t, s.do(t, http.MethodGet, "/api/v1/auth/me", nil))["id"].(float64))
+
+	s.do(t, http.MethodPost, "/api/v1/auth/tokens", map[string]any{"name": "ci"})
+	s.do(t, http.MethodPost, "/api/v1/auth/tokens", map[string]any{"name": "deploy"})
+
+	resp := s.do(t, http.MethodDelete, "/api/v1/users/"+itoa(meuID)+"/tokens", nil)
+	assertStatus(t, resp, http.StatusOK)
+	if got := int(decode[map[string]any](t, resp)["revoked"].(float64)); got != 2 {
+		t.Fatalf("revoked = %d, want 2", got)
+	}
+
+	listing := decode[struct {
+		Items []any `json:"items"`
+	}](t, s.do(t, http.MethodGet, "/api/v1/auth/tokens", nil))
+	if len(listing.Items) != 0 {
+		t.Errorf("sobraram %d tokens após a revogação em massa", len(listing.Items))
+	}
+}
+
 // Rotacionar um token já rotacionado é 409: rotaciona-se o substituto.
 func TestRotateAlreadyRotatedIsConflict(t *testing.T) {
 	s := newServer(t)

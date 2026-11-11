@@ -152,6 +152,10 @@ export const api = {
   /** resetUserTOTP desliga o segundo fator de outra conta. */
   resetUserTOTP: (id: number) => request<void>(`/users/${id}/2fa`, { method: "DELETE" }),
 
+  /** revokeUserTokens revoga em massa os tokens de uma conta (administrativo). */
+  revokeUserTokens: (id: number) =>
+    request<{ revoked: number }>(`/users/${id}/tokens`, { method: "DELETE" }),
+
   // ---------- tokens ----------
 
   listTokens: () => request<TokenList>("/auth/tokens"),
