@@ -210,8 +210,9 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 	engine.WithMaintenance(calendar)
 
 	sched := scheduler.New(registry, engine, scheduler.Options{
-		Workers: cfg.Workers,
-		Clock:   real,
+		Workers:  cfg.Workers,
+		Clock:    real,
+		Counters: counters,
 	})
 
 	authSvc := auth.New(st, auth.Options{
@@ -255,19 +256,20 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 	}
 
 	apiHandler := api.New(api.Options{
-		Store:         st,
-		Auth:          authSvc,
-		Checkers:      registry,
-		Clock:         real,
-		Scheduler:     monitorFanout{sched, engine},
-		Maintenance:   calendar,
-		SecureCookies: cfg.SecureCookies,
-		PublicURL:     cfg.PublicURL,
-		Version:       version,
-		Counters:      counters,
-		SessionTTL:    cfg.SessionTTL,
-		MetricsToken:  cfg.MetricsToken,
-		SetupToken:    setupToken,
+		Store:          st,
+		Auth:           authSvc,
+		Checkers:       registry,
+		Clock:          real,
+		Scheduler:      monitorFanout{sched, engine},
+		SchedulerQueue: sched,
+		Maintenance:    calendar,
+		SecureCookies:  cfg.SecureCookies,
+		PublicURL:      cfg.PublicURL,
+		Version:        version,
+		Counters:       counters,
+		SessionTTL:     cfg.SessionTTL,
+		MetricsToken:   cfg.MetricsToken,
+		SetupToken:     setupToken,
 
 		AllowScopedPrivateTargets: !cfg.RestrictPrivateTargets,
 		Require2FAAdmin:           cfg.Require2FAAdmin,

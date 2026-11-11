@@ -329,4 +329,18 @@ describe("Channels, resumo de onde avisa", () => {
     expect(screen.getByText("1 monitor")).toBeInTheDocument();
     expect(screen.getByText("não está ligado a nada")).toBeInTheDocument();
   });
+
+  it("avisa na lista quando um canal silencia algum evento", async () => {
+    vi.mocked(api.listChannels).mockResolvedValue({
+      items: [
+        { ...base, id: 1, name: "só queda", type: "webhook", targets: { group_ids: [], monitor_ids: [1] }, events: ["monitor.down"] },
+        { ...base, id: 2, name: "tudo", type: "slack", targets: { group_ids: [], monitor_ids: [1] }, events: [] },
+      ],
+    });
+    render(<Channels />);
+
+    expect(await screen.findByText("silencia degradações e voltas")).toBeInTheDocument();
+    // Canal sem filtro não ganha aviso de silêncio: só o canal filtrado.
+    expect(screen.getAllByText(/^silencia/)).toHaveLength(1);
+  });
 });

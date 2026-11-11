@@ -20,6 +20,91 @@ func channelTargetCases() []conformanceCase {
 		{"ChannelUpdateWithTargetsRollsBack", testChannelUpdateWithTargetsRollsBack},
 		{"ChannelSetTargetsRollsBack", testChannelSetTargetsRollsBack},
 		{"ChannelTargetsFollowSelection", testChannelTargetsFollowSelection},
+		{"ChannelDefaultsToAllEvents", testChannelDefaultsToAllEvents},
+		{"ChannelEventsRoundTrip", testChannelEventsRoundTrip},
+	}
+}
+
+// mesmosEventos compara dois conjuntos de eventos sem depender da ordem: o
+// store pode canonizar a ordem, e o que importa é o conjunto.
+func mesmosEventos(got, want []domain.EventType) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	g := make(map[domain.EventType]bool, len(got))
+	for _, e := range got {
+		g[e] = true
+	}
+	for _, e := range want {
+		if !g[e] {
+			return false
+		}
+	}
+	return true
+}
+
+// Canal cadastrado sem filtro recebe todos os eventos: o conjunto volta
+// vazio. É o que mantém quem já tinha canal recebendo cada transição
+// depois da migração.
+func testChannelDefaultsToAllEvents(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	c := novoCanal("sem filtro")
+	if err := s.Channels().Create(ctx, &c); err != nil {
+		t.Fatalf("Create returned unexpected error: %v", err)
+	}
+
+	got, err := s.Channels().Get(ctx, c.ID)
+	if err != nil {
+		t.Fatalf("Get returned unexpected error: %v", err)
+	}
+	if len(got.Events) != 0 {
+		t.Errorf("Events de canal sem filtro = %v, want vazio (recebe tudo)", got.Events)
+	}
+}
+
+// O conjunto de eventos assinado por um canal percorre a gravação e a
+// leitura inteiro, pela leitura direta e pela listagem, e a edição o
+// troca. Um backend que o perdesse deixaria o filtro decorativo: a tela
+// mostraria um canal silenciado que, na queda, avisa assim mesmo — ou o
+// contrário.
+func testChannelEventsRoundTrip(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	c := novoCanal("só quedas e degradações")
+	c.Events = []domain.EventType{domain.EventMonitorDown, domain.EventMonitorDegraded}
+	if err := s.Channels().Create(ctx, &c); err != nil {
+		t.Fatalf("Create returned unexpected error: %v", err)
+	}
+
+	got, err := s.Channels().Get(ctx, c.ID)
+	if err != nil {
+		t.Fatalf("Get returned unexpected error: %v", err)
+	}
+	if !mesmosEventos(got.Events, c.Events) {
+		t.Errorf("Events após Create = %v, want %v", got.Events, c.Events)
+	}
+
+	lista, err := s.Channels().List(ctx)
+	if err != nil {
+		t.Fatalf("List returned unexpected error: %v", err)
+	}
+	if len(lista) != 1 || !mesmosEventos(lista[0].Events, c.Events) {
+		t.Errorf("Events na listagem = %+v, want %v", lista, c.Events)
+	}
+
+	got.Events = []domain.EventType{domain.EventMonitorDown}
+	if err := s.Channels().Update(ctx, got); err != nil {
+		t.Fatalf("Update returned unexpected error: %v", err)
+	}
+	depois, err := s.Channels().Get(ctx, c.ID)
+	if err != nil {
+		t.Fatalf("Get after update returned unexpected error: %v", err)
+	}
+	if !mesmosEventos(depois.Events, []domain.EventType{domain.EventMonitorDown}) {
+		t.Errorf("Events após Update = %v, want [monitor.down]", depois.Events)
 	}
 }
 

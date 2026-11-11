@@ -324,6 +324,13 @@ export type TokenList = {
 export type ChannelType = "webhook" | "discord" | "slack" | "teams" | "email" | "ntfy";
 
 /**
+ * Os eventos que um canal pode receber. Nomeados por família — hoje só a
+ * de monitor — para o filtro crescer sem o tipo virar uma lista fechada
+ * que sai de sincronia quando a #128 acrescentar a família de conta.
+ */
+export type ChannelEvent = "monitor.down" | "monitor.up" | "monitor.degraded";
+
+/**
  * A configuração não vem na listagem: ela contém a URL do webhook, a
  * senha do SMTP ou o token do ntfy — credenciais de quem pode publicar no
  * canal. A edição a recebe sem elas (ChannelDetail).
@@ -337,6 +344,8 @@ export type Channel = {
   updated_at: string;
   /** Onde o canal está ligado direto; para conta com escopo, só o dela. */
   targets?: ChannelTargets;
+  /** Eventos que o canal recebe. Vazio recebe todos (comportamento padrão). */
+  events?: ChannelEvent[];
 };
 
 /**
@@ -355,6 +364,8 @@ export type ChannelInput = {
   config: ConfigCanal | ConfigEmail | ConfigNtfy;
   /** Troca todos os vínculos junto; ausente na edição, mantém os atuais. */
   targets?: ChannelTargets;
+  /** Troca o conjunto de eventos; ausente mantém o atual, vazio recebe tudo. */
+  events?: ChannelEvent[];
 };
 
 export type Incident = {

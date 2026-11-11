@@ -1189,6 +1189,69 @@ O endereço do alvo nunca vira rótulo. Além de descrever a topologia
 interna, endereço em rótulo é cardinalidade alta — é assim que se derruba
 um Prometheus.
 
+### Capacidade do agendador
+
+`/metrics` também expõe quatro famílias globais, sem rótulos de monitor,
+conta ou grupo:
+
+| Família | O que mede |
+| --- | --- |
+| `upwatch_scheduler_waiting_checks` | Checks vencidos que aguardam início em um worker; inclui os que ainda estão no heap e os que já saíram dele e esperam um slot. |
+| `upwatch_scheduler_running_checks` | Checks executando o checker agora. |
+| `upwatch_scheduler_start_delay_seconds` | Histograma do atraso entre vencimento e início real. |
+| `upwatch_scheduler_check_duration_seconds` | Histograma da duração do checker, sem a entrega da batida ao banco. |
+
+Os histogramas têm buckets de 0,1; 0,5; 1; 5; 10; 30; 60 e `+Inf`
+segundos, além de `_sum` e `_count`. São acumulados desde a partida e
+zeram no reinício. Os gauges mostram zero quando não há checks naquele
+estado. A política de acesso de `/metrics` continua a mesma.
+
+Para reconhecer saturação, olhe a espera **junto** com o atraso de início:
+uma fila curta no instante da raspagem não exclui atraso acumulado entre
+raspagens. `upwatch_monitor_latency_seconds` mede a resposta do alvo;
+atraso antes de começar não significa que ele caiu e não cria incidente.
+Se os workers ficam ocupados, a espera cresce e o atraso sobe, aumentar
+`UPWATCH_WORKERS` pode ajudar. Compare também duração dos checks e seus
+timeouts. Mais workers consomem memória, conexões e banda, e podem elevar
+a carga no banco e nos destinos; o número adequado depende dos intervalos
+e da máquina, não só da quantidade de monitores cadastrados. Não há teto
+de monitores; um check lento não se empilha sobre o mesmo alvo.
+
+Para reproduzir uma carga **sintética do agendador**, sem rede ou banco:
+
+```sh
+go test ./internal/scheduler -run '^$' -bench '^BenchmarkSchedulerCapacity$' -benchtime=2s -benchmem -count=1
+```
+
+O cenário usa 60 checks lentos (25 ms, intervalo 60 ms), 20 rápidos
+(1 ms, intervalo 100 ms) e 20 que atingem timeout (8 ms, intervalo
+80 ms), separados em grupos, durante 500 ms por rodada. Compara 8 e 32
+workers e informa p95 do atraso por grupo, pico observado de espera,
+checks iniciados e alocações. Uma rodada em Windows, Ryzen 5 5600G,
+Go 1.27.3 mostrou p95 de 143/179/129 ms (rápidos/lentos/timeout)
+com 8 workers e 13/29/0,5 ms com 32. Todos os grupos receberam execução;
+o atraso menor com mais workers neste cenário aponta para capacidade,
+sem demonstrar necessidade de mudar a política da fila. Esses números
+não são promessa de produção: rode carga representativa da sua instalação
+e meça CPU, memória, conexões e banco antes de ajustar o pool.
+
+Para uma comparação inicial de **justiça entre grupos**, use:
+
+```sh
+go test ./internal/scheduler -run '^$' -bench '^BenchmarkSchedulerFairness$' -benchtime=1x -benchmem -count=1
+```
+
+São 80 e 20 monitores em grupos diferentes, todos com o mesmo perfil
+(25 ms por check, intervalo de 100 ms), 8 workers e dois segundos de
+carga. A mesma máquina registrou p95 de 228 ms no grupo maior e 204 ms
+no menor, com 500 e 140 inícios respectivamente; ambos seguiram
+recebendo checks. A janela curta não prova justiça sob carga sustentada
+nem substitui uma medição da frota real. Se o atraso de um grupo crescer
+enquanto outro segue atendido sob perfis equivalentes, investigue a
+política da fila; se crescer em todos, investigue a capacidade primeiro.
+As alocações dos benchmarks incluem a montagem do cenário e o registro
+das amostras; não representam a memória residente do servidor.
+
 ## Push
 
 No monitor push quem bate é o serviço: um cron, um worker, um agente

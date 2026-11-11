@@ -4,7 +4,78 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/Jbnado/upwatch/internal/api"
+	"github.com/Jbnado/upwatch/internal/metrics"
 )
+
+func TestMetricsExposeSchedulerSaturationWithoutVariableLabels(t *testing.T) {
+	counters := metrics.New()
+	s := newServerWith(t, func(opts *api.Options) { opts.Counters = counters })
+	s.setup(t)
+	counters.QueueSchedulerChecks(2)
+	counters.StartSchedulerCheck(250 * time.Millisecond)
+	counters.FinishSchedulerCheck(2 * time.Second)
+
+	corpo := s.metricas(t)
+	for _, linha := range []string{
+		"upwatch_scheduler_waiting_checks 1\n",
+		"upwatch_scheduler_running_checks 0\n",
+		"upwatch_scheduler_start_delay_seconds_bucket{le=\"0.1\"} 0\n",
+		"upwatch_scheduler_start_delay_seconds_bucket{le=\"0.5\"} 1\n",
+		"upwatch_scheduler_start_delay_seconds_bucket{le=\"+Inf\"} 1\n",
+		"upwatch_scheduler_start_delay_seconds_sum 0.25\n",
+		"upwatch_scheduler_start_delay_seconds_count 1\n",
+		"upwatch_scheduler_check_duration_seconds_bucket{le=\"1\"} 0\n",
+		"upwatch_scheduler_check_duration_seconds_bucket{le=\"5\"} 1\n",
+		"upwatch_scheduler_check_duration_seconds_sum 2\n",
+		"upwatch_scheduler_check_duration_seconds_count 1\n",
+	} {
+		if !strings.Contains(corpo, linha) {
+			t.Errorf("métrica ausente: %s", linha)
+		}
+	}
+	for _, family := range []string{"upwatch_scheduler_waiting_checks", "upwatch_scheduler_running_checks", "upwatch_scheduler_start_delay_seconds", "upwatch_scheduler_check_duration_seconds"} {
+		if !strings.Contains(corpo, "# HELP "+family+" ") || !strings.Contains(corpo, "# TYPE "+family+" ") {
+			t.Errorf("família %s sem HELP ou TYPE", family)
+		}
+	}
+}
+
+func TestMetricsExposeZeroSchedulerWithoutCounters(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+	corpo := s.metricas(t)
+	for _, linha := range []string{
+		"upwatch_scheduler_waiting_checks 0\n",
+		"upwatch_scheduler_running_checks 0\n",
+		"upwatch_scheduler_start_delay_seconds_bucket{le=\"+Inf\"} 0\n",
+		"upwatch_scheduler_check_duration_seconds_count 0\n",
+	} {
+		if !strings.Contains(corpo, linha) {
+			t.Errorf("métrica vazia ausente: %s", linha)
+		}
+	}
+}
+
+type fixedSchedulerQueue int64
+
+func (q fixedSchedulerQueue) WaitingChecks() int64 { return int64(q) }
+
+func TestMetricsWaitingIncludesSchedulerHeap(t *testing.T) {
+	counters := metrics.New()
+	counters.QueueSchedulerChecks(1)
+	s := newServerWith(t, func(opts *api.Options) {
+		opts.Counters = counters
+		opts.SchedulerQueue = fixedSchedulerQueue(2)
+	})
+	s.setup(t)
+	corpo := s.metricas(t)
+	if !strings.Contains(corpo, "upwatch_scheduler_waiting_checks 2\n") {
+		t.Errorf("espera publicada sem itens do heap: %s", corpo)
+	}
+}
 
 // O endpoint que faz o UpWatch conversar com quem já tem Prometheus.
 //
@@ -184,6 +255,7 @@ func TestMetricsKeepFamiliesContiguous(t *testing.T) {
 	// exposição inteira — e o tolerante aceitar hoje e recusar amanhã.
 	vistas := map[string]bool{}
 	atual := ""
+	tipoAtual := ""
 
 	for _, linha := range strings.Split(corpo, "\n") {
 		if linha == "" || strings.HasPrefix(linha, "# HELP ") {
@@ -191,6 +263,7 @@ func TestMetricsKeepFamiliesContiguous(t *testing.T) {
 		}
 		if strings.HasPrefix(linha, "# TYPE ") {
 			atual = strings.Fields(linha)[2]
+			tipoAtual = strings.Fields(linha)[3]
 			if vistas[atual] {
 				t.Fatalf("família %q declarada duas vezes", atual)
 			}
@@ -201,6 +274,13 @@ func TestMetricsKeepFamiliesContiguous(t *testing.T) {
 		familia := linha
 		if i := strings.IndexAny(linha, "{ "); i > 0 {
 			familia = linha[:i]
+		}
+		if tipoAtual == "histogram" {
+			for _, suffix := range []string{"_bucket", "_sum", "_count"} {
+				if familia == atual+suffix {
+					familia = atual
+				}
+			}
 		}
 		if familia != atual {
 			t.Fatalf("amostra de %q apareceu no bloco de %q", familia, atual)

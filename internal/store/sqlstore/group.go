@@ -295,7 +295,7 @@ func (r *channelRepo) ListFor(ctx context.Context, sel store.GroupSelection) ([]
 // ForGroup devolve os canais habilitados vinculados direto ao grupo.
 func (r *channelRepo) ForGroup(ctx context.Context, groupID int64) ([]domain.Channel, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT c.id, c.name, c.type, c.config, c.enabled, c.created_at, c.updated_at
+		SELECT `+channelColumnsAliased+`
 		FROM notification_channel c
 		JOIN group_channel gc ON gc.channel_id = c.id
 		WHERE gc.group_id = ? AND c.enabled = 1
@@ -316,7 +316,7 @@ func (r *channelRepo) ForGroup(ctx context.Context, groupID int64) ([]domain.Cha
 // criados depois.
 func (r *channelRepo) Destinations(ctx context.Context, monitorID int64) ([]domain.Channel, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT c.id, c.name, c.type, c.config, c.enabled, c.created_at, c.updated_at
+		SELECT `+channelColumnsAliased+`
 		FROM notification_channel c
 		WHERE c.enabled = 1 AND c.id IN (
 			SELECT mc.channel_id FROM monitor_channel mc WHERE mc.monitor_id = ?
