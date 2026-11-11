@@ -127,6 +127,25 @@ func (f *engineFixture) linkChannel(t *testing.T) domain.Channel {
 	return c
 }
 
+// linkChannelWithEvents cria um canal que só recebe os eventos dados e o
+// vincula ao monitor.
+func (f *engineFixture) linkChannelWithEvents(t *testing.T, events ...domain.EventType) domain.Channel {
+	t.Helper()
+
+	c := domain.Channel{
+		Name: "plantão", Type: "webhook", Enabled: true,
+		Config: json.RawMessage(`{"url":"https://exemplo.invalido/hook"}`),
+		Events: events,
+	}
+	if err := f.store.Channels().Create(context.Background(), &c); err != nil {
+		t.Fatalf("Create returned unexpected error: %v", err)
+	}
+	if err := f.store.Channels().Link(context.Background(), f.monitor.ID, c.ID); err != nil {
+		t.Fatalf("Link returned unexpected error: %v", err)
+	}
+	return c
+}
+
 // ---------- encaminhamento ----------
 
 // A batida precisa chegar ao banco independentemente do que o motor

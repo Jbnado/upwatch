@@ -241,6 +241,49 @@ func TestRemindersSurviveRestart(t *testing.T) {
 	}
 }
 
+// O lembrete respeita o filtro de eventos do canal, como o aviso de
+// queda: o lembrete é um "continua fora do ar", e um canal que não assina
+// a queda não pode recebê-lo. Prova a consistência que a #128 vai precisar
+// — um canal só de conta não deve receber lembrete de monitor.
+func TestRemindersRespectTheEventFilter(t *testing.T) {
+	f := newEngine(t)
+	ctx := context.Background()
+
+	cria := func(nome string, events ...domain.EventType) {
+		c := domain.Channel{
+			Name: nome, Type: "webhook", Enabled: true,
+			Config: []byte(`{"url":"https://exemplo.invalido/hook"}`),
+			Events: events,
+		}
+		if err := f.store.Channels().Create(ctx, &c); err != nil {
+			t.Fatalf("Create(%q): %v", nome, err)
+		}
+		if err := f.store.Channels().Link(ctx, f.monitor.ID, c.ID); err != nil {
+			t.Fatalf("Link(%q): %v", nome, err)
+		}
+	}
+	cria("todos") // sem filtro: recebe tudo, lembrete incluído
+	// Conjunto que não assina a queda. O store aceita o que a API recusaria;
+	// é o que deixa provar que o lembrete filtra, sem depender da família de
+	// conta ainda não existir.
+	cria("sem queda", domain.EventMonitorUp)
+
+	f.derruba(t)
+
+	relogio := clock.NewFake(quedaConfirmada.Add(31 * time.Minute))
+	novosLembretes(f.engine, relogio, 30*time.Minute).Tick(ctx)
+
+	destinos := -1
+	for i, n := range f.dispatch.all() {
+		if n.Reminder {
+			destinos = len(f.dispatch.channels[i])
+		}
+	}
+	if destinos != 1 {
+		t.Fatalf("o lembrete foi para %d canais, quer 1 — o canal sem queda não deveria recebê-lo", destinos)
+	}
+}
+
 // A janela de manutenção cala o lembrete da queda que segue aberta
 // enquanto durar; acabada a janela, a queda volta a ser lembrada.
 func TestRemindersSkipMaintenance(t *testing.T) {

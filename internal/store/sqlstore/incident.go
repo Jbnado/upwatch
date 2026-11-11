@@ -3,8 +3,11 @@ package sqlstore
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/Jbnado/upwatch/internal/domain"
@@ -303,7 +306,46 @@ func scanIncident(sc scanner) (domain.Incident, error) {
 
 type channelRepo struct{ db *db }
 
-const channelColumns = `id, name, type, config, enabled, created_at, updated_at`
+const channelColumns = `id, name, type, config, enabled, events, created_at, updated_at`
+
+// channelColumnsAliased é channelColumns com o prefixo da tabela, para as
+// consultas que juntam o canal a outra tabela e precisam desambiguar as
+// colunas. A ordem é a mesma de channelColumns, que é como scanChannel lê.
+const channelColumnsAliased = `c.id, c.name, c.type, c.config, c.enabled, c.events, c.created_at, c.updated_at`
+
+// encodeEvents serializa o conjunto de eventos assinado por um canal.
+//
+// Vazio vira string vazia — a coluna nasce assim, e é o que "recebe tudo"
+// guarda, sem um "[]" que significaria o mesmo escrito de outro jeito. O
+// conjunto é ordenado e sem repetição, para a gravação ser determinística
+// e a leitura não devolver o mesmo tipo duas vezes.
+func encodeEvents(events []domain.EventType) string {
+	if len(events) == 0 {
+		return ""
+	}
+	uniq := slices.Clone(events)
+	slices.Sort(uniq)
+	uniq = slices.Compact(uniq)
+	b, err := json.Marshal(uniq)
+	if err != nil {
+		// O tipo é um slice de strings: json.Marshal não falha.
+		return ""
+	}
+	return string(b)
+}
+
+// decodeEvents lê a coluna de volta. Vazio é o conjunto vazio (recebe
+// tudo), não um erro.
+func decodeEvents(s string) ([]domain.EventType, error) {
+	if strings.TrimSpace(s) == "" {
+		return nil, nil
+	}
+	var events []domain.EventType
+	if err := json.Unmarshal([]byte(s), &events); err != nil {
+		return nil, fmt.Errorf("sqlstore: lendo eventos do canal: %w", err)
+	}
+	return events, nil
+}
 
 func (r *channelRepo) Create(ctx context.Context, c *domain.Channel) error {
 	return r.db.inTx(ctx, func(t *tx) error { return r.insert(ctx, t, c) })
@@ -324,9 +366,9 @@ func (r *channelRepo) insert(ctx context.Context, t *tx, c *domain.Channel) erro
 	}
 
 	id, err := t.insertID(ctx, `
-		INSERT INTO notification_channel (name, type, config, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)`,
-		c.Name, c.Type, insertConfig, boolToInt(c.Enabled), toMillis(now), toMillis(now))
+		INSERT INTO notification_channel (name, type, config, enabled, events, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		c.Name, c.Type, insertConfig, boolToInt(c.Enabled), encodeEvents(c.Events), toMillis(now), toMillis(now))
 	if err != nil {
 		return translateAuthErr(err, "canal")
 	}
@@ -368,9 +410,9 @@ func (r *channelRepo) update(ctx context.Context, t *tx, c domain.Channel) error
 
 	res, err := t.ExecContext(ctx, `
 		UPDATE notification_channel
-		SET name = ?, type = ?, config = ?, enabled = ?, updated_at = ?
+		SET name = ?, type = ?, config = ?, enabled = ?, events = ?, updated_at = ?
 		WHERE id = ?`,
-		c.Name, c.Type, config, boolToInt(c.Enabled), toMillis(now), c.ID)
+		c.Name, c.Type, config, boolToInt(c.Enabled), encodeEvents(c.Events), toMillis(now), c.ID)
 	if err != nil {
 		return translateAuthErr(err, "canal")
 	}
@@ -429,7 +471,7 @@ func (r *channelRepo) Unlink(ctx context.Context, monitorID, channelID int64) er
 // desligar decorativo.
 func (r *channelRepo) ForMonitor(ctx context.Context, monitorID int64) ([]domain.Channel, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT c.id, c.name, c.type, c.config, c.enabled, c.created_at, c.updated_at
+		SELECT `+channelColumnsAliased+`
 		FROM notification_channel c
 		JOIN monitor_channel mc ON mc.channel_id = c.id
 		WHERE mc.monitor_id = ? AND c.enabled = 1
@@ -463,15 +505,19 @@ func (d *db) scanChannel(sc scanner) (domain.Channel, error) {
 		c          domain.Channel
 		configJSON string
 		enabled    int64
+		eventsJSON string
 		createdMS  int64
 		updatedMS  int64
 	)
-	err := sc.Scan(&c.ID, &c.Name, &c.Type, &configJSON, &enabled, &createdMS, &updatedMS)
+	err := sc.Scan(&c.ID, &c.Name, &c.Type, &configJSON, &enabled, &eventsJSON, &createdMS, &updatedMS)
 	if err != nil {
 		return domain.Channel{}, err
 	}
 
 	if c.Config, err = d.openForRead(configJSON, notifier.SecretFields(c.Type), channelTable, c.ID); err != nil {
+		return domain.Channel{}, err
+	}
+	if c.Events, err = decodeEvents(eventsJSON); err != nil {
 		return domain.Channel{}, err
 	}
 	c.Enabled = enabled != 0

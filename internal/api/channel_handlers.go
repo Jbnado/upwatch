@@ -26,6 +26,11 @@ type channelRequest struct {
 	// Targets, quando vem, troca todos os vínculos do canal na mesma
 	// gravação. Ausente na edição mantém os vínculos atuais.
 	Targets *targetsBody `json:"targets,omitempty"`
+	// Events é o conjunto de eventos que o canal recebe. Ponteiro para
+	// distinguir "não mandou" de "mandou vazio": ausente na edição mantém o
+	// conjunto atual, como Targets; vazio recebe tudo. O conteúdo é
+	// validado no domínio (Channel.Validate).
+	Events *[]domain.EventType `json:"events,omitempty"`
 }
 
 // targetsBody é onde o canal está ligado direto. Grupo vale para os
@@ -52,13 +57,14 @@ func targetsFrom(t store.ChannelTargets) targetsBody {
 // e não o domain.Channel embutido: o MarshalJSON dele, promovido, engoliria
 // os vínculos.
 type channelItem struct {
-	ID        int64       `json:"id"`
-	Name      string      `json:"name"`
-	Type      string      `json:"type"`
-	Enabled   bool        `json:"enabled"`
-	CreatedAt time.Time   `json:"created_at"`
-	UpdatedAt time.Time   `json:"updated_at"`
-	Targets   targetsBody `json:"targets"`
+	ID        int64              `json:"id"`
+	Name      string             `json:"name"`
+	Type      string             `json:"type"`
+	Enabled   bool               `json:"enabled"`
+	CreatedAt time.Time          `json:"created_at"`
+	UpdatedAt time.Time          `json:"updated_at"`
+	Targets   targetsBody        `json:"targets"`
+	Events    []domain.EventType `json:"events"`
 }
 
 func newChannelItem(c domain.Channel, t store.ChannelTargets) channelItem {
@@ -66,7 +72,17 @@ func newChannelItem(c domain.Channel, t store.ChannelTargets) channelItem {
 		ID: c.ID, Name: c.Name, Type: c.Type, Enabled: c.Enabled,
 		CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt,
 		Targets: targetsFrom(t),
+		Events:  eventsFrom(c.Events),
 	}
+}
+
+// eventsFrom devolve o conjunto como lista nunca nula, para a tela ler
+// "[]" (recebe tudo) em vez de ter de distinguir ausente de vazio.
+func eventsFrom(events []domain.EventType) []domain.EventType {
+	if events == nil {
+		return []domain.EventType{}
+	}
+	return events
 }
 
 func (req channelRequest) toDomain() domain.Channel {
@@ -74,9 +90,13 @@ func (req channelRequest) toDomain() domain.Channel {
 	if req.Enabled != nil {
 		enabled = *req.Enabled
 	}
-	return domain.Channel{
+	c := domain.Channel{
 		Name: req.Name, Type: req.Type, Config: req.Config, Enabled: enabled,
 	}
+	if req.Events != nil {
+		c.Events = *req.Events
+	}
+	return c
 }
 
 // handleListChannelTypes informa quais canais existem, para a interface
@@ -161,20 +181,22 @@ func (a *API) handleGetChannel(w http.ResponseWriter, r *http.Request) {
 		Config:    notifier.RedactConfig(c.Type, c.Config),
 		CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt,
 		Targets: targetsFrom(alvos[c.ID]),
+		Events:  eventsFrom(c.Events),
 	})
 }
 
 // channelEditResponse é o canal com a configuração que o formulário de
 // edição precisa, sem credencial (ver notifier.RedactConfig).
 type channelEditResponse struct {
-	ID        int64           `json:"id"`
-	Name      string          `json:"name"`
-	Type      string          `json:"type"`
-	Enabled   bool            `json:"enabled"`
-	Config    json.RawMessage `json:"config,omitempty"`
-	CreatedAt time.Time       `json:"created_at"`
-	UpdatedAt time.Time       `json:"updated_at"`
-	Targets   targetsBody     `json:"targets"`
+	ID        int64              `json:"id"`
+	Name      string             `json:"name"`
+	Type      string             `json:"type"`
+	Enabled   bool               `json:"enabled"`
+	Config    json.RawMessage    `json:"config,omitempty"`
+	CreatedAt time.Time          `json:"created_at"`
+	UpdatedAt time.Time          `json:"updated_at"`
+	Targets   targetsBody        `json:"targets"`
+	Events    []domain.EventType `json:"events"`
 }
 
 // canEditChannels diz se a configuração do canal volta nesta leitura: só
@@ -209,6 +231,12 @@ func (a *API) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeFieldError(w, "config", err.Error())
 		return
+	}
+
+	// Ausente mantém o conjunto atual, como os vínculos: um cliente que só
+	// renomeia o canal não pode apagar o filtro sem querer.
+	if req.Events == nil {
+		c.Events = guardado.Events
 	}
 
 	if !validateChannel(w, c) {
