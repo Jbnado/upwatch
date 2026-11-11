@@ -20,6 +20,14 @@ const (
 	// EventMonitorDegraded é a degradação confirmada: responde, porém fora
 	// do esperado.
 	EventMonitorDegraded EventType = "monitor.degraded"
+
+	// EventAccountTokenExpiring avisa que um token de API da conta está
+	// perto de vencer (ver DueTokenExpiryMilestone).
+	EventAccountTokenExpiring EventType = "account.token_expiring"
+	// EventAccountTokenRevoked avisa que um token de API da conta foi
+	// revogado. O tipo existe para o canal poder assiná-lo; a emissão é
+	// decisão de quem revoga.
+	EventAccountTokenRevoked EventType = "account.token_revoked"
 )
 
 // eventFamily descreve uma família de eventos para o filtro de canal.
@@ -40,6 +48,14 @@ var eventFamilies = map[string]eventFamily{
 	"monitor": {
 		types:    []EventType{EventMonitorDown, EventMonitorUp, EventMonitorDegraded},
 		required: EventMonitorDown,
+	},
+	// A família de conta não tem evento obrigatório: ao contrário da queda
+	// de monitor, nenhum aviso de token é perigoso de esconder, então um
+	// canal pode assinar só um deles — ou nenhum, no conjunto vazio, que
+	// recebe tudo.
+	"account": {
+		types:    []EventType{EventAccountTokenExpiring, EventAccountTokenRevoked},
+		required: "",
 	},
 }
 
