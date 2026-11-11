@@ -4,6 +4,7 @@ import {
   ApiError,
   type Channel,
   type ChannelDetail,
+  type ChannelEvent,
   type ChannelTargets as Vinculos,
   type ChannelType,
 } from "../api/types";
@@ -102,6 +103,22 @@ export function channelTypeLabel(type: ChannelType): string {
   return TIPOS[type]?.label ?? type;
 }
 
+/**
+ * resumoSilenciado diz, na lista, o que um canal filtrado deixa de avisar.
+ *
+ * Vazio recebe tudo, e não há o que dizer. A queda entra sempre num canal
+ * filtrado, então só degradação e volta podem faltar — e é isso que
+ * precisa aparecer sem abrir o canal, para um filtro esquecido não passar
+ * despercebido.
+ */
+export function resumoSilenciado(events?: ChannelEvent[]): string | null {
+  if (!events || events.length === 0) return null;
+  const faltam: string[] = [];
+  if (!events.includes("monitor.degraded")) faltam.push("degradações");
+  if (!events.includes("monitor.up")) faltam.push("voltas");
+  return faltam.length > 0 ? `silencia ${faltam.join(" e ")}` : null;
+}
+
 export function Channels() {
   const [canais, setCanais] = useState<Channel[] | null>(null);
   const [erro, setErro] = useState<string | null>(null);
@@ -189,6 +206,11 @@ export function Channels() {
                     <span className="text-small text-ink-3">desligado</span>
                   )}
                   <span className="truncate text-small text-ink-3">{resumoDosAlvos(canal.targets)}</span>
+                  {resumoSilenciado(canal.events) && (
+                    <span className="truncate text-small text-degraded">
+                      {resumoSilenciado(canal.events)}
+                    </span>
+                  )}
                 </span>
 
                 {/* Ação em linha usa o tamanho menor: o botão de altura
@@ -295,8 +317,37 @@ export function ChannelForm({
   // Só preenchido depois de um clique na árvore: sem ele, a edição não
   // manda vínculos e o servidor mantém os atuais.
   const [alvos, setAlvos] = useState<Vinculos | undefined>(undefined);
+
+  // Filtro de eventos. Vazio recebe tudo; por isso o canal abre sem filtro
+  // quando não há eventos guardados, e com as caixas no que ele assina
+  // quando há. mexeuEventos espelha alvos: só manda o conjunto depois de um
+  // clique, para uma edição que não toca nos eventos manter os atuais.
+  const eventosIniciais = canal?.events ?? [];
+  const [filtrarEventos, setFiltrarEventos] = useState(eventosIniciais.length > 0);
+  const [avisaDegradado, setAvisaDegradado] = useState(
+    eventosIniciais.length === 0 || eventosIniciais.includes("monitor.degraded"),
+  );
+  const [avisaVolta, setAvisaVolta] = useState(
+    eventosIniciais.length === 0 || eventosIniciais.includes("monitor.up"),
+  );
+  const [mexeuEventos, setMexeuEventos] = useState(false);
+
   const [enviando, setEnviando] = useState(false);
   const [campoErro, setCampoErro] = useState<{ campo: string; msg: string } | null>(null);
+
+  // A queda entra sempre que o canal filtra: esconder a queda é pior que
+  // não avisar. As outras são opcionais.
+  function eventosDoFormulario(): ChannelEvent[] {
+    if (!filtrarEventos) return [];
+    const e: ChannelEvent[] = ["monitor.down"];
+    if (avisaDegradado) e.push("monitor.degraded");
+    if (avisaVolta) e.push("monitor.up");
+    return e;
+  }
+
+  const silenciados = filtrarEventos
+    ? ([!avisaDegradado && "degradações", !avisaVolta && "voltas ao ar"].filter(Boolean) as string[])
+    : [];
 
   async function salvar(e: FormEvent) {
     e.preventDefault();
@@ -334,11 +385,18 @@ export function ChannelForm({
           enabled: canal.enabled,
           config: config!,
           ...(alvos && { targets: alvos }),
+          ...(mexeuEventos && { events: eventosDoFormulario() }),
         });
         await onSaved();
         return;
       }
-      await api.createChannel({ name: nome, type: tipo, config: config!, ...(alvos && { targets: alvos }) });
+      await api.createChannel({
+        name: nome,
+        type: tipo,
+        config: config!,
+        ...(alvos && { targets: alvos }),
+        ...(mexeuEventos && { events: eventosDoFormulario() }),
+      });
       setNome("");
       setUrl("");
       setCabecalhos([{ nome: "", valor: "" }]);
@@ -437,6 +495,71 @@ export function ChannelForm({
           erroMapeamento={erroDe("mapeamento")}
         />
       )}
+
+      <div className="flex flex-col gap-2 border-t border-line pt-4">
+        <span className="eyebrow">quais eventos</span>
+        <Checkbox
+          checked={filtrarEventos}
+          onChange={() => {
+            setMexeuEventos(true);
+            setFiltrarEventos((v) => !v);
+          }}
+        >
+          <span>Receber só alguns eventos</span>
+        </Checkbox>
+
+        {!filtrarEventos ? (
+          <p className="text-small text-ink-3">
+            Recebe toda mudança de estado: queda, degradação e volta ao ar. Marque acima para
+            escolher só alguns.
+          </p>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            {/* A queda não é uma caixa: não há como desmarcá-la. Um canal
+                que filtrasse escondendo a queda calaria o alerta justamente
+                quando ele mais importa. */}
+            <div className="flex items-center gap-2 px-1 py-1 text-body">
+              <span>Quedas</span>
+              <span className="text-small text-ink-3">sempre avisado</span>
+            </div>
+            <Checkbox
+              checked={avisaDegradado}
+              onChange={() => {
+                setMexeuEventos(true);
+                setAvisaDegradado((v) => !v);
+              }}
+            >
+              <span>Degradações</span>
+            </Checkbox>
+            <Checkbox
+              checked={avisaVolta}
+              onChange={() => {
+                setMexeuEventos(true);
+                setAvisaVolta((v) => !v);
+              }}
+            >
+              <span>Voltas ao ar</span>
+            </Checkbox>
+
+            {/* Dizer o que fica de fora, e não só o que entra: um canal que
+                parece configurado mas silencia a volta engana quem o lê. */}
+            {silenciados.length > 0 ? (
+              <p
+                role="note"
+                className="rounded-sm border-l-2 border-degraded px-3 py-2 text-small text-ink-2"
+              >
+                Silenciado: {silenciados.join(" e ")}. Este canal não vai avisar quando o alvo{" "}
+                {silenciados.includes("voltas ao ar") ? "voltar" : "se recuperar"}.
+              </p>
+            ) : (
+              <p className="text-small text-ink-3">Avisa sobre queda, degradação e volta ao ar.</p>
+            )}
+            <p className="text-small text-ink-3">
+              A queda é sempre avisada — esconder a queda é pior que não avisar.
+            </p>
+          </div>
+        )}
+      </div>
 
       <ChannelTargets inicial={canal?.targets} onChange={setAlvos} />
 

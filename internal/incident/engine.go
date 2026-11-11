@@ -351,26 +351,29 @@ func (e *Engine) record(ctx context.Context, m domain.Monitor, evt Event, cause 
 	}
 }
 
-// notify monta os canais do monitor e entrega o aviso.
-func (e *Engine) notify(ctx context.Context, m domain.Monitor, evt Event, cause string) {
-	if e.dispatch == nil {
-		return
-	}
-
-	// Destinations, e não ForMonitor: o canal vinculado ao grupo ou ao
-	// sistema do monitor também é destino, e a regra de quem recebe mora
-	// no store, num lugar só.
+// destinationsFor monta os notificadores dos canais do monitor que
+// assinam o evento tipo, e conta quantos o assinam (montem eles ou não).
+//
+// Destinations, e não ForMonitor: o canal vinculado ao grupo ou ao sistema
+// do monitor também é destino, e a regra de quem recebe mora no store, num
+// lugar só. O filtro por evento fica aqui, igualmente num lugar só, para o
+// aviso de mudança e o lembrete concordarem sobre quem recebe o quê — e
+// para a família de evento da #128 entrar sem reescrever os dois caminhos.
+// Conjunto de eventos vazio recebe tudo (WantsEvent), então quem nunca
+// configurou o filtro segue recebendo cada transição.
+func (e *Engine) destinationsFor(ctx context.Context, m domain.Monitor, tipo domain.EventType) (destinos []notifier.Notifier, querem int) {
 	canais, err := e.store.Channels().Destinations(ctx, m.ID)
 	if err != nil {
 		slog.Error("falha ao listar canais do monitor", "monitor", m.Name, "erro", err)
-		return
-	}
-	if len(canais) == 0 {
-		return
+		return nil, 0
 	}
 
-	destinos := make([]notifier.Notifier, 0, len(canais))
+	destinos = make([]notifier.Notifier, 0, len(canais))
 	for _, canal := range canais {
+		if !canal.WantsEvent(tipo) {
+			continue
+		}
+		querem++
 		n, err := notifier.Build(canal.Type, canal.Config)
 		if err != nil {
 			// Canal mal configurado não pode calar os outros: o que dá
@@ -380,6 +383,25 @@ func (e *Engine) notify(ctx context.Context, m domain.Monitor, evt Event, cause 
 			continue
 		}
 		destinos = append(destinos, n)
+	}
+	return destinos, querem
+}
+
+// notify monta os canais do monitor e entrega o aviso.
+func (e *Engine) notify(ctx context.Context, m domain.Monitor, evt Event, cause string) {
+	if e.dispatch == nil {
+		return
+	}
+
+	// O filtro por evento vive em destinationsFor, antes de montar os
+	// destinos: o canal que não assina este tipo de evento não vira destino.
+	// querem conta os que o assinam, montem eles ou não — nenhum interessado
+	// significa nada a enfileirar; o canal mal configurado que o assina
+	// mantém o enfileiramento de pé (ver TestEngineSurvivesMalformedChannel),
+	// para não calar os demais.
+	destinos, querem := e.destinationsFor(ctx, m, evt.Kind.EventType())
+	if querem == 0 {
+		return
 	}
 
 	aviso := notifier.Notification{

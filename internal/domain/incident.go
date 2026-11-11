@@ -3,6 +3,7 @@ package domain
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -141,9 +142,28 @@ type Channel struct {
 	// (notifier.RedactConfig).
 	Config json.RawMessage `json:"-"`
 
+	// Events são os tipos de evento que este canal recebe. Vazio recebe
+	// todos — é o que todo canal cadastrado antes do filtro tem, e o padrão
+	// de quem não quis escolher. Um conjunto não vazio recebe exatamente os
+	// tipos listados (ver WantsEvent), e o motor consulta isso antes de
+	// enfileirar o aviso.
+	Events []EventType `json:"events,omitempty"`
+
 	Enabled   bool      `json:"enabled"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// WantsEvent informa se o canal recebe o tipo de evento dado.
+//
+// Conjunto vazio recebe tudo: é o comportamento de quem nunca configurou o
+// filtro, e o que mantém cada canal já cadastrado recebendo toda transição
+// como antes — inclusive tipos de famílias acrescentadas depois.
+func (c Channel) WantsEvent(t EventType) bool {
+	if len(c.Events) == 0 {
+		return true
+	}
+	return slices.Contains(c.Events, t)
 }
 
 // Validate confere as invariantes do canal.
@@ -158,7 +178,7 @@ func (c Channel) Validate() error {
 	if strings.TrimSpace(c.Type) == "" {
 		return invalid("type", "não pode ser vazio")
 	}
-	return nil
+	return validateEventFilter(c.Events)
 }
 
 // MarshalJSON serializa o canal sem a configuração.

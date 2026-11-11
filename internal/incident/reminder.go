@@ -186,8 +186,12 @@ func (e *Engine) underMaintenance(m domain.Monitor, at time.Time) bool {
 
 // remind entrega o lembrete pelos mesmos canais e pela mesma fila do aviso
 // de queda.
+//
+// O lembrete é um "continua fora do ar": passa pelo mesmo filtro de evento
+// da queda (destinationsFor com EventMonitorDown), senão um canal que não
+// assina a queda receberia pelo lembrete o que a transição não lhe manda.
 func (e *Engine) remind(ctx context.Context, m domain.Monitor, inc domain.Incident, at time.Time, grupos domain.GroupTree) {
-	destinos := e.destinations(ctx, m)
+	destinos, _ := e.destinationsFor(ctx, m, domain.EventMonitorDown)
 	if len(destinos) == 0 {
 		return
 	}
@@ -207,28 +211,4 @@ func (e *Engine) remind(ctx context.Context, m domain.Monitor, inc domain.Incide
 		Dependents: e.dependents(m.ID),
 		Reminder:   true,
 	}, destinos)
-}
-
-// destinations monta os notificadores dos canais do monitor para o
-// lembrete, pela mesma regra do aviso de mudança (Channels().Destinations).
-func (e *Engine) destinations(ctx context.Context, m domain.Monitor) []notifier.Notifier {
-	canais, err := e.store.Channels().Destinations(ctx, m.ID)
-	if err != nil {
-		slog.Error("falha ao listar canais do monitor", "monitor", m.Name, "erro", err)
-		return nil
-	}
-
-	destinos := make([]notifier.Notifier, 0, len(canais))
-	for _, canal := range canais {
-		n, err := notifier.Build(canal.Type, canal.Config)
-		if err != nil {
-			// Canal mal configurado não pode calar os outros: o que dá
-			// para entregar, se entrega.
-			slog.Error("canal de aviso inválido",
-				"canal", canal.Name, "tipo", canal.Type, "erro", err)
-			continue
-		}
-		destinos = append(destinos, n)
-	}
-	return destinos
 }

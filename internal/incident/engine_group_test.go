@@ -47,6 +47,39 @@ func TestEngineNotifiesThroughTheGroupChannel(t *testing.T) {
 	}
 }
 
+// O canal que filtra eventos só recebe os que assina. Um canal que
+// escolheu a queda não pode receber a volta: o filtro acontece no motor,
+// antes do enfileiramento, e a volta nem chega a ser um destino.
+func TestEngineFiltersEventsPerChannel(t *testing.T) {
+	f := newEngine(t)
+	f.linkChannelWithEvents(t, domain.EventMonitorDown)
+
+	// Cai (confirma) e volta (confirma).
+	f.observe(t, append(repeatStatus(threshold, domain.StatusDown), repeatStatus(threshold, domain.StatusUp)...)...)
+
+	enviados := f.dispatch.all()
+	if len(enviados) != 1 {
+		t.Fatalf("enviou %d avisos, want 1 — a volta deveria ter sido filtrada", len(enviados))
+	}
+	if enviados[0].Event.Kind != domain.ChangeDown {
+		t.Errorf("o aviso entregue foi %v, want a queda", enviados[0].Event.Kind)
+	}
+}
+
+// O canal sem filtro recebe toda transição, como antes do recurso: o
+// conjunto vazio não pode virar "não recebe nada".
+func TestEngineChannelWithoutFilterReceivesEverything(t *testing.T) {
+	f := newEngine(t)
+	f.linkChannelWithEvents(t) // sem eventos: recebe tudo
+
+	f.observe(t, append(repeatStatus(threshold, domain.StatusDown), repeatStatus(threshold, domain.StatusUp)...)...)
+
+	enviados := f.dispatch.all()
+	if len(enviados) != 2 {
+		t.Fatalf("enviou %d avisos, want 2 (queda e volta)", len(enviados))
+	}
+}
+
 // Cada mudança confirmada fica no histórico com a causa. Sem isso a aba
 // de eventos só teria as batidas cruas, que somem em dias, e a pergunta
 // "quando caiu e por quê?" ficaria sem resposta depois da poda.
