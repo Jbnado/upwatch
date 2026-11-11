@@ -55,7 +55,27 @@ var (
 	// ErrSetupComplete indica que o assistente de primeiro acesso já foi
 	// usado.
 	ErrSetupComplete = errors.New("auth: a instalação já possui uma conta")
+
+	// ErrTokenAlreadyRotated recusa rotacionar um token que já foi
+	// rotacionado: o substituto é o que se rotaciona a seguir, não o antigo
+	// de novo. Sem a guarda, um token teria vários sucessores e a detecção
+	// de reuso não saberia qual olhar.
+	ErrTokenAlreadyRotated = errors.New("auth: o token já foi rotacionado")
 )
+
+// TokenReuseError sinaliza que um token rotacionado foi usado depois de o
+// sucessor já estar em uso — o cliente migrou para o segredo novo, e usar o
+// antigo denuncia vazamento. Desembrulha para ErrUnauthenticated, de modo
+// que quem só distingue "autenticado ou não" segue negando; quem quer o
+// rastro da auditoria lê o nome da conta e do token (nunca o segredo).
+type TokenReuseError struct {
+	Username  string
+	TokenName string
+}
+
+func (e *TokenReuseError) Error() string { return "auth: token reusado após rotação" }
+
+func (e *TokenReuseError) Unwrap() error { return ErrUnauthenticated }
 
 // Options configura o serviço. Campos zerados assumem o padrão.
 type Options struct {
@@ -63,6 +83,10 @@ type Options struct {
 	Clock      clock.Clock
 	// LoginFloor injeta um piso de espera; zero desliga a espera nos testes.
 	LoginFloor time.Duration
+	// TokenExpiry é a política de validade de tokens da instalação,
+	// aplicada na emissão. O valor zero não exige validade nem limita o
+	// teto, que é o comportamento de quem não configurou nada.
+	TokenExpiry domain.TokenExpiryPolicy
 }
 
 // Service reúne as operações de identidade.
@@ -73,6 +97,8 @@ type Service struct {
 
 	attempts   *attempts
 	loginFloor time.Duration
+
+	tokenExpiry domain.TokenExpiryPolicy
 
 	decoy      string
 	decoyError error
@@ -87,11 +113,12 @@ func New(s store.MetadataStore, opts Options) *Service {
 		opts.Clock = clock.Real()
 	}
 	svc := &Service{
-		store:      s,
-		clock:      opts.Clock,
-		sessionTTL: opts.SessionTTL,
-		attempts:   newAttempts(opts.Clock),
-		loginFloor: opts.LoginFloor,
+		store:       s,
+		clock:       opts.Clock,
+		sessionTTL:  opts.SessionTTL,
+		attempts:    newAttempts(opts.Clock),
+		loginFloor:  opts.LoginFloor,
+		tokenExpiry: opts.TokenExpiry,
 	}
 	svc.decoyError = svc.prepareDecoy(domain.PasswordHashCost)
 	return svc
@@ -343,6 +370,13 @@ func (s *Service) IssueToken(
 		return domain.APIToken{}, "", fmt.Errorf("auth: o token precisa de um nome")
 	}
 
+	// A validade pedida passa pela política da instalação antes de qualquer
+	// escrita: exigência e teto são decididos no domínio, e a recusa chega
+	// como erro de validação (campo expires_at), não como token gravado.
+	if err := s.tokenExpiry.CheckExpiry(expiresAt, s.clock.Now()); err != nil {
+		return domain.APIToken{}, "", err
+	}
+
 	secret, err := domain.NewToken()
 	if err != nil {
 		return domain.APIToken{}, "", err
@@ -356,6 +390,89 @@ func (s *Service) IssueToken(
 		return domain.APIToken{}, "", err
 	}
 	return tok, secret.Secret, nil
+}
+
+// UpdateTokenExpiry edita a validade de um token da própria conta e devolve
+// se a troca esticou o prazo, para o chamador registrar o esticão.
+//
+// Encurtar ou adicionar prazo é livre; esticar respeita o teto contado
+// desde a criação (ver domain.TokenExpiryPolicy.CheckExpiryEdit). A checagem
+// de dono é a mesma de RevokeToken: editar por id não pode alcançar a
+// credencial de outra conta.
+func (s *Service) UpdateTokenExpiry(
+	ctx context.Context, userID, tokenID int64, expiresAt *time.Time,
+) (bool, error) {
+	owned, err := s.store.Tokens().List(ctx, userID)
+	if err != nil {
+		return false, err
+	}
+	var tok domain.APIToken
+	found := false
+	for _, t := range owned {
+		if t.ID == tokenID {
+			tok, found = t, true
+			break
+		}
+	}
+	if !found {
+		return false, fmt.Errorf("token %d: %w", tokenID, store.ErrNotFound)
+	}
+
+	extended, err := s.tokenExpiry.CheckExpiryEdit(tok.CreatedAt, tok.ExpiresAt, expiresAt, s.clock.Now())
+	if err != nil {
+		return false, err
+	}
+	if err := s.store.Tokens().SetExpiry(ctx, tokenID, expiresAt); err != nil {
+		return false, err
+	}
+	return extended, nil
+}
+
+// RotateToken emite um substituto para um token da própria conta e devolve
+// o token novo e o segredo, mostrado só aqui. O antigo não é revogado:
+// segue válido na janela de sobreposição até o dono revogá-lo, para a
+// rotação não parar a automação entre emitir o novo e trocar o segredo.
+//
+// A checagem de dono é a de RevokeToken; o substituto herda o nome do
+// antigo e obedece à política de validade como uma emissão nova.
+func (s *Service) RotateToken(
+	ctx context.Context, userID, tokenID int64, expiresAt *time.Time,
+) (domain.APIToken, string, error) {
+	owned, err := s.store.Tokens().List(ctx, userID)
+	if err != nil {
+		return domain.APIToken{}, "", err
+	}
+	var old domain.APIToken
+	found := false
+	for _, t := range owned {
+		if t.ID == tokenID {
+			old, found = t, true
+			break
+		}
+	}
+	if !found {
+		return domain.APIToken{}, "", fmt.Errorf("token %d: %w", tokenID, store.ErrNotFound)
+	}
+	if old.Rotated() {
+		return domain.APIToken{}, "", ErrTokenAlreadyRotated
+	}
+
+	if err := s.tokenExpiry.CheckExpiry(expiresAt, s.clock.Now()); err != nil {
+		return domain.APIToken{}, "", err
+	}
+
+	secret, err := domain.NewToken()
+	if err != nil {
+		return domain.APIToken{}, "", err
+	}
+	novo := domain.APIToken{
+		UserID: userID, Name: old.Name,
+		Hash: secret.Hash, Prefix: secret.Prefix, ExpiresAt: expiresAt,
+	}
+	if err := s.store.Tokens().Rotate(ctx, tokenID, &novo); err != nil {
+		return domain.APIToken{}, "", err
+	}
+	return novo, secret.Secret, nil
 }
 
 // AuthenticateToken resolve um segredo de API na conta dona.
@@ -375,6 +492,28 @@ func (s *Service) AuthenticateToken(ctx context.Context, secret string) (domain.
 	now := s.clock.Now()
 	if tok.Expired(now) {
 		return domain.User{}, ErrUnauthenticated
+	}
+
+	// Detecção de reuso: um token rotacionado cujo sucessor já foi usado
+	// significa que o cliente migrou para o segredo novo. Daí em diante,
+	// usar o antigo é sinal de vazamento — revoga o antigo (a credencial que
+	// vazou), nega e sinaliza para a auditoria. Antes de o sucessor ser
+	// usado é só a sobreposição da rotação: o antigo segue valendo.
+	if tok.Rotated() {
+		reused, err := s.store.Tokens().SuccessorUsed(ctx, tok.ID)
+		if err != nil {
+			return domain.User{}, err
+		}
+		if reused {
+			username := ""
+			if dono, e := s.store.Users().Get(ctx, tok.UserID); e == nil {
+				username = dono.Username
+			}
+			if e := s.store.Tokens().Revoke(ctx, tok.ID, domain.TokenRevokeReuse, nil); e != nil {
+				return domain.User{}, e
+			}
+			return domain.User{}, &TokenReuseError{Username: username, TokenName: tok.Name}
+		}
 	}
 
 	u, err := s.store.Users().Get(ctx, tok.UserID)
@@ -397,10 +536,18 @@ func (s *Service) ListTokens(ctx context.Context, userID int64) ([]domain.APITok
 	return s.store.Tokens().List(ctx, userID)
 }
 
-// RevokeToken apaga um token da própria conta.
+// TokenExpiryPolicy devolve a política de validade da instalação, para a
+// interface oferecer só as opções que a emissão aceita.
+func (s *Service) TokenExpiryPolicy() domain.TokenExpiryPolicy {
+	return s.tokenExpiry
+}
+
+// RevokeToken revoga um token da própria conta (autosserviço), retendo o
+// registro com o ator (o próprio dono) e o motivo manual.
 //
 // A checagem de dono impede que uma conta revogue credencial de outra, o
-// que seria escalonamento de privilégio assim que houver mais de uma.
+// que seria escalonamento de privilégio. É o que uma conta rebaixada ainda
+// pode fazer com os próprios tokens, sem ganhar poder sobre os de terceiros.
 func (s *Service) RevokeToken(ctx context.Context, userID, tokenID int64) error {
 	owned, err := s.store.Tokens().List(ctx, userID)
 	if err != nil {
@@ -408,10 +555,21 @@ func (s *Service) RevokeToken(ctx context.Context, userID, tokenID int64) error 
 	}
 	for _, tok := range owned {
 		if tok.ID == tokenID {
-			return s.store.Tokens().Delete(ctx, tokenID)
+			ator := userID
+			return s.store.Tokens().Revoke(ctx, tokenID, domain.TokenRevokeManual, &ator)
 		}
 	}
 	return fmt.Errorf("token %d: %w", tokenID, store.ErrNotFound)
+}
+
+// RevokeAccountTokens revoga em massa os tokens ativos de uma conta e
+// devolve quantos revogou. É a revogação administrativa: o admin sempre pode
+// cortar as credenciais de uma conta, para uma conta rebaixada ou
+// comprometida não deixar token órfão. actor é quem revogou; reason
+// distingue o motivo (manual, rebaixamento) na auditoria e no registro
+// retido. A autorização — que só administrador chega aqui — é do roteador.
+func (s *Service) RevokeAccountTokens(ctx context.Context, targetUserID int64, reason string, actor int64) (int64, error) {
+	return s.store.Tokens().RevokeAllByUser(ctx, targetUserID, reason, &actor)
 }
 
 // CreateUser cadastra uma conta com o papel e o escopo indicados.

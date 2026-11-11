@@ -361,6 +361,15 @@ func (a *API) routes() http.Handler {
 			t.handle(http.MethodGet, "/maintenance-windows/{id}", policyFiltered, a.handleGetMaintenance)
 
 			t.handle(http.MethodGet, "/events", policyStream, a.handleEvents)
+
+			// Tokens de API: ver e revogar os próprios é autosserviço de
+			// qualquer papel. Uma conta rebaixada precisa poder limpar as
+			// credenciais que emitiu enquanto administrava, sem recuperar o
+			// poder de emitir ou mexer nas de terceiros — por isso só estas
+			// duas rotas saem do grupo de administrador. Emitir, rotacionar e
+			// editar a validade seguem sendo de administrador (abaixo).
+			t.handle(http.MethodGet, "/auth/tokens", policyAccount, a.handleListTokens)
+			t.handle(http.MethodDelete, "/auth/tokens/{id}", policyAccount, a.handleRevokeToken)
 		})
 
 		// Escrita: só administrador.
@@ -373,12 +382,19 @@ func (a *API) routes() http.Handler {
 			r.Use(a.authenticate, a.requireEnrollment, a.requireAdmin, a.withViewer, a.scopeGuard)
 			t := t.on(r)
 
-			// Token de API faz tudo o que a interface faz, então criá-lo
-			// é operação de administrador — senão o observador emitiria
-			// para si mesmo uma credencial sem as suas restrições.
-			t.handle(http.MethodGet, "/auth/tokens", policyAccount, a.handleListTokens)
+			// Token de API faz tudo o que a interface faz, então emiti-lo,
+			// rotacioná-lo e esticar sua validade são operações de
+			// administrador — senão o observador emitiria para si mesmo uma
+			// credencial sem as suas restrições. Ver e revogar os próprios é
+			// autosserviço, e mora no grupo acima.
 			t.handle(http.MethodPost, "/auth/tokens", policyAccount, a.handleCreateToken)
-			t.handle(http.MethodDelete, "/auth/tokens/{id}", policyAccount, a.handleRevokeToken)
+			t.handle(http.MethodPost, "/auth/tokens/{id}/rotate", policyAccount, a.handleRotateToken)
+			t.handle(http.MethodPatch, "/auth/tokens/{id}", policyAccount, a.handleUpdateTokenExpiry)
+
+			// Revogação administrativa em massa: o admin corta todas as
+			// credenciais de uma conta, para uma conta rebaixada ou
+			// comprometida não deixar token órfão.
+			t.handle(http.MethodDelete, "/users/{id}/tokens", policyUser, a.handleRevokeUserTokens)
 
 			t.handle(http.MethodGet, "/users", policyFiltered, a.handleListUsers)
 			t.handle(http.MethodPost, "/users", policyPlacement, a.handleCreateUser)

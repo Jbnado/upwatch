@@ -2,7 +2,7 @@ import {
   ApiError,
   type Announcement,
   type AnnouncementUpdate,
-  type APIToken,
+  type TokenList,
   type Channel,
   type ChannelDetail,
   type ChannelInput,
@@ -152,14 +152,33 @@ export const api = {
   /** resetUserTOTP desliga o segundo fator de outra conta. */
   resetUserTOTP: (id: number) => request<void>(`/users/${id}/2fa`, { method: "DELETE" }),
 
+  /** revokeUserTokens revoga em massa os tokens de uma conta (administrativo). */
+  revokeUserTokens: (id: number) =>
+    request<{ revoked: number }>(`/users/${id}/tokens`, { method: "DELETE" }),
+
   // ---------- tokens ----------
 
-  listTokens: () => request<{ items: APIToken[] }>("/auth/tokens"),
+  listTokens: () => request<TokenList>("/auth/tokens"),
 
-  createToken: (name: string) =>
+  /** createToken emite um token; expiresAt nulo pede "sem expiração". */
+  createToken: (name: string, expiresAt?: string | null) =>
     request<CreatedToken>("/auth/tokens", {
       method: "POST",
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, expires_at: expiresAt ?? undefined }),
+    }),
+
+  /** rotateToken emite um substituto; o antigo vale até ser revogado. */
+  rotateToken: (id: number, expiresAt: string | null) =>
+    request<CreatedToken>(`/auth/tokens/${id}/rotate`, {
+      method: "POST",
+      body: JSON.stringify({ expires_at: expiresAt ?? undefined }),
+    }),
+
+  /** updateTokenExpiry edita a validade; expiresAt nulo remove o prazo. */
+  updateTokenExpiry: (id: number, expiresAt: string | null) =>
+    request<void>(`/auth/tokens/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ expires_at: expiresAt ?? undefined }),
     }),
 
   revokeToken: (id: number) => request<void>(`/auth/tokens/${id}`, { method: "DELETE" }),

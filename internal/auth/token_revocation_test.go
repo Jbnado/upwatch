@@ -125,9 +125,13 @@ type tokenRepoQuebrado struct {
 	erro error
 }
 
-func (r tokenRepoQuebrado) DeleteByUser(context.Context, int64) error { return r.erro }
+func (r tokenRepoQuebrado) RevokeAllByUser(context.Context, int64, string, *int64) (int64, error) {
+	return 0, r.erro
+}
 
-func (r tokenRepoQuebrado) DeleteOthers(context.Context, int64, string) error { return r.erro }
+func (r tokenRepoQuebrado) RevokeOthers(context.Context, int64, string, string, *int64) error {
+	return r.erro
+}
 
 // Revogação que falha não pode deixar o estado mudado, senão o retry é uma
 // armadilha: o operador recebe erro, repete, e a segunda tentativa recusa

@@ -197,12 +197,46 @@ type APIToken struct {
 	CreatedAt  time.Time  `json:"created_at"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+
+	// RotatedAt marca que o token foi rotacionado: segue válido na janela de
+	// sobreposição, mas há um sucessor emitido no lugar dele. Nulo é um
+	// token que nunca foi rotacionado.
+	RotatedAt *time.Time `json:"rotated_at,omitempty"`
+
+	// RevokedAt, RevokedReason e RevokedBy guardam o registro retido de uma
+	// revogação: quando, por quê e por quem (nulo para revogação do sistema
+	// ou da linha de comando). Um token revogado não autentica nem aparece na
+	// listagem ativa, mas o registro sobrevive para a auditoria. Ficam fora
+	// do JSON (ver MarshalJSON): a API não lista token revogado.
+	RevokedAt     *time.Time
+	RevokedReason string
+	RevokedBy     *int64
 }
+
+// Motivos de revogação de token, para o registro retido e a auditoria.
+const (
+	// TokenRevokeManual é a revogação explícita de uma pessoa — o dono no
+	// autosserviço, o administrador, ou o efeito de trocar senha e segundo
+	// fator.
+	TokenRevokeManual = "manual"
+	// TokenRevokeReuse é a revogação automática disparada pela detecção de
+	// reuso de um token rotacionado.
+	TokenRevokeReuse = "reuso"
+	// TokenRevokeDemotion é a revogação administrativa dos tokens de uma
+	// conta rebaixada, para ela não deixar credencial órfã.
+	TokenRevokeDemotion = "rebaixamento"
+)
+
+// Revoked informa se o token já foi revogado.
+func (t APIToken) Revoked() bool { return t.RevokedAt != nil }
 
 // Expired informa se o token já venceu. Sem validade, nunca vence.
 func (t APIToken) Expired(now time.Time) bool {
 	return t.ExpiresAt != nil && now.After(*t.ExpiresAt)
 }
+
+// Rotated informa se o token já foi rotacionado.
+func (t APIToken) Rotated() bool { return t.RotatedAt != nil }
 
 // MarshalJSON serializa o token sem o hash.
 func (t APIToken) MarshalJSON() ([]byte, error) {
@@ -214,11 +248,81 @@ func (t APIToken) MarshalJSON() ([]byte, error) {
 		CreatedAt  time.Time  `json:"created_at"`
 		LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 		ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+		RotatedAt  *time.Time `json:"rotated_at,omitempty"`
 	}
 	return json.Marshal(alias{
 		ID: t.ID, UserID: t.UserID, Name: t.Name, Prefix: t.Prefix,
 		CreatedAt: t.CreatedAt, LastUsedAt: t.LastUsedAt, ExpiresAt: t.ExpiresAt,
+		RotatedAt: t.RotatedAt,
 	})
+}
+
+// TokenExpiryPolicy é a política de validade de tokens de API da instalação,
+// aplicada na criação de um token novo.
+type TokenExpiryPolicy struct {
+	// MaxLifetime é o maior prazo de vida permitido a partir da criação.
+	// Zero significa sem teto.
+	MaxLifetime time.Duration
+
+	// Require exige que todo token novo tenha data de expiração.
+	Require bool
+}
+
+// CheckExpiry valida a expiração pedida para um token criado em now.
+// expiresAt nil significa "sem expiração".
+func (p TokenExpiryPolicy) CheckExpiry(expiresAt *time.Time, now time.Time) error {
+	if expiresAt == nil {
+		if p.Require {
+			return invalid("expires_at", "a instalação exige data de expiração")
+		}
+		return nil
+	}
+	if !expiresAt.After(now) {
+		return invalid("expires_at", "a data de expiração deve ser no futuro")
+	}
+	if p.MaxLifetime > 0 && expiresAt.After(now.Add(p.MaxLifetime)) {
+		return invalid("expires_at", "a data de expiração excede o teto da instalação")
+	}
+	return nil
+}
+
+// CheckExpiryEdit valida a troca da expiração de um token já emitido e diz
+// se a troca esticou o prazo, para o chamador registrar na auditoria.
+//
+// createdAt é a âncora do teto: o maior prazo de vida conta desde a
+// criação, não desde agora. current é a expiração atual (nil = sem prazo) e
+// desired a pedida (nil = sem prazo).
+//
+// Encurtar ou adicionar prazo é livre — é sempre mais restritivo que o que
+// havia. Esticar (afastar o vencimento, e remover o prazo é o esticão
+// máximo) respeita o teto e a exigência da instalação. Um prazo pedido
+// precisa ser no futuro: para matar o token agora, revoga-se, não se põe
+// uma data no passado.
+func (p TokenExpiryPolicy) CheckExpiryEdit(createdAt time.Time, current, desired *time.Time, now time.Time) (extended bool, err error) {
+	if desired != nil && !desired.After(now) {
+		return false, invalid("expires_at", "a data de expiração deve ser no futuro")
+	}
+
+	// Esticar é afastar o vencimento, tratando "sem prazo" como infinito:
+	// de um prazo para outro mais tarde, ou de um prazo para nenhum.
+	extended = current != nil && (desired == nil || desired.After(*current))
+	if !extended {
+		return false, nil
+	}
+
+	if desired == nil {
+		if p.Require {
+			return true, invalid("expires_at", "a instalação exige data de expiração")
+		}
+		if p.MaxLifetime > 0 {
+			return true, invalid("expires_at", "remover o prazo excede o teto da instalação")
+		}
+		return true, nil
+	}
+	if p.MaxLifetime > 0 && desired.After(createdAt.Add(p.MaxLifetime)) {
+		return true, invalid("expires_at", "a data de expiração excede o teto da instalação")
+	}
+	return true, nil
 }
 
 // Session é um login ativo na interface.

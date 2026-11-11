@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Jbnado/upwatch/internal/api"
 )
@@ -261,6 +262,93 @@ func TestAuditLogsTokenRevoked(t *testing.T) {
 	assertStatus(t, resp, http.StatusNoContent)
 
 	linha := reg.comAção(t, "token.revogado")
+	exigeCampos(t, linha, "admin", id, "127.0.0.1")
+	// Individual: quantidade 1, motivo manual.
+	if !strings.Contains(linha, "quantidade=1") || !strings.Contains(linha, "motivo=manual") {
+		t.Errorf("a linha de revogação individual não traz motivo/quantidade: %s", linha)
+	}
+}
+
+// A revogação em massa se distingue da individual na auditoria: ação
+// própria, alvo é a conta, e a quantidade diz quantos tokens caíram.
+func TestAuditLogsMassTokenRevocation(t *testing.T) {
+	s, reg := servidorComLog(t, nil)
+	s.setup(t)
+	meuID := int64(decode[map[string]any](t, s.do(t, http.MethodGet, "/api/v1/auth/me", nil))["id"].(float64))
+
+	s.do(t, http.MethodPost, "/api/v1/auth/tokens", map[string]any{"name": "ci"})
+	s.do(t, http.MethodPost, "/api/v1/auth/tokens", map[string]any{"name": "deploy"})
+	assertStatus(t, s.do(t, http.MethodDelete, "/api/v1/users/"+itoa(meuID)+"/tokens", nil),
+		http.StatusOK)
+
+	linha := reg.comAção(t, "token.revogados_em_massa")
+	exigeCampos(t, linha, "admin", "admin", "127.0.0.1")
+	if !strings.Contains(linha, "quantidade=2") || !strings.Contains(linha, "motivo=manual") {
+		t.Errorf("a linha de revogação em massa não traz motivo/quantidade: %s", linha)
+	}
+}
+
+// Rotacionar um token é operação sensível: emite outra credencial de longa
+// duração, e quem rotacionou precisa ficar registrado.
+func TestAuditLogsTokenRotated(t *testing.T) {
+	s, reg := servidorComLog(t, nil)
+	s.setup(t)
+
+	id := strconv.FormatInt(int64(decode[map[string]any](t,
+		s.do(t, http.MethodPost, "/api/v1/auth/tokens", map[string]any{"name": "ci"}))["id"].(float64)), 10)
+	assertStatus(t, s.do(t, http.MethodPost, "/api/v1/auth/tokens/"+id+"/rotate", map[string]any{}),
+		http.StatusCreated)
+
+	linha := reg.comAção(t, "token.rotacionado")
+	exigeCampos(t, linha, "admin", id, "127.0.0.1")
+}
+
+// Usar o token antigo depois de o cliente migrar para o novo é sinal de
+// vazamento: negado e com linha na auditoria apontando a conta e o token.
+func TestAuditLogsTokenReuseAfterRotation(t *testing.T) {
+	s, reg := servidorComLog(t, nil)
+	s.setup(t)
+
+	created := decode[map[string]any](t,
+		s.do(t, http.MethodPost, "/api/v1/auth/tokens", map[string]any{"name": "ci"}))
+	oldSecret := created["token"].(string)
+	id := itoa(int64(created["id"].(float64)))
+	novoSecret := decode[map[string]any](t,
+		s.do(t, http.MethodPost, "/api/v1/auth/tokens/"+id+"/rotate", map[string]any{}))["token"].(string)
+
+	// O cliente migra: usa o segredo novo.
+	assertStatus(t, s.withToken(t, novoSecret, http.MethodGet, "/api/v1/monitors", nil), http.StatusOK)
+	// Usar o antigo agora é reuso: negado e auditado.
+	assertStatus(t, s.withToken(t, oldSecret, http.MethodGet, "/api/v1/monitors", nil),
+		http.StatusUnauthorized)
+
+	linha := reg.comAção(t, "token.reuso")
+	exigeCampos(t, linha, "admin", "ci", "127.0.0.1")
+}
+
+// Esticar a validade amplia o alcance de uma credencial que já existe, e
+// deixa rastro; encurtar é sempre mais restritivo e não gera linha.
+func TestAuditLogsTokenExpiryStretched(t *testing.T) {
+	s, reg := servidorComLog(t, nil)
+	s.setup(t)
+
+	prazo := s.clock.Now().Add(30 * 24 * time.Hour).Format(time.RFC3339)
+	resp := s.do(t, http.MethodPost, "/api/v1/auth/tokens",
+		map[string]any{"name": "ci", "expires_at": prazo})
+	assertStatus(t, resp, http.StatusCreated)
+	id := strconv.FormatInt(int64(decode[map[string]any](t, resp)["id"].(float64)), 10)
+
+	// Encurtar não gera linha.
+	curto := s.clock.Now().Add(20 * 24 * time.Hour).Format(time.RFC3339)
+	assertStatus(t, s.do(t, http.MethodPatch, "/api/v1/auth/tokens/"+id,
+		map[string]any{"expires_at": curto}), http.StatusNoContent)
+	reg.recusaAção(t, "token.validade_esticada")
+
+	// Esticar gera.
+	longo := s.clock.Now().Add(60 * 24 * time.Hour).Format(time.RFC3339)
+	assertStatus(t, s.do(t, http.MethodPatch, "/api/v1/auth/tokens/"+id,
+		map[string]any{"expires_at": longo}), http.StatusNoContent)
+	linha := reg.comAção(t, "token.validade_esticada")
 	exigeCampos(t, linha, "admin", id, "127.0.0.1")
 }
 

@@ -252,7 +252,13 @@ func (a *API) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleListTokens lista as credenciais programáticas da conta.
+// handleListTokens lista as credenciais programáticas da conta e anuncia a
+// política de validade da instalação.
+//
+// A política vai junto da listagem para a interface montar o seletor de
+// validade com só o que a emissão aceita: sem a opção "sem expiração"
+// quando a instalação a exige, e sem prazo acima do teto. A barreira de
+// verdade continua no servidor (ver IssueToken); isto é conveniência.
 func (a *API) handleListTokens(w http.ResponseWriter, r *http.Request) {
 	tokens, err := a.auth.ListTokens(r.Context(), mustUser(r).ID)
 	if err != nil {
@@ -262,7 +268,19 @@ func (a *API) handleListTokens(w http.ResponseWriter, r *http.Request) {
 	if tokens == nil {
 		tokens = []domain.APIToken{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": tokens})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":  tokens,
+		"policy": tokenPolicyBody(a.auth.TokenExpiryPolicy()),
+	})
+}
+
+// tokenPolicyBody traduz a política para a resposta. O teto vai em
+// segundos (0 = sem teto), que é o que a interface converte em datas.
+func tokenPolicyBody(p domain.TokenExpiryPolicy) map[string]any {
+	return map[string]any{
+		"require_expiry":       p.Require,
+		"max_lifetime_seconds": int64(p.MaxLifetime.Seconds()),
+	}
 }
 
 // handleCreateToken emite uma credencial e devolve o segredo.
@@ -297,7 +315,10 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleRevokeToken apaga uma credencial da própria conta.
+// handleRevokeToken revoga uma credencial da própria conta (autosserviço).
+// Qualquer papel pode: é o que uma conta rebaixada ainda faz com os
+// próprios tokens. O registro é retido, e a auditoria marca o individual
+// (quantidade 1) com o motivo manual.
 func (a *API) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r)
 	if !ok {
@@ -308,7 +329,110 @@ func (a *API) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	a.audit(r, audit.AçãoTokenRevogado, strconv.FormatInt(id, 10))
+	a.auditFull(r, audit.Evento{
+		Ação:       audit.AçãoTokenRevogado,
+		Alvo:       strconv.FormatInt(id, 10),
+		Motivo:     domain.TokenRevokeManual,
+		Quantidade: 1,
+	})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleRevokeUserTokens revoga em massa os tokens de uma conta. É a
+// revogação administrativa: o admin sempre pode cortar as credenciais de
+// uma conta, para uma conta rebaixada ou comprometida não deixar token
+// órfão. A auditoria marca o massa (ação própria), com a quantidade e o
+// motivo, e o alvo é a conta.
+func (a *API) handleRevokeUserTokens(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+
+	alvo, err := a.store.Users().Get(r.Context(), id)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+
+	n, err := a.auth.RevokeAccountTokens(r.Context(), id, domain.TokenRevokeManual, mustUser(r).ID)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	a.auditFull(r, audit.Evento{
+		Ação:       audit.AçãoTokenRevogadosEmMassa,
+		Alvo:       alvo.Username,
+		Motivo:     domain.TokenRevokeManual,
+		Quantidade: int(n),
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"revoked": n})
+}
+
+// handleRotateToken emite um substituto para um token da própria conta e
+// devolve o segredo novo. O antigo segue válido na sobreposição até ser
+// revogado. Esta é, como a criação, a única resposta em que o segredo
+// aparece.
+func (a *API) handleRotateToken(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+
+	var body struct {
+		ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+
+	tok, secret, err := a.auth.RotateToken(r.Context(), mustUser(r).ID, id, body.ExpiresAt)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+
+	a.audit(r, audit.AçãoTokenRotacionado, strconv.FormatInt(id, 10))
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id":         tok.ID,
+		"name":       tok.Name,
+		"prefix":     tok.Prefix,
+		"created_at": tok.CreatedAt,
+		"expires_at": tok.ExpiresAt,
+		"token":      secret,
+		"warning":    "guarde este valor agora; ele não pode ser recuperado depois",
+	})
+}
+
+// handleUpdateTokenExpiry edita a validade de um token da própria conta.
+//
+// Encurtar ou adicionar prazo é livre; esticar respeita o teto da
+// instalação e deixa rastro na auditoria. A recusa da política chega como
+// 400 apontando expires_at (ver IssueToken para o mesmo caminho).
+func (a *API) handleUpdateTokenExpiry(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+
+	var body struct {
+		ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+
+	esticou, err := a.auth.UpdateTokenExpiry(r.Context(), mustUser(r).ID, id, body.ExpiresAt)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	// Só o esticão deixa rastro: encurtar e adicionar são sempre mais
+	// restritivos, e registrá-los só encheria o log do que não importa.
+	if esticou {
+		a.audit(r, audit.AçãoTokenValidadeEsticada, strconv.FormatInt(id, 10))
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

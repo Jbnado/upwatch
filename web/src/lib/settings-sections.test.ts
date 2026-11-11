@@ -46,15 +46,18 @@ describe("menu dos ajustes", () => {
     expect(ids(conta("admin", false))).toEqual(["grupos", "contas", "tokens", "senha", "seguranca"]);
   });
 
-  it("deixa ao observador só a própria conta", () => {
-    expect(ids(conta("viewer", true))).toEqual(["senha", "seguranca"]);
-    expect(ids(conta("viewer", false))).toEqual(["senha", "seguranca"]);
+  it("deixa ao observador os próprios tokens e a própria conta", () => {
+    // Autosserviço: ver e revogar os próprios tokens é de qualquer conta,
+    // para uma conta rebaixada poder limpar o que emitiu. Emitir segue
+    // sendo de administrador, e a tela esconde esse botão de quem não é.
+    expect(ids(conta("viewer", true))).toEqual(["tokens", "senha", "seguranca"]);
+    expect(ids(conta("viewer", false))).toEqual(["tokens", "senha", "seguranca"]);
   });
 
   it("não deixa título de grupo sem item embaixo", () => {
     // Um "AVISOS" solto, sem nada abaixo, parece um menu quebrado.
     const titulos = settingsMenu(conta("viewer", true)).map((g) => g.title);
-    expect(titulos).toEqual(["Minha conta"]);
+    expect(titulos).toEqual(["Integrações", "Minha conta"]);
   });
 });
 
@@ -79,6 +82,6 @@ describe("acesso direto pela rota", () => {
 describe("seção inicial", () => {
   it("é a primeira do menu da conta", () => {
     expect(firstSection(conta("admin", true))).toBe("grupos");
-    expect(firstSection(conta("viewer", false))).toBe("senha");
+    expect(firstSection(conta("viewer", false))).toBe("tokens");
   });
 });

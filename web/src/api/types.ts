@@ -298,10 +298,28 @@ export type APIToken = {
   created_at: string;
   last_used_at?: string;
   expires_at?: string;
+  /** rotated_at marca que o token foi rotacionado e tem um sucessor. */
+  rotated_at?: string;
 };
 
 /** CreatedToken traz o segredo, que só aparece nesta resposta. */
 export type CreatedToken = APIToken & { token: string };
+
+/**
+ * TokenExpiryPolicy é a política de validade da instalação, anunciada na
+ * listagem para o seletor oferecer só o que a emissão aceita. O teto vem em
+ * segundos; 0 significa sem teto.
+ */
+export type TokenExpiryPolicy = {
+  require_expiry: boolean;
+  max_lifetime_seconds: number;
+};
+
+/** TokenList é a resposta da listagem: os tokens e a política vigente. */
+export type TokenList = {
+  items: APIToken[];
+  policy: TokenExpiryPolicy;
+};
 
 export type ChannelType = "webhook" | "discord" | "slack" | "teams" | "email" | "ntfy";
 

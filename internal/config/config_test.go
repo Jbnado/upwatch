@@ -425,3 +425,56 @@ func TestInvalidTrustedProxyIsRejected(t *testing.T) {
 		t.Fatal("Load with an invalid proxy returned nil error, want an error")
 	}
 }
+
+// A política de validade de tokens vem da instalação: sem teto e sem
+// exigência por padrão (o comportamento de quem nunca configurou nada), e
+// configurável por arquivo e ambiente.
+func TestTokenExpiryPolicySources(t *testing.T) {
+	d := config.Default()
+	if d.TokenMaxLifetime != 0 {
+		t.Errorf("teto padrão = %v, esperado 0 (sem teto)", d.TokenMaxLifetime)
+	}
+	if d.TokenExpiryRequired {
+		t.Error("exigência de validade ligada por padrão; esperado desligada")
+	}
+
+	// A exigência vem do arquivo; o teto, do ambiente (aceita o sufixo de dias).
+	path := writeFile(t, "token_require_expiry: true\n")
+	t.Setenv("UPWATCH_TOKEN_MAX_LIFETIME", "90d")
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.TokenMaxLifetime != 90*24*time.Hour {
+		t.Errorf("teto = %v, esperado 90d", cfg.TokenMaxLifetime)
+	}
+	if !cfg.TokenExpiryRequired {
+		t.Error("exigência do arquivo não aplicada")
+	}
+
+	// O ambiente vence o arquivo também na exigência.
+	t.Setenv("UPWATCH_TOKEN_REQUIRE_EXPIRY", "false")
+	cfg, err = config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.TokenExpiryRequired {
+		t.Error("o ambiente não desligou a exigência do arquivo")
+	}
+
+	// A política montada reflete os campos.
+	pol := cfg.TokenExpiryPolicy()
+	if pol.MaxLifetime != 90*24*time.Hour || pol.Require {
+		t.Errorf("política = %+v, esperado teto 90d e exigência desligada", pol)
+	}
+}
+
+// Teto negativo é engano de configuração; precisa falhar na partida, não
+// virar um teto no passado que recusaria toda emissão.
+func TestTokenMaxLifetimeRejectsNegative(t *testing.T) {
+	cfg := config.Default()
+	cfg.TokenMaxLifetime = -time.Hour
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("teto de validade negativo aceito")
+	}
+}

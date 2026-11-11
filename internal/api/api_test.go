@@ -427,6 +427,231 @@ func TestRevokedTokenStopsWorking(t *testing.T) {
 	assertStatus(t, after, http.StatusUnauthorized)
 }
 
+// policyServer sobe a API com uma política de validade de token na
+// instalação, trocando o serviço de autenticação por um que a carrega.
+func policyServer(t *testing.T, pol domain.TokenExpiryPolicy) *server {
+	t.Helper()
+	return newServerWith(t, func(o *api.Options) {
+		o.Auth = auth.New(o.Store, auth.Options{Clock: o.Clock, TokenExpiry: pol})
+	})
+}
+
+// A emissão recusada pela política da instalação chega como 400 de
+// validação apontando expires_at, e não como erro interno: o pedido está
+// bem formado, só não cabe na regra.
+func TestCreateTokenBeyondCeilingIsRejected(t *testing.T) {
+	s := policyServer(t, domain.TokenExpiryPolicy{MaxLifetime: 90 * 24 * time.Hour})
+	s.setup(t)
+
+	alem := s.clock.Now().Add(100 * 24 * time.Hour).Format(time.RFC3339)
+	resp := s.do(t, http.MethodPost, "/api/v1/auth/tokens", map[string]any{
+		"name": "ci", "expires_at": alem,
+	})
+	assertStatus(t, resp, http.StatusBadRequest)
+
+	got := decode[struct {
+		Error struct {
+			Field string `json:"field"`
+		} `json:"error"`
+	}](t, resp)
+	if got.Error.Field != "expires_at" {
+		t.Errorf("campo do erro = %q, esperado expires_at", got.Error.Field)
+	}
+}
+
+// A listagem informa a política de validade da instalação, para a interface
+// oferecer só as opções que o servidor aceita.
+func TestListTokensExposesExpiryPolicy(t *testing.T) {
+	s := policyServer(t, domain.TokenExpiryPolicy{Require: true, MaxLifetime: 30 * 24 * time.Hour})
+	s.setup(t)
+
+	resp := s.do(t, http.MethodGet, "/api/v1/auth/tokens", nil)
+	assertStatus(t, resp, http.StatusOK)
+
+	got := decode[struct {
+		Policy struct {
+			RequireExpiry      bool  `json:"require_expiry"`
+			MaxLifetimeSeconds int64 `json:"max_lifetime_seconds"`
+		} `json:"policy"`
+	}](t, resp)
+
+	if !got.Policy.RequireExpiry {
+		t.Error("a política não informa a exigência de validade")
+	}
+	if want := int64((30 * 24 * time.Hour).Seconds()); got.Policy.MaxLifetimeSeconds != want {
+		t.Errorf("teto = %d s, esperado %d s", got.Policy.MaxLifetimeSeconds, want)
+	}
+}
+
+// O dono põe prazo num token que nasceu sem validade pela rota de edição.
+func TestUpdateTokenExpiryAddsDeadline(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+
+	resp := s.do(t, http.MethodPost, "/api/v1/auth/tokens", map[string]any{"name": "ci"})
+	assertStatus(t, resp, http.StatusCreated)
+	id := int64(decode[map[string]any](t, resp)["id"].(float64))
+
+	prazo := s.clock.Now().Add(30 * 24 * time.Hour).Format(time.RFC3339)
+	patch := s.do(t, http.MethodPatch, "/api/v1/auth/tokens/"+itoa(id),
+		map[string]any{"expires_at": prazo})
+	assertStatus(t, patch, http.StatusNoContent)
+
+	listing := decode[struct {
+		Items []struct {
+			ExpiresAt string `json:"expires_at"`
+		} `json:"items"`
+	}](t, s.do(t, http.MethodGet, "/api/v1/auth/tokens", nil))
+	if len(listing.Items) != 1 || listing.Items[0].ExpiresAt == "" {
+		t.Fatalf("a validade não foi gravada: %+v", listing.Items)
+	}
+}
+
+// Uma expiração no passado é recusada como 400 apontando expires_at: para
+// matar o token agora existe a revogação, não uma data no passado.
+func TestUpdateTokenExpiryRejectsPastDate(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+
+	resp := s.do(t, http.MethodPost, "/api/v1/auth/tokens", map[string]any{"name": "ci"})
+	assertStatus(t, resp, http.StatusCreated)
+	id := int64(decode[map[string]any](t, resp)["id"].(float64))
+
+	passado := s.clock.Now().Add(-time.Hour).Format(time.RFC3339)
+	patch := s.do(t, http.MethodPatch, "/api/v1/auth/tokens/"+itoa(id),
+		map[string]any{"expires_at": passado})
+	assertStatus(t, patch, http.StatusBadRequest)
+
+	got := decode[struct {
+		Error struct {
+			Field string `json:"field"`
+		} `json:"error"`
+	}](t, patch)
+	if got.Error.Field != "expires_at" {
+		t.Errorf("campo do erro = %q, esperado expires_at", got.Error.Field)
+	}
+}
+
+// Rotacionar devolve um segredo novo e mantém o antigo valendo na
+// sobreposição, enquanto o sucessor não foi usado.
+func TestRotateTokenKeepsOldWorking(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+
+	created := decode[map[string]any](t,
+		s.do(t, http.MethodPost, "/api/v1/auth/tokens", map[string]any{"name": "ci"}))
+	oldSecret := created["token"].(string)
+	id := int64(created["id"].(float64))
+
+	resp := s.do(t, http.MethodPost, "/api/v1/auth/tokens/"+itoa(id)+"/rotate", map[string]any{})
+	assertStatus(t, resp, http.StatusCreated)
+	novoSecret := decode[map[string]any](t, resp)["token"].(string)
+	if novoSecret == "" || novoSecret == oldSecret {
+		t.Fatal("a rotação não devolveu um segredo novo")
+	}
+
+	// Com o sucessor ainda não usado, os dois autenticam.
+	assertStatus(t, s.withToken(t, oldSecret, http.MethodGet, "/api/v1/monitors", nil), http.StatusOK)
+	assertStatus(t, s.withToken(t, novoSecret, http.MethodGet, "/api/v1/monitors", nil), http.StatusOK)
+}
+
+// Ver e revogar os próprios tokens é autosserviço de qualquer papel: uma
+// conta rebaixada precisa poder limpar as credenciais que emitiu, sem
+// recuperar o poder de emitir.
+func TestViewerSelfServiceTokenRouting(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+	s.comoObservador(t) // a sessão passa a ser de uma conta só de leitura
+
+	// Listar os próprios é permitido (vem vazio).
+	assertStatus(t, s.do(t, http.MethodGet, "/api/v1/auth/tokens", nil), http.StatusOK)
+
+	// Revogar alcança a rota: 404 por não ter o token, não 403 por papel.
+	assertStatus(t, s.do(t, http.MethodDelete, "/api/v1/auth/tokens/999", nil), http.StatusNotFound)
+
+	// Emitir continua sendo de administrador.
+	assertStatus(t, s.do(t, http.MethodPost, "/api/v1/auth/tokens", map[string]any{"name": "x"}),
+		http.StatusForbidden)
+}
+
+// A revogação administrativa corta todas as credenciais de uma conta de uma
+// vez e devolve quantas caíram.
+func TestAdminRevokesAccountTokensInMass(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+	meuID := int64(decode[map[string]any](t, s.do(t, http.MethodGet, "/api/v1/auth/me", nil))["id"].(float64))
+
+	s.do(t, http.MethodPost, "/api/v1/auth/tokens", map[string]any{"name": "ci"})
+	s.do(t, http.MethodPost, "/api/v1/auth/tokens", map[string]any{"name": "deploy"})
+
+	resp := s.do(t, http.MethodDelete, "/api/v1/users/"+itoa(meuID)+"/tokens", nil)
+	assertStatus(t, resp, http.StatusOK)
+	if got := int(decode[map[string]any](t, resp)["revoked"].(float64)); got != 2 {
+		t.Fatalf("revoked = %d, want 2", got)
+	}
+
+	listing := decode[struct {
+		Items []any `json:"items"`
+	}](t, s.do(t, http.MethodGet, "/api/v1/auth/tokens", nil))
+	if len(listing.Items) != 0 {
+		t.Errorf("sobraram %d tokens após a revogação em massa", len(listing.Items))
+	}
+}
+
+// Rotacionar um token já rotacionado é 409: rotaciona-se o substituto.
+func TestRotateAlreadyRotatedIsConflict(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+
+	id := itoa(int64(decode[map[string]any](t,
+		s.do(t, http.MethodPost, "/api/v1/auth/tokens", map[string]any{"name": "ci"}))["id"].(float64)))
+
+	assertStatus(t, s.do(t, http.MethodPost, "/api/v1/auth/tokens/"+id+"/rotate", map[string]any{}), http.StatusCreated)
+	assertStatus(t, s.do(t, http.MethodPost, "/api/v1/auth/tokens/"+id+"/rotate", map[string]any{}), http.StatusConflict)
+}
+
+// O token reflete o acesso atual da conta a cada requisição: rebaixar a
+// conta tira o poder do token na hora, sem revogá-lo nem congelar o escopo
+// na emissão.
+func TestDemotedAccountTokenLosesAdminAccess(t *testing.T) {
+	s := newServer(t)
+	s.setup(t) // admin A, na sessão
+
+	secret := decode[map[string]any](t,
+		s.do(t, http.MethodPost, "/api/v1/auth/tokens", map[string]any{"name": "ci"}))["token"].(string)
+	meuID := int64(decode[map[string]any](t, s.do(t, http.MethodGet, "/api/v1/auth/me", nil))["id"].(float64))
+
+	// Com A ainda administrador, o token faz coisa de administrador.
+	assertStatus(t, s.withToken(t, secret, http.MethodGet, "/api/v1/users", nil), http.StatusOK)
+
+	// Um segundo administrador B rebaixa A a observador.
+	s.criarConta(t, "bia", "admin")
+	bia := s.como(s.entrar(t, "bia", "senha-de-teste-12345"))
+	assertStatus(t, bia.do(t, http.MethodPut, "/api/v1/users/"+itoa(meuID),
+		map[string]any{"role": "viewer"}), http.StatusOK)
+
+	// O MESMO token agora é de observador: a rota de administrador recusa.
+	assertStatus(t, s.withToken(t, secret, http.MethodGet, "/api/v1/users", nil), http.StatusForbidden)
+	// Mas ainda autentica (não foi revogado) — lê o que observador lê.
+	assertStatus(t, s.withToken(t, secret, http.MethodGet, "/api/v1/monitors", nil), http.StatusOK)
+}
+
+// Remover a conta corta o token na hora.
+func TestRemovedAccountTokenStopsWorking(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+
+	secret := decode[map[string]any](t,
+		s.do(t, http.MethodPost, "/api/v1/auth/tokens", map[string]any{"name": "ci"}))["token"].(string)
+	meuID := int64(decode[map[string]any](t, s.do(t, http.MethodGet, "/api/v1/auth/me", nil))["id"].(float64))
+
+	s.criarConta(t, "bia", "admin")
+	bia := s.como(s.entrar(t, "bia", "senha-de-teste-12345"))
+	assertStatus(t, bia.do(t, http.MethodDelete, "/api/v1/users/"+itoa(meuID), nil), http.StatusNoContent)
+
+	assertStatus(t, s.withToken(t, secret, http.MethodGet, "/api/v1/monitors", nil), http.StatusUnauthorized)
+}
+
 // ---------- respostas e cabeçalhos ----------
 
 func TestErrorsUseAConsistentJSONShape(t *testing.T) {

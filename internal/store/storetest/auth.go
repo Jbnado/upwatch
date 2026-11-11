@@ -41,11 +41,15 @@ func authCases() []conformanceCase {
 		{"TokenGetByHash", testTokenGetByHash},
 		{"TokenGetByHashMissingReturnsNotFound", testTokenGetByHashMissingReturnsNotFound},
 		{"TokenListIsScopedToUser", testTokenListIsScopedToUser},
-		{"TokenDelete", testTokenDelete},
-		{"TokenDeleteByUser", testTokenDeleteByUser},
-		{"TokenDeleteOthers", testTokenDeleteOthers},
+		{"TokenRevokeRetainsRecord", testTokenRevokeRetainsRecord},
+		{"TokenRevokeAllByUser", testTokenRevokeAllByUser},
+		{"TokenRevokeOthers", testTokenRevokeOthers},
 		{"TokenTouchLastUsed", testTokenTouchLastUsed},
 		{"TokenRoundTripsExpiry", testTokenRoundTripsExpiry},
+		{"TokenSetExpiry", testTokenSetExpiry},
+		{"TokenRotateKeepsBothValid", testTokenRotateKeepsBothValid},
+		{"TokenSuccessorUsed", testTokenSuccessorUsed},
+		{"TokenCascadesOnUserDelete", testTokenCascadesOnUserDelete},
 	}
 }
 
@@ -621,19 +625,47 @@ func testTokenListIsScopedToUser(t *testing.T, newStore Factory) {
 	}
 }
 
-func testTokenDelete(t *testing.T, newStore Factory) {
+// Revogar retém o registro: o token para de autenticar e some da listagem
+// ativa, mas a linha fica, com quando, por que e por quem — é o que a
+// auditoria lê depois. Revogar de novo não sobrescreve o ator original.
+func testTokenRevokeRetainsRecord(t *testing.T, newStore Factory) {
 	s := newStore(t)
 	ctx := context.Background()
-	u := mustCreateUser(t, s, "admin")
+	ator := mustCreateUser(t, s, "admin")
+	u := mustCreateUser(t, s, "bia")
 	tok, secret := mustCreateToken(t, s, u.ID, "ci")
 
-	if err := s.Tokens().Delete(ctx, tok.ID); err != nil {
-		t.Fatalf("Delete returned unexpected error: %v", err)
+	if err := s.Tokens().Revoke(ctx, tok.ID, domain.TokenRevokeManual, &ator.ID); err != nil {
+		t.Fatalf("Revoke returned unexpected error: %v", err)
 	}
 
-	_, err := s.Tokens().GetByHash(ctx, domain.HashToken(secret.Secret))
-	if !errors.Is(err, store.ErrNotFound) {
+	// Não autentica mais.
+	if _, err := s.Tokens().GetByHash(ctx, domain.HashToken(secret.Secret)); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("the revoked token still authenticates: %v", err)
+	}
+	// Some da listagem ativa.
+	if n := len(mustListTokens(t, s, u.ID)); n != 0 {
+		t.Errorf("o token revogado ainda aparece na listagem ativa: %d", n)
+	}
+	// Mas o registro fica, com motivo e ator.
+	got, err := s.Tokens().Get(ctx, tok.ID)
+	if err != nil {
+		t.Fatalf("o registro do token revogado não foi retido: %v", err)
+	}
+	if got.RevokedAt == nil || got.RevokedReason != domain.TokenRevokeManual ||
+		got.RevokedBy == nil || *got.RevokedBy != ator.ID {
+		t.Errorf("registro de revogação incompleto: %+v", got)
+	}
+
+	// Revogar de novo é ErrNotFound: o token já não está ativo, e o ator e o
+	// motivo originais não podem ser sobrescritos por uma segunda chamada.
+	if err := s.Tokens().Revoke(ctx, tok.ID, domain.TokenRevokeReuse, nil); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("revogar de novo = %v, want ErrNotFound", err)
+	}
+
+	// Get de token inexistente continua ErrNotFound.
+	if _, err := s.Tokens().Get(ctx, 9999); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("Get de token inexistente = %v, want ErrNotFound", err)
 	}
 }
 
@@ -647,7 +679,7 @@ func testTokenDelete(t *testing.T, newStore Factory) {
 // "o token deixa de autenticar", e é GetByHash que autentica (ver
 // testTokenDelete). Um backend que marcasse o token de um jeito que List
 // respeita e GetByHash não passaria a contagem com a credencial viva.
-func testTokenDeleteByUser(t *testing.T, newStore Factory) {
+func testTokenRevokeAllByUser(t *testing.T, newStore Factory) {
 	s := newStore(t)
 	ctx := context.Background()
 	target := mustCreateUser(t, s, "admin")
@@ -656,8 +688,14 @@ func testTokenDeleteByUser(t *testing.T, newStore Factory) {
 	_, outroMeu := mustCreateToken(t, s, target.ID, "backup")
 	_, dele := mustCreateToken(t, s, other.ID, "dele")
 
-	if err := s.Tokens().DeleteByUser(ctx, target.ID); err != nil {
-		t.Fatalf("DeleteByUser returned unexpected error: %v", err)
+	// Devolve a quantidade: é o que a auditoria da revogação em massa
+	// registra.
+	n, err := s.Tokens().RevokeAllByUser(ctx, target.ID, domain.TokenRevokeManual, &other.ID)
+	if err != nil {
+		t.Fatalf("RevokeAllByUser returned unexpected error: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("RevokeAllByUser revogou %d, want 2", n)
 	}
 
 	for _, tok := range []domain.Token{meu, outroMeu} {
@@ -669,21 +707,17 @@ func testTokenDeleteByUser(t *testing.T, newStore Factory) {
 		t.Errorf("token de outra conta deixou de autenticar: %v", err)
 	}
 
-	// Conta sem token nenhum não é erro: a troca de senha de quem nunca
-	// emitiu token chama isto do mesmo jeito. A primeira chamada apaga o
-	// token que other tem; a segunda é que exercita o caso de zero.
-	if err := s.Tokens().DeleteByUser(ctx, other.ID); err != nil {
-		t.Fatalf("DeleteByUser returned unexpected error: %v", err)
-	}
-	if err := s.Tokens().DeleteByUser(ctx, other.ID); err != nil {
-		t.Errorf("DeleteByUser numa conta sem tokens falhou: %v", err)
+	// Conta sem token ativo devolve zero, não erro: a troca de senha de quem
+	// nunca emitiu token chama isto do mesmo jeito.
+	if n, err := s.Tokens().RevokeAllByUser(ctx, target.ID, domain.TokenRevokeManual, &other.ID); err != nil || n != 0 {
+		t.Errorf("RevokeAllByUser numa conta já revogada = %d, %v; want 0, nil", n, err)
 	}
 }
 
 // DeleteOthers preserva a credencial que está fazendo a mudança, que é o
 // que liga ou desliga o segundo fator por token de API. Sem isso aquela
 // chamada devolve sucesso e mata o próprio chamador.
-func testTokenDeleteOthers(t *testing.T, newStore Factory) {
+func testTokenRevokeOthers(t *testing.T, newStore Factory) {
 	s := newStore(t)
 	ctx := context.Background()
 	target := mustCreateUser(t, s, "admin")
@@ -692,8 +726,8 @@ func testTokenDeleteOthers(t *testing.T, newStore Factory) {
 	_, antigo := mustCreateToken(t, s, target.ID, "automacao-antiga")
 	_, dele := mustCreateToken(t, s, other.ID, "dele")
 
-	if err := s.Tokens().DeleteOthers(ctx, target.ID, chamador.Hash); err != nil {
-		t.Fatalf("DeleteOthers returned unexpected error: %v", err)
+	if err := s.Tokens().RevokeOthers(ctx, target.ID, chamador.Hash, domain.TokenRevokeManual, &target.ID); err != nil {
+		t.Fatalf("RevokeOthers returned unexpected error: %v", err)
 	}
 
 	if _, err := s.Tokens().GetByHash(ctx, chamador.Hash); err != nil {
@@ -737,6 +771,50 @@ func testTokenTouchLastUsed(t *testing.T, newStore Factory) {
 	}
 }
 
+// Editar a expiração grava só a coluna de expiração: o dono pode pôr prazo
+// num token que nasceu sem, encurtar, esticar ou removê-lo de novo, e o
+// resto do registro — nome, prefixo, criação — fica como estava.
+func testTokenSetExpiry(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	u := mustCreateUser(t, s, "admin")
+	tok, secret := mustCreateToken(t, s, u.ID, "ci") // nasce sem expiração
+
+	prazo := epoch.Add(30 * 24 * time.Hour)
+	if err := s.Tokens().SetExpiry(ctx, tok.ID, &prazo); err != nil {
+		t.Fatalf("SetExpiry returned unexpected error: %v", err)
+	}
+	got, err := s.Tokens().GetByHash(ctx, domain.HashToken(secret.Secret))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ExpiresAt == nil || !got.ExpiresAt.Equal(prazo) {
+		t.Fatalf("ExpiresAt = %v, want %v", got.ExpiresAt, prazo)
+	}
+	// Só a expiração mudou.
+	if got.Name != tok.Name || got.Prefix != tok.Prefix || !got.CreatedAt.Equal(tok.CreatedAt) {
+		t.Errorf("SetExpiry alterou outros campos: %+v (criado %+v)", got, tok)
+	}
+
+	// Remover o prazo volta a "sem expiração".
+	if err := s.Tokens().SetExpiry(ctx, tok.ID, nil); err != nil {
+		t.Fatalf("SetExpiry(nil) returned unexpected error: %v", err)
+	}
+	got, err = s.Tokens().GetByHash(ctx, domain.HashToken(secret.Secret))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ExpiresAt != nil {
+		t.Errorf("ExpiresAt = %v após remover, want nil", got.ExpiresAt)
+	}
+
+	// Token inexistente é ErrNotFound: a interface pede por id, e um id que
+	// não é de ninguém não pode passar calado.
+	if err := s.Tokens().SetExpiry(ctx, 9999, &prazo); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("SetExpiry em token inexistente = %v, want ErrNotFound", err)
+	}
+}
+
 func testTokenRoundTripsExpiry(t *testing.T, newStore Factory) {
 	s := newStore(t)
 	ctx := context.Background()
@@ -765,6 +843,124 @@ func testTokenRoundTripsExpiry(t *testing.T, newStore Factory) {
 	if !got.ExpiresAt.Equal(expires) {
 		t.Errorf("ExpiresAt = %v, want %v", got.ExpiresAt, expires)
 	}
+}
+
+// Rotacionar emite um substituto e marca o antigo como rotacionado, sem
+// revogá-lo: os dois seguem válidos (sobreposição) até o dono revogar o
+// antigo, para a rotação não ter janela de corte.
+func testTokenRotateKeepsBothValid(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	u := mustCreateUser(t, s, "admin")
+	old, oldSecret := mustCreateToken(t, s, u.ID, "ci")
+
+	novoSecret, err := domain.NewToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	novo := domain.APIToken{
+		UserID: u.ID, Name: "ci (rotacionado)",
+		Hash: novoSecret.Hash, Prefix: novoSecret.Prefix,
+	}
+	if err := s.Tokens().Rotate(ctx, old.ID, &novo); err != nil {
+		t.Fatalf("Rotate returned unexpected error: %v", err)
+	}
+	if novo.ID == 0 || novo.CreatedAt.IsZero() {
+		t.Errorf("Rotate não preencheu o token substituto: %+v", novo)
+	}
+
+	// O antigo segue autenticando, agora marcado como rotacionado.
+	gotOld, err := s.Tokens().GetByHash(ctx, domain.HashToken(oldSecret.Secret))
+	if err != nil {
+		t.Fatalf("o token antigo deixou de autenticar após a rotação: %v", err)
+	}
+	if gotOld.RotatedAt == nil {
+		t.Error("o token antigo não ficou marcado como rotacionado")
+	}
+
+	// O substituto também autentica.
+	if _, err := s.Tokens().GetByHash(ctx, novoSecret.Hash); err != nil {
+		t.Errorf("o token substituto não autentica: %v", err)
+	}
+
+	// Rotacionar um token inexistente é ErrNotFound, sem gravar o substituto.
+	antes := len(mustListTokens(t, s, u.ID))
+	outro := domain.APIToken{UserID: u.ID, Name: "x", Hash: "h-inexistente", Prefix: "upw_x"}
+	if err := s.Tokens().Rotate(ctx, 9999, &outro); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("Rotate de token inexistente = %v, want ErrNotFound", err)
+	}
+	if depois := len(mustListTokens(t, s, u.ID)); depois != antes {
+		t.Errorf("a rotação recusada gravou o substituto: antes %d, depois %d", antes, depois)
+	}
+}
+
+// SuccessorUsed é o gatilho da detecção de reuso: só acusa quando o token
+// substituto já foi usado, ou seja, quando o cliente migrou para o segredo
+// novo e usar o antigo passa a ser sinal de vazamento.
+func testTokenSuccessorUsed(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	u := mustCreateUser(t, s, "admin")
+	old, _ := mustCreateToken(t, s, u.ID, "ci")
+
+	novoSecret, err := domain.NewToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	novo := domain.APIToken{UserID: u.ID, Name: "ci2", Hash: novoSecret.Hash, Prefix: novoSecret.Prefix}
+	if err := s.Tokens().Rotate(ctx, old.ID, &novo); err != nil {
+		t.Fatal(err)
+	}
+
+	// Antes de o substituto ser usado, não há reuso a detectar.
+	if used, err := s.Tokens().SuccessorUsed(ctx, old.ID); err != nil || used {
+		t.Fatalf("SuccessorUsed antes do uso = %v, %v; want false, nil", used, err)
+	}
+
+	// Usar o substituto arma a detecção.
+	if err := s.Tokens().TouchLastUsed(ctx, novo.ID, epoch.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if used, err := s.Tokens().SuccessorUsed(ctx, old.ID); err != nil || !used {
+		t.Fatalf("SuccessorUsed após o uso = %v, %v; want true, nil", used, err)
+	}
+
+	// Um token sem substituto nunca acusa reuso.
+	solo, _ := mustCreateToken(t, s, u.ID, "solo")
+	if used, err := s.Tokens().SuccessorUsed(ctx, solo.ID); err != nil || used {
+		t.Fatalf("SuccessorUsed sem sucessor = %v, %v; want false, nil", used, err)
+	}
+}
+
+// Remover a conta corta os tokens dela na hora, por cascata: quem perdeu o
+// acesso não deixa credencial de pé esperando o vencimento. Diferente de uma
+// revogação, o registro sai junto — não há conta a que prender o retido.
+func testTokenCascadesOnUserDelete(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	mustCreateUser(t, s, "fica") // outro administrador, para não ser o último
+	u := mustCreateUser(t, s, "demitido")
+	tok, secret := mustCreateToken(t, s, u.ID, "ci")
+
+	if err := s.Users().Delete(ctx, u.ID); err != nil {
+		t.Fatalf("Delete returned unexpected error: %v", err)
+	}
+
+	if _, err := s.Tokens().GetByHash(ctx, domain.HashToken(secret.Secret)); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("o token sobreviveu à remoção da conta: %v", err)
+	}
+	if _, err := s.Tokens().Get(ctx, tok.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("o registro do token sobreviveu à remoção da conta: %v", err)
+	}
+}
+
+func mustListTokens(t *testing.T, s store.Store, userID int64) []domain.APIToken {
+	t.Helper()
+	list, err := s.Tokens().List(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("List returned unexpected error: %v", err)
+	}
+	return list
 }
 
 // ---------- papéis ----------

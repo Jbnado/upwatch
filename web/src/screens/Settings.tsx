@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client";
-import { ApiError, type APIToken, type User } from "../api/types";
+import { ApiError, type APIToken, type TokenExpiryPolicy, type User } from "../api/types";
 import {
   Alert,
   Button,
@@ -11,9 +11,17 @@ import {
   NewItem,
   Nothing,
   RowLink,
+  Select,
   TextLink,
 } from "../components/ui";
 import { ago, stamp } from "../lib/format";
+import {
+  defaultChoice,
+  expiresAtFor,
+  maxCustomDate,
+  validityOptions,
+  type ValidityChoice,
+} from "../lib/token-expiry";
 import { href, navigate } from "../lib/router";
 import {
   firstSection,
@@ -184,7 +192,7 @@ function Secao({
     case "paginas":
       return pageId ? <StatusPageAdmin id={pageId} /> : <StatusPages />;
     case "tokens":
-      return <Tokens />;
+      return <Tokens isAdmin={eu.role === "admin"} />;
     case "senha":
       return <Password onSignedOut={onSignedOut} />;
     case "seguranca":
@@ -206,20 +214,54 @@ function SemAcesso({ titulo, motivo }: { titulo: string; motivo: string }) {
   );
 }
 
-function Tokens() {
+// semPolítica é o padrão enquanto a listagem não chega, e a rede de
+// segurança caso a resposta venha sem o campo: não exige validade nem
+// limita o teto, que é o comportamento de quem não configurou nada.
+const semPolítica: TokenExpiryPolicy = { require_expiry: false, max_lifetime_seconds: 0 };
+
+// expiryLabel descreve a validade de um token na listagem.
+function expiryLabel(token: APIToken): string {
+  if (!token.expires_at) {
+    return "sem expiração";
+  }
+  if (new Date(token.expires_at).getTime() <= Date.now()) {
+    return "expirado";
+  }
+  return `expira em ${stamp(token.expires_at)}`;
+}
+
+function Tokens({ isAdmin }: { isAdmin: boolean }) {
   const [tokens, setTokens] = useState<APIToken[] | null>(null);
+  const [policy, setPolicy] = useState<TokenExpiryPolicy>(semPolítica);
   const [nome, setNome] = useState("");
+  const [validade, setValidade] = useState<ValidityChoice>("30d");
+  const [dataPersonalizada, setDataPersonalizada] = useState("");
   const [novo, setNovo] = useState<string | null>(null);
   const [erro, setErro] = useState<string | null>(null);
+  // editando guarda o id do token em edição de validade; só um por vez.
+  const [editando, setEditando] = useState<number | null>(null);
+  const [editValidade, setEditValidade] = useState<ValidityChoice>("30d");
+  const [editData, setEditData] = useState("");
 
   async function carregar() {
-    const { items } = await api.listTokens();
+    const { items, policy } = await api.listTokens();
     setTokens(items);
+    // Em teste o cliente é dublê e pode omitir a política; sem ela, fica o
+    // padrão permissivo.
+    if (policy) {
+      setPolicy(policy);
+      setValidade(defaultChoice(policy));
+    }
   }
 
   useEffect(() => {
     void carregar();
   }, []);
+
+  const opções = validityOptions(policy);
+  // "data personalizada" sem data ainda não dá para enviar: a emissão exige
+  // um prazo no futuro, e um campo vazio viraria "sem expiração" sem querer.
+  const faltaData = validade === "custom" && dataPersonalizada === "";
 
   /** criar devolve se deu certo, para o formulário se recolher só então. */
   async function criar(e: FormEvent): Promise<boolean> {
@@ -227,9 +269,11 @@ function Tokens() {
     setErro(null);
 
     try {
-      const criado = await api.createToken(nome);
+      const criado = await api.createToken(nome, expiresAtFor(validade, dataPersonalizada));
       setNovo(criado.token);
       setNome("");
+      setValidade(defaultChoice(policy));
+      setDataPersonalizada("");
       await carregar();
       return true;
     } catch (e) {
@@ -243,6 +287,40 @@ function Tokens() {
 
     await api.revokeToken(token.id);
     await carregar();
+  }
+
+  function editar(token: APIToken) {
+    setErro(null);
+    setEditando(token.id);
+    setEditValidade(defaultChoice(policy));
+    setEditData("");
+  }
+
+  const editFaltaData = editValidade === "custom" && editData === "";
+
+  async function salvarEdicao(token: APIToken) {
+    setErro(null);
+    try {
+      await api.updateTokenExpiry(token.id, expiresAtFor(editValidade, editData));
+      setEditando(null);
+      await carregar();
+    } catch (e) {
+      setErro(e instanceof ApiError ? e.message : "Não foi possível editar a validade.");
+    }
+  }
+
+  // rotacionar emite um substituto e mostra o segredo novo. O antigo segue
+  // valendo até ser revogado, então não é operação destrutiva: o substituto
+  // herda a validade padrão da política, que o dono pode editar depois.
+  async function rotacionar(token: APIToken) {
+    setErro(null);
+    try {
+      const criado = await api.rotateToken(token.id, expiresAtFor(defaultChoice(policy), ""));
+      setNovo(criado.token);
+      await carregar();
+    } catch (e) {
+      setErro(e instanceof ApiError ? e.message : "Não foi possível rotacionar o token.");
+    }
   }
 
   return (
@@ -279,33 +357,98 @@ function Tokens() {
       ) : (
         <ul className="border-t border-line">
           {tokens.map((token) => (
-            <li
-              key={token.id}
-              // items-center e não items-baseline: a coluna da esquerda tem
-              // duas linhas, e alinhar pela primeira delas deixaria o botão
-              // da direita flutuando acima do centro da linha.
-              className="flex items-center justify-between gap-4 border-b border-line py-2.5"
-            >
-              <span className="flex min-w-0 flex-col">
-                <span className="truncate text-body font-medium">{token.name}</span>
-                <span className="tabular text-small text-ink-3">{token.prefix}…</span>
-              </span>
-
-              <span className="flex shrink-0 items-center gap-4">
-                <span className="text-small text-ink-3">
-                  {token.last_used_at ? `usado ${ago(token.last_used_at)}` : "nunca usado"}
-                  <span className="mx-1.5">·</span>
-                  criado em {stamp(token.created_at)}
+            <li key={token.id} className="flex flex-col gap-3 border-b border-line py-2.5">
+              {/* items-center e não items-baseline: a coluna da esquerda tem
+                  duas linhas, e alinhar pela primeira delas deixaria os
+                  botões da direita flutuando acima do centro da linha. */}
+              <div className="flex items-center justify-between gap-4">
+                <span className="flex min-w-0 flex-col">
+                  <span className="truncate text-body font-medium">{token.name}</span>
+                  <span className="tabular text-small text-ink-3">{token.prefix}…</span>
                 </span>
-                <Button size="sm" variant="danger" onClick={() => revogar(token)}>
-                  Revogar
-                </Button>
-              </span>
+
+                <span className="flex shrink-0 items-center gap-4">
+                  <span className="text-small text-ink-3">
+                    {token.last_used_at ? `usado ${ago(token.last_used_at)}` : "nunca usado"}
+                    <span className="mx-1.5">·</span>
+                    criado em {stamp(token.created_at)}
+                    <span className="mx-1.5">·</span>
+                    {expiryLabel(token)}
+                    {token.rotated_at && (
+                      <>
+                        <span className="mx-1.5">·</span>
+                        <span className="text-degraded">rotacionado</span>
+                      </>
+                    )}
+                  </span>
+                  {/* Emitir, rotacionar e editar são de administrador;
+                      revogar os próprios é autosserviço de qualquer conta.
+                      Um token rotacionado não se rotaciona de novo: o
+                      substituto é o que se rotaciona a seguir. */}
+                  {isAdmin && !token.rotated_at && (
+                    <Button size="sm" onClick={() => void rotacionar(token)}>
+                      Rotacionar
+                    </Button>
+                  )}
+                  {isAdmin && (
+                    <Button size="sm" onClick={() => editar(token)}>
+                      Editar validade
+                    </Button>
+                  )}
+                  <Button size="sm" variant="danger" onClick={() => revogar(token)}>
+                    Revogar
+                  </Button>
+                </span>
+              </div>
+
+              {editando === token.id && (
+                <div className="flex flex-wrap items-end gap-3 rounded-sm border border-line-strong p-3">
+                  <Field label="validade">
+                    <Select
+                      value={editValidade}
+                      onChange={(e) => setEditValidade(e.target.value as ValidityChoice)}
+                    >
+                      {opções.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+                  {editValidade === "custom" && (
+                    <Field label="data de expiração">
+                      <Input
+                        type="date"
+                        value={editData}
+                        max={maxCustomDate(policy) || undefined}
+                        onChange={(e) => setEditData(e.target.value)}
+                        required
+                      />
+                    </Field>
+                  )}
+                  <span className="flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      disabled={editFaltaData}
+                      onClick={() => void salvarEdicao(token)}
+                    >
+                      Salvar
+                    </Button>
+                    <Button size="sm" onClick={() => setEditando(null)}>
+                      Cancelar
+                    </Button>
+                  </span>
+                </div>
+              )}
             </li>
           ))}
         </ul>
       )}
 
+      {/* Emitir é de administrador: o observador vê e revoga os próprios,
+          mas não cria credencial nova. */}
+      {isAdmin && (
       <NewItem label="Novo token">
         {(fechar) => (
           <form
@@ -323,10 +466,34 @@ function Tokens() {
                 required
               />
             </Field>
-            <FormActions submit="Criar token" onCancel={fechar} />
+            <Field label="validade" hint="Um prazo curto limita o estrago se o token vazar.">
+              <Select
+                value={validade}
+                onChange={(e) => setValidade(e.target.value as ValidityChoice)}
+              >
+                {opções.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            {validade === "custom" && (
+              <Field label="data de expiração">
+                <Input
+                  type="date"
+                  value={dataPersonalizada}
+                  max={maxCustomDate(policy) || undefined}
+                  onChange={(e) => setDataPersonalizada(e.target.value)}
+                  required
+                />
+              </Field>
+            )}
+            <FormActions submit="Criar token" onCancel={fechar} disabled={faltaData} />
           </form>
         )}
       </NewItem>
+      )}
     </section>
   );
 }
