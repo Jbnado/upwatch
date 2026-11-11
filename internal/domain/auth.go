@@ -221,6 +221,35 @@ func (t APIToken) MarshalJSON() ([]byte, error) {
 	})
 }
 
+// TokenExpiryPolicy é a política de validade de tokens de API da instalação,
+// aplicada na criação de um token novo.
+type TokenExpiryPolicy struct {
+	// MaxLifetime é o maior prazo de vida permitido a partir da criação.
+	// Zero significa sem teto.
+	MaxLifetime time.Duration
+
+	// Require exige que todo token novo tenha data de expiração.
+	Require bool
+}
+
+// CheckExpiry valida a expiração pedida para um token criado em now.
+// expiresAt nil significa "sem expiração".
+func (p TokenExpiryPolicy) CheckExpiry(expiresAt *time.Time, now time.Time) error {
+	if expiresAt == nil {
+		if p.Require {
+			return invalid("expires_at", "a instalação exige data de expiração")
+		}
+		return nil
+	}
+	if !expiresAt.After(now) {
+		return invalid("expires_at", "a data de expiração deve ser no futuro")
+	}
+	if p.MaxLifetime > 0 && expiresAt.After(now.Add(p.MaxLifetime)) {
+		return invalid("expires_at", "a data de expiração excede o teto da instalação")
+	}
+	return nil
+}
+
 // Session é um login ativo na interface.
 type Session struct {
 	// Hash é o que fica no banco; o cookie carrega o segredo cru, de modo
