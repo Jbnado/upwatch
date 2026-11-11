@@ -33,6 +33,7 @@ import (
 	"github.com/Jbnado/upwatch/internal/sentinel"
 	"github.com/Jbnado/upwatch/internal/server"
 	"github.com/Jbnado/upwatch/internal/store"
+	"github.com/Jbnado/upwatch/internal/tokenexpiry"
 	"github.com/Jbnado/upwatch/internal/web"
 )
 
@@ -131,6 +132,7 @@ type application struct {
 	reminders *incident.Reminders
 	calendar  *janelas.Calendar
 	alerts    *notifier.Dispatcher
+	tokenExp  *tokenexpiry.Warner
 	rollups   *rollup.Worker
 	auth      *auth.Service
 	handler   http.Handler
@@ -287,6 +289,9 @@ func build(cfg config.Config, st store.Store) (*application, error) {
 		}),
 		calendar: calendar,
 		alerts:   alerts,
+		// Avisa o dono quando um token de API se aproxima do vencimento,
+		// pelos mesmos canais e pela mesma fila dos avisos de monitor.
+		tokenExp: tokenexpiry.NewWarner(st, alerts, tokenexpiry.Options{Clock: real}),
 		rollups: rollup.NewWorker(st, rollup.Options{
 			Interval:  cfg.RollupInterval,
 			Retention: cfg.RetentionPolicy(),
@@ -329,6 +334,7 @@ func (a *application) run(ctx context.Context, cfg config.Config) error {
 	spawn("rollup", a.rollups.Run)
 	spawn("alertas", a.alerts.Run)
 	spawn("lembretes", a.reminders.Run)
+	spawn("avisos-token", a.tokenExp.Run)
 	spawn("manutencao", a.calendar.Run)
 	spawn("sessoes", a.sweepSessions)
 
