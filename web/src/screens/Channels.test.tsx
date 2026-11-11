@@ -339,7 +339,9 @@ describe("Channels, resumo de onde avisa", () => {
     });
     render(<Channels />);
 
-    expect(await screen.findByText("silencia degradações e voltas")).toBeInTheDocument();
+    expect(
+      await screen.findByText("silencia degradações, voltas e avisos de token"),
+    ).toBeInTheDocument();
     // Canal sem filtro não ganha aviso de silêncio: só o canal filtrado.
     expect(screen.getAllByText(/^silencia/)).toHaveLength(1);
   });

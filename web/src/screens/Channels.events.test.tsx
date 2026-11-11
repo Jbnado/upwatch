@@ -71,6 +71,68 @@ describe("ChannelForm, quais eventos", () => {
     expect(events).not.toContain("monitor.up");
   });
 
+  it("oferece o aviso de token vencendo e o inclui por padrão ao filtrar", async () => {
+    const onSaved = criar();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /só alguns eventos/ }));
+    // A família de conta aparece como opção, marcada por padrão (filtrar não
+    // deixa de receber o que o canal receberia sem filtro).
+    const conta = screen.getByRole("checkbox", { name: /[Tt]oken vencendo/ });
+    expect(conta).toBeChecked();
+
+    fireEvent.click(screen.getByRole("button", { name: "Adicionar canal" }));
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    const events = vi.mocked(api.createChannel).mock.calls[0]![0].events;
+    expect(events).toContain("account.token_expiring");
+  });
+
+  it("desmarcar o aviso de token o silencia", async () => {
+    const onSaved = criar();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /só alguns eventos/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /[Tt]oken vencendo/ }));
+    expect(screen.getByText(/Silenciado/)).toHaveTextContent(/token/i);
+
+    fireEvent.click(screen.getByRole("button", { name: "Adicionar canal" }));
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    const events = vi.mocked(api.createChannel).mock.calls[0]![0].events;
+    expect(events).not.toContain("account.token_expiring");
+    // A queda segue sempre presente.
+    expect(events).toContain("monitor.down");
+  });
+
+  it("na edição, um canal que não assina conta abre com o aviso de token desmarcado", () => {
+    const canal: ChannelDetail = {
+      id: 10,
+      name: "só monitor",
+      type: "webhook",
+      enabled: true,
+      created_at: "",
+      updated_at: "",
+      events: ["monitor.down"],
+      config: { url_set: true },
+    };
+    render(<ChannelForm canal={canal} onSaved={vi.fn()} onError={() => {}} onCancel={() => {}} />);
+    expect(screen.getByRole("checkbox", { name: /[Tt]oken vencendo/ })).not.toBeChecked();
+  });
+
+  it("na edição, um canal que assina conta abre com o aviso de token marcado", () => {
+    const canal: ChannelDetail = {
+      id: 11,
+      name: "segurança",
+      type: "webhook",
+      enabled: true,
+      created_at: "",
+      updated_at: "",
+      events: ["monitor.down", "account.token_expiring"],
+      config: { url_set: true },
+    };
+    render(<ChannelForm canal={canal} onSaved={vi.fn()} onError={() => {}} onCancel={() => {}} />);
+    expect(screen.getByRole("checkbox", { name: /[Tt]oken vencendo/ })).toBeChecked();
+  });
+
   it("na edição abre com o filtro atual e mostra o que está silenciado", () => {
     const canal: ChannelDetail = {
       id: 9,

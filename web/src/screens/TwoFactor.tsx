@@ -119,6 +119,14 @@ function Cadastro({ onEnabled }: { onEnabled: (codigos: string[]) => void }) {
       <form onSubmit={comecar} className="flex flex-col gap-3">
         {erro && <Alert>{erro}</Alert>}
         <p className="text-body">Desligada. Para começar o cadastro, confirme com a senha.</p>
+        {/* Ligar o segundo fator revoga os tokens de API da conta, como
+            trocar a senha: um token emitido por quem roubou a sessão não pode
+            sobreviver à mudança. Avisar antes evita quebrar automação sem o
+            dono saber. */}
+        <p className="text-small text-ink-2">
+          Ligar revoga os tokens de API da conta. A automação que usa um deles precisa de token
+          novo.
+        </p>
         <Field label="senha atual">
           <Input
             type="password"
