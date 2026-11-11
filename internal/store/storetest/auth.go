@@ -49,6 +49,7 @@ func authCases() []conformanceCase {
 		{"TokenSetExpiry", testTokenSetExpiry},
 		{"TokenRotateKeepsBothValid", testTokenRotateKeepsBothValid},
 		{"TokenSuccessorUsed", testTokenSuccessorUsed},
+		{"TokenCascadesOnUserDelete", testTokenCascadesOnUserDelete},
 	}
 }
 
@@ -928,6 +929,28 @@ func testTokenSuccessorUsed(t *testing.T, newStore Factory) {
 	solo, _ := mustCreateToken(t, s, u.ID, "solo")
 	if used, err := s.Tokens().SuccessorUsed(ctx, solo.ID); err != nil || used {
 		t.Fatalf("SuccessorUsed sem sucessor = %v, %v; want false, nil", used, err)
+	}
+}
+
+// Remover a conta corta os tokens dela na hora, por cascata: quem perdeu o
+// acesso não deixa credencial de pé esperando o vencimento. Diferente de uma
+// revogação, o registro sai junto — não há conta a que prender o retido.
+func testTokenCascadesOnUserDelete(t *testing.T, newStore Factory) {
+	s := newStore(t)
+	ctx := context.Background()
+	mustCreateUser(t, s, "fica") // outro administrador, para não ser o último
+	u := mustCreateUser(t, s, "demitido")
+	tok, secret := mustCreateToken(t, s, u.ID, "ci")
+
+	if err := s.Users().Delete(ctx, u.ID); err != nil {
+		t.Fatalf("Delete returned unexpected error: %v", err)
+	}
+
+	if _, err := s.Tokens().GetByHash(ctx, domain.HashToken(secret.Secret)); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("o token sobreviveu à remoção da conta: %v", err)
+	}
+	if _, err := s.Tokens().Get(ctx, tok.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("o registro do token sobreviveu à remoção da conta: %v", err)
 	}
 }
 

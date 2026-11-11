@@ -610,6 +610,48 @@ func TestRotateAlreadyRotatedIsConflict(t *testing.T) {
 	assertStatus(t, s.do(t, http.MethodPost, "/api/v1/auth/tokens/"+id+"/rotate", map[string]any{}), http.StatusConflict)
 }
 
+// O token reflete o acesso atual da conta a cada requisição: rebaixar a
+// conta tira o poder do token na hora, sem revogá-lo nem congelar o escopo
+// na emissão.
+func TestDemotedAccountTokenLosesAdminAccess(t *testing.T) {
+	s := newServer(t)
+	s.setup(t) // admin A, na sessão
+
+	secret := decode[map[string]any](t,
+		s.do(t, http.MethodPost, "/api/v1/auth/tokens", map[string]any{"name": "ci"}))["token"].(string)
+	meuID := int64(decode[map[string]any](t, s.do(t, http.MethodGet, "/api/v1/auth/me", nil))["id"].(float64))
+
+	// Com A ainda administrador, o token faz coisa de administrador.
+	assertStatus(t, s.withToken(t, secret, http.MethodGet, "/api/v1/users", nil), http.StatusOK)
+
+	// Um segundo administrador B rebaixa A a observador.
+	s.criarConta(t, "bia", "admin")
+	bia := s.como(s.entrar(t, "bia", "senha-de-teste-12345"))
+	assertStatus(t, bia.do(t, http.MethodPut, "/api/v1/users/"+itoa(meuID),
+		map[string]any{"role": "viewer"}), http.StatusOK)
+
+	// O MESMO token agora é de observador: a rota de administrador recusa.
+	assertStatus(t, s.withToken(t, secret, http.MethodGet, "/api/v1/users", nil), http.StatusForbidden)
+	// Mas ainda autentica (não foi revogado) — lê o que observador lê.
+	assertStatus(t, s.withToken(t, secret, http.MethodGet, "/api/v1/monitors", nil), http.StatusOK)
+}
+
+// Remover a conta corta o token na hora.
+func TestRemovedAccountTokenStopsWorking(t *testing.T) {
+	s := newServer(t)
+	s.setup(t)
+
+	secret := decode[map[string]any](t,
+		s.do(t, http.MethodPost, "/api/v1/auth/tokens", map[string]any{"name": "ci"}))["token"].(string)
+	meuID := int64(decode[map[string]any](t, s.do(t, http.MethodGet, "/api/v1/auth/me", nil))["id"].(float64))
+
+	s.criarConta(t, "bia", "admin")
+	bia := s.como(s.entrar(t, "bia", "senha-de-teste-12345"))
+	assertStatus(t, bia.do(t, http.MethodDelete, "/api/v1/users/"+itoa(meuID), nil), http.StatusNoContent)
+
+	assertStatus(t, s.withToken(t, secret, http.MethodGet, "/api/v1/monitors", nil), http.StatusUnauthorized)
+}
+
 // ---------- respostas e cabeçalhos ----------
 
 func TestErrorsUseAConsistentJSONShape(t *testing.T) {
